@@ -14,6 +14,9 @@ config.json
 # 日志
 *.log
 
+# 富媒体临时落地目录（图片/语音/视频附件）
+Temp/
+
 # 编辑器
 .idea/
 .vscode/
