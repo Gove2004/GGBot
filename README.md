@@ -15,16 +15,20 @@ GGBot/
 ├── config.json          # 全部配置（QQ 凭据 / DeepSeek / Embedding / 行为 / 存储 / Web）
 ├── requirements.txt
 ├── main.py              # 入口
+├── start.bat            # Windows 前台启动（Ctrl+C 停止）
+├── start.sh             # Linux 后台启动（nohup，kill <PID> 停止）
 ├── persona_core.md      # 内核人设（owner 定义，AI 只读；首次启动自动导入）
+├── logs/                # 运行日志（5MB × 5 轮转，gitignored）
 ├── ggbot/
-│   ├── config.py        # 配置加载
+│   ├── config.py        # 配置加载（embedding 支持环境变量覆盖 + 热更新）
+│   ├── logging_setup.py # 日志系统（多等级 / 文件轮转 / 面板 tail）
 │   ├── storage.py       # SQLite（会话/消息/记忆/规则/人设版本）
 │   ├── memory.py        # 向量记忆（SiliconFlow Embedding + 余弦检索 + 整理）
 │   ├── llm.py           # DeepSeek 请求装置
 │   ├── tools.py         # 8 个 function calling 工具 + agent 循环
 │   ├── presence.py      # 在线/离线状态机（唤醒/积压分流/抖动/分段发送）
 │   ├── bot.py           # QQ 网关
-│   └── web.py           # Web 面板
+│   └── web.py           # Web 面板（状态/消息/记忆/设置/日志）
 ├── Temp/                # 富媒体附件落地（gitignored）
 └── docs/实施方案.md
 ```
@@ -41,13 +45,23 @@ python -m venv .venv
 #    deepseek.api_key           → DeepSeek key
 #    embedding.api_key          → SiliconFlow key（Qwen3-Embedding-4B）
 
-# 3. 启动（QQ 网关 + Web 面板）
-.\.venv\Scripts\python.exe main.py
-# 仅机器人，不开面板：
-.\.venv\Scripts\python.exe main.py --no-web
+# 3. 启动
+start.bat                    # Windows 前台（Ctrl+C 停止）
+# 或
+.\.venv\Scripts\python.exe main.py [--no-web] [--log-level DEBUG]
+# Linux 后台：
+./start.sh
 ```
 
 启动后：QQ gateway 连接成功 → 群@消息触发 → Presence 状态机（离线积压 / @唤醒 / 在线抖动聚合 / 选择性回复）。Web 面板：`http://127.0.0.1:8080`（需 `?token=ggbot-local` 或 `X-Token` 头）。
+
+## 日志与 Web 运维
+
+- **日志文件**：`logs/ggbot.log`（RotatingFileHandler，5MB × 5 轮转；stderr 同时输出）。格式 `时间 | 等级 | 模块 | 内容`；botpy/openai/httpx 等第三方库默认 WARNING 降噪
+- **等级控制**：`config.json → web.log_level`（默认 INFO）、`--log-level DEBUG`、环境变量 `LOG_LEVEL`，三者优先级递增；面板保存设置即时热切换
+- **Web 面板查看**：设置卡（LLM 参数 / Presence / 积压 / 日志等级，白名单热更新并写回 config.json）+ 日志卡（等级过滤，5s 自动刷新）
+- **API**：`GET /api/config`（密钥脱敏）、`POST /api/config`（`[{"path": "a.b.c", "value": x}]` 批量，越权路径忽略）、`GET /api/logs?lines=&level=`
+- **embedding 环境变量覆盖**：`EMBEDDING_BASE_URL` / `EMBEDDING_MODEL` / `EMBEDDING_API_KEY` 优先于 config.json（当前默认 SiliconFlow Qwen/Qwen3-Embedding-4B）
 
 ## 关键行为（config.json `behavior`）
 
@@ -83,6 +97,9 @@ python -m venv .venv
 [PASS] tools_schema      # 8 工具 schema 校验
 [PASS] presence_split    # 分段逻辑（空行/按句/无标点硬切/限段）
 [PASS] tool_loop         # function calling 端到端：AI 调用 memory_write 真实入库
+[PASS] config_env_override   # embedding 环境变量优先于 config.json
+[PASS] logging_system        # 多等级写文件 + tail 等级过滤 + set_level 热切换
+[PASS] web_api_settings_logs # /api/config 白名单热更新写回、密钥脱敏、越权忽略；/api/logs
 ```
 
 > 未覆盖：QQ 真实收发（需机器人上线 + 群内实测）；`send_image/video/voice` 富媒体实发（需真实群 + 公网 URL）。
