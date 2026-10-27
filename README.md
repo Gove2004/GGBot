@@ -22,6 +22,10 @@ GGBot/
 ├── start.bat            # Windows 前台启动（Ctrl+C 停止）
 ├── start.sh             # Linux 后台启动（nohup，kill <PID> 停止）
 ├── logs/                # 运行日志（5MB × 5 轮转，gitignored）
+├── web/                 # Web 前端（与后端分离，经 /static 托管，改完即热加载）
+│   ├── index.html
+│   ├── style.css
+│   └── app.js
 ├── ggbot/
 │   ├── config.py        # 配置加载（纯配置文件驱动 + Web 热更新）
 │   ├── logging_setup.py # 日志系统（多等级 / 文件轮转 / 面板 tail）
@@ -31,7 +35,7 @@ GGBot/
 │   ├── tools.py         # 8 个 function calling 工具 + agent 循环
 │   ├── presence.py      # 在线/离线状态机（唤醒/积压分流/抖动/分段发送）
 │   ├── bot.py           # QQ 网关
-│   └── web.py           # Web 面板（状态/消息/记忆/设置/日志）
+│   └── web.py           # Web API + WebSocket + 静态托管（不内嵌前端）
 ```
 
 ## 系统架构

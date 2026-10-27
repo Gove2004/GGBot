@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GGBot 控制面板</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<h1>GGBot 控制面板</h1>
+<div class="sub">QQ 群聊机器人 · 在线/离线作息 · 向量记忆 · 人设进化</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>运行状态</h2>
+    <div class="row"><span class="lbl">状态</span><span id="st-state" class="badge off">加载中…</span></div>
+    <div class="row"><span class="lbl">下一个事件</span><b id="st-event">—</b></div>
+    <div class="row"><span class="lbl">剩余秒</span><b id="st-remain">—</b></div>
+    <div class="row"><span class="lbl">积压待处理</span><b id="st-pending">—</b></div>
+    <div class="row"><span class="lbl">抖动窗口内</span><b id="st-debounce">—</b></div>
+    <div class="row"><span class="lbl">在线时长 / 离线周期</span><b id="st-dur">—</b></div>
+    <div class="row"><span class="lbl">聊得火热(续期)</span><b id="st-renew">—</b></div>
+    <div class="row"><span class="lbl">积压扫描/合并</span><b id="st-backlog">—</b></div>
+  </div>
+
+  <div class="card">
+    <h2>最近消息</h2>
+    <table><thead><tr><th>会话</th><th>角色</th><th>内容</th><th>状态</th></tr></thead>
+    <tbody id="msg-body"></tbody></table>
+  </div>
+
+  <div class="card">
+    <h2>向量记忆</h2>
+    <input type="text" id="mem-q" placeholder="语义检索：输入要回忆的内容…">
+    <button onclick="searchMem()">检索</button>
+    <button class="ghost" onclick="tidyMem()">整理(合并重复)</button>
+    <div class="mt">
+      <table><thead><tr><th>相似度</th><th>内容</th><th></th></tr></thead>
+      <tbody id="mem-body"></tbody></table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>规则</h2>
+    <input type="text" id="rule-content" placeholder="新增规则，如：禁止在群里讨论政治">
+    <button onclick="addRule()">添加</button>
+    <table class="mt"><thead><tr><th>规则</th><th>状态</th><th></th></tr></thead>
+    <tbody id="rule-body"></tbody></table>
+  </div>
+
+  <div class="card">
+    <h2>人设（双层 + 版本化）</h2>
+    <div class="row"><span class="lbl">内核人设（只读）</span><span id="p-inner-v">—</span></div>
+    <pre id="p-inner">—</pre>
+    <div class="row mt"><span class="lbl">动态人设（AI 可进化）</span><span id="p-dyn-v">—</span></div>
+    <pre id="p-dyn">—</pre>
+  </div>
+
+  <div class="card">
+    <h2>设置（热更新，写回 config.json）</h2>
+    <div class="frow"><span class="lbl">temperature</span><input type="number" id="s-temperature" step="0.1" min="0" max="2"></div>
+    <div class="frow"><span class="lbl">top_p</span><input type="number" id="s-top_p" step="0.05" min="0" max="1"></div>
+    <div class="frow"><span class="lbl">max_tokens</span><input type="number" id="s-max_tokens" min="1"></div>
+    <div class="frow"><span class="lbl">thinking</span><select id="s-thinking"><option>enabled</option><option>disabled</option></select></div>
+    <div class="frow"><span class="lbl">在线时长(s)</span><input type="number" id="s-online_duration_sec" min="1"></div>
+    <div class="frow"><span class="lbl">离线周期(s)</span><input type="number" id="s-offline_interval_sec" min="1"></div>
+    <div class="frow"><span class="lbl">抖动窗口(s)</span><input type="number" id="s-debounce_sec" min="1"></div>
+    <div class="frow"><span class="lbl">积压扫描上限</span><input type="number" id="s-max_scan_messages" min="1"></div>
+    <div class="frow"><span class="lbl">积压合并批次</span><input type="number" id="s-batch_size" min="1"></div>
+    <div class="frow"><span class="lbl">日志等级</span><select id="s-log_level"><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select></div>
+    <button class="mt" onclick="saveConfig()">保存设置</button>
+    <span id="cfg-msg" class="muted"></span>
+  </div>
+
+  <div class="card">
+    <h2>日志</h2>
+    <div class="frow"><span class="lbl">等级过滤</span>
+      <select id="log-level" onchange="loadLogs()">
+        <option>DEBUG</option><option selected>INFO</option><option>WARNING</option><option>ERROR</option>
+      </select>
+    </div>
+    <pre id="log-view" style="max-height:320px">加载中…</pre>
+  </div>
+</div>
+
+<script src="/static/app.js" defer></script>
+</body>
+</html>
