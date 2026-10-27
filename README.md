@@ -14,7 +14,7 @@
 GGBot/
 ├── db/
 │   ├── config.json      # 全部配置（QQ 凭据 / DeepSeek / Embedding / 行为 / 存储 / Web；含密钥，gitignored）
-│   ├── persona_core.md  # 内核人设（owner 定义，AI 只读；首次启动自动导入）
+│   ├── persona_core.md  # 内核人设（owner 定义，AI 只读；文件变化重启自动同步新版本）
 │   └── ggbot.db         # SQLite 持久化：会话/消息/记忆/规则/人设版本（运行时生成，gitignored）
 ├── temp/                # 富媒体附件临时落地（默认保留 24h 自动清理，gitignored）
 ├── requirements.txt
@@ -78,10 +78,10 @@ python -m venv .venv
 #    deepseek.api_key           → DeepSeek key
 #    embedding.api_key          → SiliconFlow key（Qwen3-Embedding-4B）
 
-# 3. 启动
+# 3. 启动（脚本自动创建 .venv + 安装依赖，无需手动准备）
 start.bat                    # Windows 前台（Ctrl+C 停止）
-# 或
-.\.venv\Scripts\python.exe main.py [--no-web] [--log-level DEBUG]
+# 或直接运行（无命令行参数，全部行为由 db/config.json 驱动）：
+.\.venv\Scripts\python.exe main.py
 # Linux 后台：
 ./start.sh
 ```
@@ -91,7 +91,7 @@ start.bat                    # Windows 前台（Ctrl+C 停止）
 ## 日志与 Web 运维
 
 - **日志文件**：`logs/ggbot.log`（RotatingFileHandler，5MB × 5 轮转；stderr 同时输出）。格式 `时间 | 等级 | 模块 | 内容`；botpy/openai/httpx 等第三方库默认 WARNING 降噪
-- **等级控制**：`db/config.json → web.log_level`（默认 INFO），或启动参数 `--log-level DEBUG`；面板保存设置即时热切换。项目**纯配置文件驱动**，不使用环境变量
+- **等级控制**：`db/config.json → web.log_level`（默认 INFO）；面板保存设置即时热切换。项目**纯配置文件驱动**，不使用环境变量、不设启动参数（Web 面板开关：`web.enable`）
 - **Web 面板查看**：设置卡（LLM 参数 / Presence / 积压 / 日志等级，白名单热更新并写回 config.json）+ 日志卡（等级过滤，5s 自动刷新）
 - **API**：`GET /api/config`（密钥脱敏）、`POST /api/config`（`[{"path": "a.b.c", "value": x}]` 批量，越权路径忽略）、`GET /api/logs?lines=&level=`
 

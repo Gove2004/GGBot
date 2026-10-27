@@ -1,13 +1,13 @@
 """GGBot 入口：组装并启动 QQ 网关、Presence 状态机、Web 面板。
 
-用法：
-    .venv\\Scripts\\python main.py            # 正常启动（QQ + Web）
-    .venv\\Scripts\\python main.py --no-web   # 仅机器人
+直接运行：
+    .venv\\Scripts\\python main.py
+
+全部行为由 db/config.json 驱动（web.enable 控制 Web 面板开关），无命令行参数。
 """
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import logging
 
@@ -24,14 +24,8 @@ from ggbot.logging_setup import setup_logging
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="GGBot QQ 群聊机器人")
-    parser.add_argument("--no-web", action="store_true", help="不启动 Web 控制面板")
-    parser.add_argument("--config", default=None, help="config.json 路径")
-    parser.add_argument("--log-level", default=None, help="日志等级 DEBUG/INFO/WARNING/ERROR")
-    args = parser.parse_args()
-
-    cfg = Config(args.config)
-    log_level = args.log_level or (cfg.web_cfg or {}).get("log_level", "INFO")
+    cfg = Config()
+    log_level = (cfg.web_cfg or {}).get("log_level", "INFO")
     setup_logging(cfg.log_file, log_level)
     log = logging.getLogger("ggbot.main")
     log.info("日志系统就绪: %s (level=%s)", cfg.log_file, log_level)
@@ -66,7 +60,7 @@ async def main() -> None:
     cleanup_task = asyncio.create_task(_temp_cleanup_loop())
 
     web_task = None
-    if not args.no_web and (cfg.web_cfg or {}).get("enable", True):
+    if (cfg.web_cfg or {}).get("enable", True):
         from ggbot.web import start_web
 
         web_task = asyncio.create_task(start_web(cfg, storage, memory, presence))

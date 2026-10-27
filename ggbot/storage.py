@@ -108,20 +108,30 @@ class Storage:
             self._open_conns.clear()
 
     def _seed_core_persona(self) -> None:
-        """将 persona_core.md 导入内核人设层（AI 只读）。"""
+        """将 persona_core.md 导入内核人设层（AI 只读）。
+
+        与当前最新 inner 版本内容不一致时导入新版本（owner 改文件后重启即生效）。
+        """
         from ggbot.config import BASE_DIR
 
         core_file = BASE_DIR / "db" / "persona_core.md"
         if not core_file.exists():
             return
+        content = core_file.read_text(encoding="utf-8")
         with self._lock, self._conn() as c:
-            n = c.execute("SELECT COUNT(*) FROM persona WHERE layer='inner'").fetchone()[0]
-            if n == 0:
-                c.execute(
-                    "INSERT INTO persona(layer, content, version, operation, diff, ts, source_session) "
-                    "VALUES(?,?,?,?,?,?,?)",
-                    ("inner", core_file.read_text(encoding="utf-8"), 1, "import", "", _now(), "system"),
-                )
+            latest = c.execute(
+                "SELECT content FROM persona WHERE layer='inner' ORDER BY version DESC LIMIT 1"
+            ).fetchone()
+            if latest is not None and latest["content"] == content:
+                return
+            version = c.execute(
+                "SELECT COALESCE(MAX(version),0) FROM persona WHERE layer='inner'"
+            ).fetchone()[0] + 1
+            c.execute(
+                "INSERT INTO persona(layer, content, version, operation, diff, ts, source_session) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("inner", content, version, "import", "seed sync", _now(), "system"),
+            )
 
     # ---------- 会话 ----------
 
