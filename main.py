@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 
 import botpy
 
@@ -20,19 +21,21 @@ from ggbot.memory import MemoryStore
 from ggbot.presence import PresenceManager
 from ggbot.storage import Storage
 from ggbot.tools import ToolExecutor
+from ggbot.logging_setup import setup_logging
 
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="GGBot QQ 群聊机器人")
     parser.add_argument("--no-web", action="store_true", help="不启动 Web 控制面板")
     parser.add_argument("--config", default=None, help="config.json 路径")
+    parser.add_argument("--log-level", default=None, help="日志等级 DEBUG/INFO/WARNING/ERROR")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    cfg = Config(args.config)
+    log_level = args.log_level or os.environ.get("LOG_LEVEL") or (cfg.web_cfg or {}).get("log_level", "INFO")
+    setup_logging(cfg.log_file, log_level)
     log = logging.getLogger("ggbot.main")
+    log.info("日志系统就绪: %s (level=%s)", cfg.log_file, log_level)
 
     cfg = Config(args.config)
     storage = Storage(cfg.db_path)

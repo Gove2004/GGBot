@@ -10,6 +10,7 @@ config.json 实际结构（与文件保持一致）：
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -44,6 +45,19 @@ class Config:
         return self.llm.get("request", {})
 
     @property
+    def embedding(self) -> dict:
+        """向量化配置：环境变量优先（EMBEDDING_BASE_URL / EMBEDDING_MODEL / EMBEDDING_API_KEY），否则读 config.json。"""
+        emb = self.data.get("embedding", {})
+        return {
+            "provider": emb.get("provider", "siliconflow"),
+            "base_url": os.environ.get("EMBEDDING_BASE_URL")
+            or emb.get("base_url", "https://api.siliconflow.cn/v1"),
+            "model": os.environ.get("EMBEDDING_MODEL") or emb.get("model", "Qwen/Qwen3-Embedding-4B"),
+            "api_key": os.environ.get("EMBEDDING_API_KEY") or emb.get("api_key", ""),
+            "batch_size": max(1, int(emb.get("batch_size", 32))),
+        }
+
+    @property
     def context(self) -> dict:
         """上下文预算：max_input_tokens / max_history_messages / summary_threshold_tokens。"""
         return self.llm.get("context", {})
@@ -76,3 +90,40 @@ class Config:
         if not p.is_absolute():
             p = BASE_DIR / p
         return p
+
+    @property
+    def logs_dir(self) -> Path:
+        return BASE_DIR / "logs"
+
+    @property
+    def log_file(self) -> Path:
+        return self.logs_dir / "ggbot.log"
+
+    def get_by_path(self, dotted: str):
+        """按 'a.b.c' 读取嵌套配置。"""
+        node = self.data
+        for part in dotted.split("."):
+            if isinstance(node, dict) and part in node:
+                node = node[part]
+            else:
+                return None
+        return node
+
+    def set_by_path(self, dotted: str, value) -> bool:
+        """按 'a.b.c' 更新嵌套配置（dict 引用共享，Presence/LLM 等运行对象热生效）。"""
+        parts = dotted.split(".")
+        node = self.data
+        for part in parts[:-1]:
+            if not isinstance(node, dict) or part not in node:
+                return False
+            node = node[part]
+        if not isinstance(node, dict) or parts[-1] not in node:
+            return False
+        node[parts[-1]] = value
+        return True
+
+    def save(self) -> None:
+        """写回 config.json（保留缩进与中文）。"""
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=2)
+            f.write("\n")

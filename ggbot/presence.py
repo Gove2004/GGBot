@@ -168,10 +168,11 @@ class PresenceManager:
                 await self._go_online("wake-on-at")
                 await self._reply_now(inbound)
                 return True
-            logger.info("离线：消息入库 %s", inbound["msg_id"])
+            logger.debug("离线：消息入库 %s (pending)", inbound["msg_id"])
             return True
         # 在线：进入 debounce 窗口聚合
         self._debounce.append(inbound)
+        logger.debug("在线：进入抖动窗口 %s（当前 %d 条）", inbound["msg_id"], len(self._debounce))
         if self._debounce_task is None or self._debounce_task.done():
             self._debounce_task = asyncio.create_task(self._flush_debounce())
         return True
@@ -191,7 +192,7 @@ class PresenceManager:
             return
         self.state = "online"
         self._online_deadline = time.monotonic() + float(self.p.get("online_duration_sec", 300))
-        logger.info("上线（%s），先处理积压", reason)
+        logger.info("上线（%s），在线时长 %.0fs，先处理积压", reason, self.p.get("online_duration_sec", 300))
         await self._process_backlog()
 
     async def _go_offline(self, reason: str) -> None:
@@ -199,7 +200,7 @@ class PresenceManager:
             return
         self.state = "offline"
         self._next_online = time.monotonic() + float(self.p.get("offline_interval_sec", 900))
-        logger.info("下线（%s）", reason)
+        logger.info("下线（%s），%.0fs 后再次上线", reason, self.p.get("offline_interval_sec", 900))
 
     def _renew_online(self) -> None:
         if self.p.get("renew_on_reply", True):
@@ -286,6 +287,8 @@ class PresenceManager:
         total = self.llm.estimate_tokens(system) + sum(
             self.llm.estimate_tokens(m.get("content") or "") for m in messages
         )
+        logger.debug("agent 上下文组装: history=%d 估算tokens=%d 预算=%d",
+                     len(history_msgs), total, budget)
         if total > budget and history:
             summary = await asyncio.to_thread(self.llm.summarize, _fmt_user_messages(history))
             self.storage.save_summary(sid, summary)
@@ -328,7 +331,9 @@ class PresenceManager:
     async def _send_chunked(self, inbound: dict, reply: str, passive: bool = True) -> None:
         segments = split_reply(reply, self.r.get("max_chars_per_segment", 80), self.r.get("max_segments", 5))
         if not segments:
+            logger.debug("回复为空，不发送")
             return
+        logger.debug("分段发送: %d 段 (passive=%s) target=%s", len(segments), passive, inbound["target"])
         gap = float(self.r.get("segment_gap_sec", 2))
         for i, seg in enumerate(segments):
             msg_id = inbound.get("msg_id") if passive else None

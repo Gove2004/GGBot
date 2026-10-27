@@ -47,6 +47,9 @@ button.ghost{background:transparent;border:1px solid var(--line);color:var(--dim
 .muted{color:var(--dim);font-size:12px}
 .mt{margin-top:12px}
 .tag{display:inline-block;background:rgba(79,140,255,.15);color:#9cc0ff;border-radius:4px;padding:0 6px;font-size:11px;margin-right:6px}
+.frow{display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px dashed var(--line)}
+.frow .lbl{flex:0 0 130px;color:var(--dim);font-size:12px}
+.frow input,.frow select{flex:1;background:#0d0f13;border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:6px 10px}
 </style>
 </head>
 <body>
@@ -97,6 +100,32 @@ button.ghost{background:transparent;border:1px solid var(--line);color:var(--dim
     <pre id="p-inner">—</pre>
     <div class="row mt"><span class="lbl">动态人设（AI 可进化）</span><span id="p-dyn-v">—</span></div>
     <pre id="p-dyn">—</pre>
+  </div>
+
+  <div class="card">
+    <h2>设置（热更新，写回 config.json）</h2>
+    <div class="frow"><span class="lbl">temperature</span><input type="number" id="s-temperature" step="0.1" min="0" max="2"></div>
+    <div class="frow"><span class="lbl">top_p</span><input type="number" id="s-top_p" step="0.05" min="0" max="1"></div>
+    <div class="frow"><span class="lbl">max_tokens</span><input type="number" id="s-max_tokens" min="1"></div>
+    <div class="frow"><span class="lbl">thinking</span><select id="s-thinking"><option>enabled</option><option>disabled</option></select></div>
+    <div class="frow"><span class="lbl">在线时长(s)</span><input type="number" id="s-online_duration_sec" min="1"></div>
+    <div class="frow"><span class="lbl">离线周期(s)</span><input type="number" id="s-offline_interval_sec" min="1"></div>
+    <div class="frow"><span class="lbl">抖动窗口(s)</span><input type="number" id="s-debounce_sec" min="1"></div>
+    <div class="frow"><span class="lbl">积压扫描上限</span><input type="number" id="s-max_scan_messages" min="1"></div>
+    <div class="frow"><span class="lbl">积压合并批次</span><input type="number" id="s-batch_size" min="1"></div>
+    <div class="frow"><span class="lbl">日志等级</span><select id="s-log_level"><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select></div>
+    <button class="mt" onclick="saveConfig()">保存设置</button>
+    <span id="cfg-msg" class="muted"></span>
+  </div>
+
+  <div class="card">
+    <h2>日志</h2>
+    <div class="frow"><span class="lbl">等级过滤</span>
+      <select id="log-level" onchange="loadLogs()">
+        <option>DEBUG</option><option selected>INFO</option><option>WARNING</option><option>ERROR</option>
+      </select>
+    </div>
+    <pre id="log-view" style="max-height:320px">加载中…</pre>
   </div>
 </div>
 
@@ -154,9 +183,49 @@ async function refreshPersona() {
   document.getElementById("p-dyn").textContent = d.dynamic.content || "（无）";
 }
 
+async function loadConfig() {
+  const d = await Q("/api/config");
+  const c = d.config || {};
+  const set = (id, val) => { const el = document.getElementById(id); if (el && val != null) el.value = val; };
+  set("s-temperature", (c.deepseek||{}).request?.temperature);
+  set("s-top_p", (c.deepseek||{}).request?.top_p);
+  set("s-max_tokens", (c.deepseek||{}).request?.max_tokens);
+  set("s-thinking", (c.deepseek||{}).request?.thinking);
+  set("s-online_duration_sec", (c.behavior||{}).presence?.online_duration_sec);
+  set("s-offline_interval_sec", (c.behavior||{}).presence?.offline_interval_sec);
+  set("s-debounce_sec", (c.behavior||{}).reply?.debounce_sec);
+  set("s-max_scan_messages", (c.behavior||{}).backlog?.max_scan_messages);
+  set("s-batch_size", (c.behavior||{}).backlog?.batch_size);
+  set("s-log_level", (c.web||{}).log_level);
+}
+async function saveConfig() {
+  const g = id => document.getElementById(id).value;
+  const items = [
+    { path: "deepseek.request.temperature", value: parseFloat(g("s-temperature")) },
+    { path: "deepseek.request.top_p", value: parseFloat(g("s-top_p")) },
+    { path: "deepseek.request.max_tokens", value: parseInt(g("s-max_tokens")) },
+    { path: "deepseek.request.thinking", value: g("s-thinking") },
+    { path: "behavior.presence.online_duration_sec", value: parseInt(g("s-online_duration_sec")) },
+    { path: "behavior.presence.offline_interval_sec", value: parseInt(g("s-offline_interval_sec")) },
+    { path: "behavior.reply.debounce_sec", value: parseInt(g("s-debounce_sec")) },
+    { path: "behavior.backlog.max_scan_messages", value: parseInt(g("s-max_scan_messages")) },
+    { path: "behavior.backlog.batch_size", value: parseInt(g("s-batch_size")) },
+    { path: "web.log_level", value: g("s-log_level") },
+  ];
+  const r = await Q("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(items) });
+  document.getElementById("cfg-msg").textContent = "已更新: " + (r.updated || []).join(", ");
+  loadConfig();
+}
+async function loadLogs() {
+  const level = document.getElementById("log-level").value;
+  const d = await Q("/api/logs?lines=120&level=" + level);
+  document.getElementById("log-view").textContent = (d.lines || []).join("\n") || "(空)";
+}
+
 setInterval(refreshStatus, 2000);
 setInterval(refreshMessages, 5000);
-refreshStatus(); refreshMessages(); refreshMemories(); refreshRules(); refreshPersona();
+setInterval(loadLogs, 5000);
+refreshStatus(); refreshMessages(); refreshMemories(); refreshRules(); refreshPersona(); loadConfig(); loadLogs();
 </script>
 </body>
 </html>
@@ -178,6 +247,45 @@ class RollbackIn(BaseModel):
     version: int
 
 
+class SettingIn(BaseModel):
+    path: str
+    value: object
+
+
+# 允许通过 Web 热更新的配置路径（其余只读，避免误改关键结构）
+ALLOWED_SETTINGS = [
+    "deepseek.request.temperature",
+    "deepseek.request.top_p",
+    "deepseek.request.max_tokens",
+    "deepseek.request.thinking",
+    "deepseek.request.stream",
+    "behavior.presence.online_duration_sec",
+    "behavior.presence.offline_interval_sec",
+    "behavior.presence.wake_on_at_message",
+    "behavior.presence.wake_on_c2c",
+    "behavior.presence.renew_on_reply",
+    "behavior.reply.max_segments",
+    "behavior.reply.max_chars_per_segment",
+    "behavior.reply.segment_gap_sec",
+    "behavior.reply.debounce_sec",
+    "behavior.backlog.max_scan_messages",
+    "behavior.backlog.batch_size",
+    "behavior.backlog.priority_rule",
+    "web.log_level",
+]
+
+SECRET_KEYS = ("api_key", "secret", "appsecret", "token")
+
+
+def mask_secrets(node):
+    """递归脱敏：密钥字段显示为 ***。"""
+    if isinstance(node, dict):
+        return {k: ("***" if k in SECRET_KEYS else mask_secrets(v)) for k, v in node.items()}
+    if isinstance(node, list):
+        return [mask_secrets(v) for v in node]
+    return node
+
+
 def create_app(cfg, storage, memory, presence) -> FastAPI:
     app = FastAPI(title="GGBot Panel")
     token = (cfg.web_cfg or {}).get("token", "")
@@ -191,57 +299,57 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         return INDEX_HTML
 
     @app.get("/api/status")
-    async def status(x_token: str | None = Header(default=None), token_q: str | None = Query(default=None)):
-        _auth(x_token, token_q)
+    async def status(x_token: str | None = Header(default=None), token: str | None = Query(default=None)):
+        _auth(x_token, token)
         return presence.status()
 
     @app.get("/api/messages")
-    async def messages(limit: int = 30, x_token: str | None = Header(default=None), token_q: str | None = Query(default=None)):
-        _auth(x_token, token_q)
+    async def messages(limit: int = 30, x_token: str | None = Header(default=None), token: str | None = Query(default=None)):
+        _auth(x_token, token)
         return storage.recent_messages_global(limit)
 
     @app.get("/api/memories")
-    async def memories(limit: int = 20, x_token: str | None = Header(default=None), token_q: str | None = Query(default=None)):
-        _auth(x_token, token_q)
+    async def memories(limit: int = 20, x_token: str | None = Header(default=None), token: str | None = Query(default=None)):
+        _auth(x_token, token)
         return storage.list_memories(limit=limit)
 
     @app.get("/api/memories/search")
-    async def memory_search(q: str, k: int = 5, x_token: str | None = Header(default=None), token_q: str | None = Query(default=None)):
-        _auth(x_token, token_q)
+    async def memory_search(q: str, k: int = 5, x_token: str | None = Header(default=None), token: str | None = Query(default=None)):
+        _auth(x_token, token)
         return await asyncio.to_thread(memory.search, q, k)
 
     @app.post("/api/memories")
-    async def memory_add(body: MemoryIn, x_token: str | None = Header(default=None), token_q: str | None = Query(default=None)):
-        _auth(x_token, token_q)
+    async def memory_add(body: MemoryIn, x_token: str | None = Header(default=None), token: str | None = Query(default=None)):
+        _auth(x_token, token)
         mid = await asyncio.to_thread(memory.add, body.content, "fact", body.importance)
         return {"ok": True, "memory_id": mid}
 
     @app.post("/api/memories/tidy")
-    async def memory_tidy(x_token: str | None = Header(default=None), token_q: str | None = Query(default=None)):
-        _auth(x_token, token_q)
+    async def memory_tidy(x_token: str | None = Header(default=None), token: str | None = Query(default=None)):
+        _auth(x_token, token)
         removed = await asyncio.to_thread(memory.tidy)
         return {"ok": True, "removed": removed}
 
     @app.delete("/api/memories/{memory_id}")
-    async def memory_delete(memory_id: str, x_token: str | None = Header(default=None), token_q: str | None = Query(default=None)):
-        _auth(x_token, token_q)
+    async def memory_delete(memory_id: str, x_token: str | None = Header(default=None), token: str | None = Query(default=None)):
+        _auth(x_token, token)
         storage.delete_memory(memory_id)
         return {"ok": True}
 
     @app.get("/api/rules")
-    async def rules(x_token: str | None = Header(default=None), token_q: str | None = Query(default=None)):
-        _auth(x_token, token_q)
+    async def rules(x_token: str | None = Header(default=None), token: str | None = Query(default=None)):
+        _auth(x_token, token)
         return storage.list_rules(active_only=False)
 
     @app.post("/api/rules")
-    async def rule_add(body: RuleIn, x_token: str | None = Header(default=None), token_q: str | None = Query(default=None)):
-        _auth(x_token, token_q)
+    async def rule_add(body: RuleIn, x_token: str | None = Header(default=None), token: str | None = Query(default=None)):
+        _auth(x_token, token)
         rid = storage.add_rule(body.content, body.trigger)
         return {"ok": True, "rule_id": rid}
 
     @app.post("/api/rules/{rule_id}/toggle")
-    async def rule_toggle(rule_id: int, x_token: str | None = Header(default=None), token_q: str | None = Query(default=None)):
-        _auth(x_token, token_q)
+    async def rule_toggle(rule_id: int, x_token: str | None = Header(default=None), token: str | None = Query(default=None)):
+        _auth(x_token, token)
         row = next((r for r in storage.list_rules(active_only=False) if r["id"] == rule_id), None)
         if not row:
             raise HTTPException(status_code=404, detail="rule not found")
@@ -249,8 +357,8 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/persona")
-    async def persona(x_token: str | None = Header(default=None), token_q: str | None = Query(default=None)):
-        _auth(x_token, token_q)
+    async def persona(x_token: str | None = Header(default=None), token: str | None = Query(default=None)):
+        _auth(x_token, token)
         def _latest(layer: str) -> dict:
             versions = storage.list_persona_versions(layer, 1)
             return {"content": storage.get_persona(layer), "version": versions[0]["version"] if versions else 0,
@@ -258,12 +366,51 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         return {"inner": _latest("inner"), "dynamic": _latest("dynamic")}
 
     @app.post("/api/persona/rollback")
-    async def persona_rollback(body: RollbackIn, x_token: str | None = Header(default=None), token_q: str | None = Query(default=None)):
-        _auth(x_token, token_q)
+    async def persona_rollback(body: RollbackIn, x_token: str | None = Header(default=None), token: str | None = Query(default=None)):
+        _auth(x_token, token)
         content = storage.rollback_persona(body.layer, body.version)
         if content is None:
             raise HTTPException(status_code=404, detail="version not found")
         return {"ok": True, "content": content}
+
+    # ---------- 配置（Web 热更新） ----------
+
+    @app.get("/api/config")
+    async def get_config(x_token: str | None = Header(default=None), token: str | None = Query(default=None)):
+        _auth(x_token, token)
+        return {"config": mask_secrets(cfg.data), "allowed": ALLOWED_SETTINGS}
+
+    @app.post("/api/config")
+    async def update_config(
+        body: list[SettingIn], x_token: str | None = Header(default=None), token: str | None = Query(default=None)
+    ):
+        _auth(x_token, token)
+        updated: list[str] = []
+        for item in body:
+            if item.path not in ALLOWED_SETTINGS:
+                continue
+            if cfg.set_by_path(item.path, item.value):
+                updated.append(item.path)
+        if "web.log_level" in updated:
+            from ggbot.logging_setup import set_level
+
+            set_level(cfg.data["web"]["log_level"])
+        cfg.save()
+        logger.info("Web 配置更新: %s", updated)
+        return {"ok": True, "updated": updated, "config": mask_secrets(cfg.data)}
+
+    # ---------- 日志查看 ----------
+
+    @app.get("/api/logs")
+    async def get_logs(
+        lines: int = 200, level: str = "INFO",
+        x_token: str | None = Header(default=None), token: str | None = Query(default=None),
+    ):
+        _auth(x_token, token)
+        from ggbot.logging_setup import tail_log
+
+        n = min(max(lines, 1), 2000)
+        return {"level": level, "lines": tail_log(cfg.log_file, n, level)}
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket):

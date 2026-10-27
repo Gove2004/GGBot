@@ -148,6 +148,7 @@ class ToolExecutor:
         handler = getattr(self, f"_tool_{name}", None)
         if handler is None:
             return {"ok": False, "error": f"未知工具 {name}"}
+        logger.debug("工具调用 %s args=%s", name, json.dumps(args, ensure_ascii=False)[:200])
         try:
             return await handler(args, ctx)
         except Exception as e:  # noqa: BLE001

@@ -19,16 +19,18 @@ class MemoryStore:
     def __init__(self, cfg, storage):
         self.cfg = cfg
         self.storage = storage
-        emb = cfg.data.get("embedding", {})
-        self.model = emb.get("model", "Qwen/Qwen3-Embedding-4B")
-        base_url = emb.get("base_url", "https://api.siliconflow.cn/v1")
-        api_key = emb.get("api_key", "")
+        emb = cfg.embedding
+        self.model = emb["model"]
+        base_url = emb["base_url"]
+        api_key = emb["api_key"]
         if not api_key:
-            raise RuntimeError("config.json 缺少 embedding.api_key")
+            raise RuntimeError(
+                "缺少 embedding.api_key：请在 config.json 配置，或设置环境变量 EMBEDDING_API_KEY"
+            )
         from openai import OpenAI
 
         self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=60, max_retries=0)
-        self.batch_size = max(1, int(emb.get("batch_size", 32)))
+        self.batch_size = emb["batch_size"]
 
     def embed(self, text: str) -> np.ndarray:
         """单条文本 → 向量。"""
@@ -46,6 +48,9 @@ class MemoryStore:
             try:
                 resp = self.client.embeddings.create(model=self.model, input=texts)
                 rows = sorted(resp.data, key=lambda d: d.index)
+                logger.debug(
+                    "embedding 请求 %d 条，维度 %d (模型 %s)", len(texts), len(rows[0].embedding), self.model
+                )
                 return [np.array(r.embedding, dtype=np.float32) for r in rows]
             except Exception as e:  # noqa: BLE001
                 last_err = e

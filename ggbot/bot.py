@@ -44,13 +44,20 @@ class QQBot(botpy.Client):
     async def _route(self, message) -> None:
         msg_id = getattr(message, "id", None)
         if not msg_id or msg_id in self._seen:
+            logger.debug("重复/空消息忽略: id=%s", msg_id)
             return
         self._seen.add(msg_id)
         if len(self._seen) > self._max_seen:
             self._seen = set(list(self._seen)[-self._max_seen // 2 :])
         inbound = await self._normalize(message)
         if inbound is None:
+            logger.warning("消息归一化失败，跳过: id=%s", msg_id)
             return
+        logger.debug(
+            "收到消息 scene=%s target=%s sender=%s at=%s content=%.60r attachments=%d",
+            inbound["scene"], inbound["target"], inbound["sender"],
+            inbound["is_at"], inbound["content"], len(inbound["attachments"] or []),
+        )
         if self.presence:
             await self.presence.handle_message(inbound)
         else:
@@ -123,6 +130,8 @@ class QQBot(botpy.Client):
 
     async def send_text(self, target: str, content: str, scene: str, msg_id: str | None = None, msg_seq: int = 1):
         """发送文本。携带 msg_id 为被动回复（msg_seq 递增支持同一消息多次回复）。"""
+        logger.debug("send_text scene=%s target=%s msg_id=%s msg_seq=%d content=%.60r",
+                     scene, target, msg_id, msg_seq, content)
         if scene == "group":
             return await self.api.post_group_message(
                 group_openid=target, msg_type=0, content=content, msg_id=msg_id, msg_seq=msg_seq
@@ -169,6 +178,7 @@ class QQBot(botpy.Client):
                 await self.api.post_c2c_message(
                     openid=target, msg_type=7, media=media, msg_id=msg_id, msg_seq=msg_seq
                 )
+            logger.debug("富媒体发送成功 file_type=%d url=%.80s", file_type, url)
             return True, url
         except Exception as e:  # noqa: BLE001
             logger.exception("富媒体发送失败")
