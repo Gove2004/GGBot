@@ -221,6 +221,16 @@ class PresenceManager:
 
     # ---------- 回复核心 ----------
 
+    def _target_of(self, sid: str) -> tuple[str, str]:
+        """会话发送目标：优先反查 sessions.key 里的完整 openid，失败回退旧推导。
+
+        session_id 是内部主键（uuid 片段），不能当 openid 发送（会导致 11255）。
+        """
+        t = self.storage.session_target(sid)
+        if t and t[0]:
+            return t
+        return _derive_target(sid)
+
     async def _safe_reply(self, msgs: list[dict], passive: bool) -> bool:
         """生成并发送回复；任何失败只标记状态，不向上抛（避免单条失效群打崩整轮积压）。
 
@@ -243,12 +253,16 @@ class PresenceManager:
             _mark("skipped")
             return False
         try:
-            await self._send_chunked(inbound, reply, passive=passive)
+            sent = await self._send_chunked(inbound, reply, passive=passive)
+            if not sent:
+                # 回复文本切分后为空（如全空白）：视为无需发送
+                _mark("skipped")
+                return False
             _mark("replied")
             return True
         except Exception as e:  # noqa: BLE001
-            target = inbound.get("target") or _derive_target(sid)[0]
-            scene = inbound.get("scene") or _derive_target(sid)[1]
+            target = inbound.get("target") or self._target_of(sid)[0]
+            scene = inbound.get("scene") or self._target_of(sid)[1]
             logger.warning("回复发送失败 n=%d target=%s scene=%s: %s", len(msgs), target, scene, e)
             _mark("failed")
             return False
@@ -336,8 +350,8 @@ class PresenceManager:
             logger.info("上下文超限，已压缩历史为摘要（%s tokens）", total)
 
         ctx = {
-            "target": ctx_msg.get("target") or _derive_target(sid)[0],
-            "scene": ctx_msg.get("scene") or _derive_target(sid)[1],
+            "target": ctx_msg.get("target") or self._target_of(sid)[0],
+            "scene": ctx_msg.get("scene") or self._target_of(sid)[1],
             "msg_id": ctx_msg.get("msg_id"),
             "msg_seq": 1,
             "session_id": sid,
@@ -365,14 +379,15 @@ class PresenceManager:
 
     # ---------- 发送 ----------
 
-    async def _send_chunked(self, inbound: dict, reply: str, passive: bool = True) -> None:
+    async def _send_chunked(self, inbound: dict, reply: str, passive: bool = True) -> bool:
+        """分段发送。返回是否实际发送了内容（空回复返回 False）。"""
         segments = split_reply(reply, self.r.get("max_chars_per_segment", 80), self.r.get("max_segments", 5))
         if not segments:
             logger.debug("回复为空，不发送")
-            return
-        target = inbound.get("target") or _derive_target(inbound.get("session_id"))[0]
-        scene = inbound.get("scene") or _derive_target(inbound.get("session_id"))[1]
-        logger.debug("分段发送: %d 段 (passive=%s) target=%s", len(segments), passive, target)
+            return False
+        target = inbound.get("target") or self._target_of(inbound.get("session_id") or "")[0]
+        scene = inbound.get("scene") or self._target_of(inbound.get("session_id") or "")[1]
+        logger.info("回复发送 target=%s scene=%s 段数=%d passive=%s", target, scene, len(segments), passive)
         gap = float(self.r.get("segment_gap_sec", 2))
         for i, seg in enumerate(segments):
             msg_id = inbound.get("msg_id") if passive else None
@@ -380,6 +395,7 @@ class PresenceManager:
             if i < len(segments) - 1:
                 await asyncio.sleep(gap)
         self._recent_reply_ts = time.monotonic()
+        return True
 
     # ---------- 面板状态 ----------
 

@@ -148,6 +148,22 @@ class Storage:
             )
             return sid
 
+    def session_target(self, session_id: str) -> tuple[str, str] | None:
+        """反查会话的发送目标与场景。
+
+        session_id 只是内部主键（uuid 片段），不能当作 openid 使用；
+        真正的 openid 在 sessions.key（形如 group:<openid> / c2c:<openid>）。
+        """
+        with self._lock, self._conn() as c:
+            row = c.execute("SELECT key FROM sessions WHERE id=?", (session_id,)).fetchone()
+        if not row:
+            return None
+        key = (row["key"] or "").strip()
+        if ":" in key:
+            prefix, _, rest = key.partition(":")
+            return rest, ("group" if prefix == "group" else "c2c")
+        return (key or None, "group")
+
     def save_summary(self, session_id: str, summary: str) -> None:
         with self._lock, self._conn() as c:
             c.execute("UPDATE sessions SET summary=?, updated_at=? WHERE id=?", (summary, _now(), session_id))
