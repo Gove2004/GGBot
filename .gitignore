@@ -20,6 +20,7 @@ logs/
 *.db
 *.db-wal
 *.db-shm
+db/.bot.lock
 
 # 富媒体临时落地目录（图片/语音/视频附件）与本地验证脚本
 temp/
