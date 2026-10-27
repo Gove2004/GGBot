@@ -44,27 +44,47 @@ const statusBadge = st => {
   return `<span class="badge gray">${esc(st || "—")}</span>`;
 };
 
+/* ============ 页面导航（后台分栏） ============ */
+const PAGE_TITLES = {
+  dash: "仪表盘", messages: "最近消息", memory: "向量记忆",
+  rules: "规则", persona: "人设", settings: "设置", logs: "日志",
+};
+
+function switchPage(name) {
+  document.querySelectorAll(".page").forEach(p => p.classList.add("hidden"));
+  const page = document.getElementById("page-" + name);
+  if (page) page.classList.remove("hidden");
+  document.querySelectorAll(".nav-item").forEach(n =>
+    n.classList.toggle("active", n.getAttribute("data-page") === name));
+  document.getElementById("page-title").textContent = PAGE_TITLES[name] || name;
+  document.getElementById("sidebar").classList.remove("open");
+  if (name === "logs") loadLogs();
+  if (name === "messages") refreshMessages();
+}
+
 /* ============ 运行状态 ============ */
 async function refreshStatus() {
   try {
     const s = await api("/api/status");
-    const st = document.getElementById("st-state");
     const online = s.state === "online";
-    st.textContent = online ? "在线" : "离线";
-    st.className = "badge " + (online ? "on" : "off");
-    document.getElementById("st-event").textContent = s.next_event || "—";
-    document.getElementById("st-remain").textContent =
-      (s.remaining_sec != null ? s.remaining_sec.toFixed(0) : "—") + " s";
-    document.getElementById("st-pending").textContent = s.pending_count ?? "—";
-    document.getElementById("st-debounce").textContent = s.debounce_count ?? "—";
-    document.getElementById("st-dur").textContent =
+    const update = (id, txt, cls) => {
+      const el = document.getElementById(id);
+      if (el) { el.textContent = txt; if (cls) el.className = cls; }
+    };
+    update("st-state", online ? "在线" : "离线", "badge " + (online ? "on" : "off"));
+    update("st-state2", online ? "在线" : "离线");
+    update("st-pending-mini", (s.pending_count ?? "—") + " 待处理",
+      "badge " + ((s.pending_count || 0) > 0 ? "warn" : "gray"));
+    update("st-event", s.next_event || "—");
+    update("st-remain", (s.remaining_sec != null ? s.remaining_sec.toFixed(0) : "—") + " s");
+    update("st-pending", s.pending_count ?? "—");
+    update("st-debounce", s.debounce_count ?? "—");
+    update("st-dur",
       (s.online_duration_sec != null ? s.online_duration_sec + "s" : "—") + " / " +
-      (s.offline_interval_sec != null ? s.offline_interval_sec + "s" : "—");
-    document.getElementById("st-renew").textContent =
-      s.renew_on_reply ? "开启（聊得火热）" : "关闭";
-    document.getElementById("st-backlog").textContent =
-      (s.backlog_max_scan ?? "—") + " / " + (s.backlog_batch_size ?? "—");
-    document.getElementById("st-updated").textContent = new Date().toLocaleTimeString();
+      (s.offline_interval_sec != null ? s.offline_interval_sec + "s" : "—"));
+    update("st-renew", s.renew_on_reply ? "开启（聊得火热）" : "关闭");
+    update("st-backlog", (s.backlog_max_scan ?? "—") + " / " + (s.backlog_batch_size ?? "—"));
+    update("st-updated", new Date().toLocaleTimeString());
   } catch (e) { /* 401 已处理 */ }
 }
 
@@ -300,6 +320,10 @@ function bind() {
   };
   document.getElementById("btn-token").onclick = () => showTokenBar(true);
   document.getElementById("btn-refresh").onclick = fullRefresh;
+  document.getElementById("btn-menu").onclick = () =>
+    document.getElementById("sidebar").classList.toggle("open");
+  document.querySelectorAll(".nav-item").forEach(n =>
+    n.onclick = () => switchPage(n.getAttribute("data-page")));
   document.getElementById("btn-msg-refresh").onclick = refreshMessages;
   document.getElementById("msg-limit").onchange = refreshMessages;
   document.getElementById("btn-log-refresh").onclick = loadLogs;
@@ -326,6 +350,7 @@ function fullRefresh() {
 showTokenBar(false);
 bind();
 fullRefresh();
+switchPage("dash");
 setInterval(refreshStatus, 2000);
 setInterval(refreshMessages, 5000);
 setInterval(() => {
