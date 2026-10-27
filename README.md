@@ -190,6 +190,7 @@ stateDiagram-v2
 [PASS] tool_loop         # function calling 端到端：AI 调用 memory_write 真实入库
 [PASS] config_read       # 纯配置文件驱动（无环境变量）+ persona/temp/db 路径
 [PASS] logging_system    # 多等级写文件 + tail 等级过滤 + set_level 热切换
+[PASS] presence_backlog  # 上线积压处理（wake-on-at 全链路：锁/会话分组/attachments 反序列化/目标派生）
 [PASS] web_api_settings_logs # /api/config 白名单热更新写回、密钥脱敏、越权忽略；/api/logs
 [PASS] temp_video_policy # 视频附件不下载 + temp 过期文件清理
 ```

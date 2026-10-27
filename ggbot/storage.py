@@ -67,6 +67,17 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _row_to_dict(row) -> dict:
+    """sqlite 行转 dict，并反序列化 attachments（入库时 json.dumps 存储）。"""
+    d = dict(row)
+    if isinstance(d.get("attachments"), str):
+        try:
+            d["attachments"] = json.loads(d["attachments"])
+        except (json.JSONDecodeError, TypeError):
+            d["attachments"] = []
+    return d
+
+
 class Storage:
     def __init__(self, db_path: Path | str):
         self.db_path = str(db_path)
@@ -179,7 +190,7 @@ class Storage:
                 "SELECT * FROM messages WHERE session_id=? ORDER BY id DESC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
-        return [dict(r) for r in reversed(rows)]
+        return [_row_to_dict(r) for r in reversed(rows)]
 
     def get_pending_messages(self, session_id: str, limit: int = 1000) -> list[dict]:
         """积压消息：status='pending'，按到达顺序。"""
@@ -189,7 +200,7 @@ class Storage:
                 "AND role='user' ORDER BY id ASC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
-        return [dict(r) for r in rows]
+        return [_row_to_dict(r) for r in rows]
 
     def mark_message_status(self, msg_id: str, status: str) -> None:
         with self._lock, self._conn() as c:
@@ -213,7 +224,7 @@ class Storage:
                 "ORDER BY id ASC LIMIT ?",
                 (limit,),
             ).fetchall()
-        return [dict(r) for r in rows]
+        return [_row_to_dict(r) for r in rows]
 
     # ---------- 记忆 ----------
 
@@ -374,4 +385,4 @@ class Storage:
                 "ORDER BY m.id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-        return [dict(r) for r in reversed(rows)]
+        return [_row_to_dict(r) for r in reversed(rows)]

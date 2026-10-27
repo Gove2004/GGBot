@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import threading
 import time
 
 from ggbot.tools import NO_REPLY, agent_loop
@@ -38,6 +39,18 @@ SYSTEM_TEMPLATE = """你是群聊里的一个真实的人，昵称“{name}”�
 5. 想不起的事用 memory_search 回忆；值得长期记住的用 memory_write。
 6. 说话风格、人设随相处自然进化，必要时用 persona_update 微调自己。
 """
+
+
+def _derive_target(sid: str) -> tuple[str, str]:
+    """从 session_id（如 group:g_xxx / c2c:u_xxx）反推发送目标与场景。
+
+    积压消息行仅持久化 session_id，target/scene 需由此派生。
+    """
+    sid = sid or ""
+    if ":" in sid:
+        prefix, _, rest = sid.partition(":")
+        return rest, ("group" if prefix == "group" else "c2c")
+    return sid, "group"
 
 
 def _fmt_user_messages(msgs: list[dict]) -> str:
@@ -119,7 +132,7 @@ class PresenceManager:
         self._loop_task: asyncio.Task | None = None
         self._debounce: list[dict] = []
         self._debounce_task: asyncio.Task | None = None
-        self._lock = asyncio.Lock()
+        self._lock = threading.RLock()
         self._recent_reply_ts = 0.0  # 用于面板展示
 
     # ---------- 生命周期 ----------
@@ -226,7 +239,7 @@ class PresenceManager:
     async def _process_backlog(self) -> None:
         """上线积压处理：优先级单独回 + 其余按 batch_size 合并。"""
         sessions = {}
-        for sid in {m["session_id"] for m in self._iter_pending_sessions()}:
+        for sid in self._iter_pending_sessions():
             sessions[sid] = self._pending_of(sid)
         for sid, pend in sessions.items():
             if not pend:
@@ -299,8 +312,8 @@ class PresenceManager:
             logger.info("上下文超限，已压缩历史为摘要（%s tokens）", total)
 
         ctx = {
-            "target": ctx_msg.get("target"),
-            "scene": ctx_msg.get("scene"),
+            "target": ctx_msg.get("target") or _derive_target(sid)[0],
+            "scene": ctx_msg.get("scene") or _derive_target(sid)[1],
             "msg_id": ctx_msg.get("msg_id"),
             "msg_seq": 1,
             "session_id": sid,
@@ -333,11 +346,13 @@ class PresenceManager:
         if not segments:
             logger.debug("回复为空，不发送")
             return
-        logger.debug("分段发送: %d 段 (passive=%s) target=%s", len(segments), passive, inbound["target"])
+        target = inbound.get("target") or _derive_target(inbound.get("session_id"))[0]
+        scene = inbound.get("scene") or _derive_target(inbound.get("session_id"))[1]
+        logger.debug("分段发送: %d 段 (passive=%s) target=%s", len(segments), passive, target)
         gap = float(self.r.get("segment_gap_sec", 2))
         for i, seg in enumerate(segments):
             msg_id = inbound.get("msg_id") if passive else None
-            await self.bot.send_text(inbound["target"], seg, inbound["scene"], msg_id, i + 1)
+            await self.bot.send_text(target, seg, scene, msg_id, i + 1)
             if i < len(segments) - 1:
                 await asyncio.sleep(gap)
         self._recent_reply_ts = time.monotonic()
