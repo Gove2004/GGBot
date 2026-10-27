@@ -30,6 +30,7 @@ class QQBot(botpy.Client):
     # ---------- 事件 ----------
 
     async def on_ready(self) -> None:
+        self._register_group_message_parser()
         logger.info("QQBot 已连接 WebSocket gateway")
 
     async def on_group_at_message_create(self, message: GroupMessage) -> None:
@@ -40,6 +41,33 @@ class QQBot(botpy.Client):
 
     async def on_group_add_robot(self, message) -> None:
         logger.info("机器人加入群聊: %s", getattr(message, "group_openid", None))
+
+    def _register_group_message_parser(self) -> None:
+        """注册群全量消息事件（GROUP_MESSAGE_CREATE，私域群全量消息）。
+
+        botpy 1.2.1 未内置该事件 parser（收到即报 unknown event 并丢弃），
+        这里在运行时向 ConnectionState.parsers 注入同名解析器，使普通（非@）群消息进入统一路由。
+        """
+        try:
+            state = self._connection.state
+            if "group_message_create" in state.parsers:
+                return
+            import types
+
+            def parse_group_message_create(self, payload):
+                _message = GroupMessage(self.api, payload.get("id", None), payload.get("d", {}))
+                self._dispatch("group_message_create", _message)
+
+            state.parse_group_message_create = types.MethodType(parse_group_message_create, state)
+            state.parsers["group_message_create"] = state.parse_group_message_create
+            logger.info("已注册 group_message_create（群全量消息）事件解析")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("注册 group_message_create 解析失败: %s", e)
+
+    async def on_group_message_create(self, message: GroupMessage) -> None:
+        """群全量消息（私域权限，普通消息无需@）：走统一路由（去重/归一化/Presence 分流）。"""
+        logger.debug("群全量消息事件: id=%s group=%s", message.id, message.group_openid)
+        await self._route(message)
 
     async def _route(self, message) -> None:
         msg_id = getattr(message, "id", None)

@@ -128,6 +128,8 @@ stateDiagram-v2
 | 卡片 | ark_data | 解析 title/desc/jump_url 为文本 |
 | 聊天记录 | msg_elements type=102 | 文本化并入上下文 |
 
+> 已注册**群全量消息**事件（私域 `GROUP_MESSAGE_CREATE`，botpy 1.2.1 未内置，运行时注入 parser）：普通消息（非@）进入 Presence 积压/抖动路径，与@消息共用去重与统一路由。机器人需在开放平台/群内开启"接收群内全部消息"权限。
+
 > `temp/` 目录默认只保留 24h（`storage.temp_ttl_hours=24`）：启动时清理一次 + 每小时巡检，超过时限的文件自动删除。
 
 ## 配置（db/config.json 全字段）
