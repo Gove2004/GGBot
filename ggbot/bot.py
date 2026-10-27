@@ -113,6 +113,7 @@ class QQBot(botpy.Client):
         is_at = bool(getattr(message, "mentions", None)) or "@" in content[:10]
         return {
             "msg_id": message.id,
+            "msg_seq": getattr(message, "msg_seq", None),
             "key": key,
             "scene": scene,
             "target": target,

@@ -192,6 +192,7 @@ stateDiagram-v2
 [PASS] presence_backlog  # 上线积压处理（wake-on-at 全链路：锁/会话分组/attachments 反序列化/目标派生）
 [PASS] presence_fail     # 发送失败隔离（失效会话标记 failed，不中断其余会话积压）
 [PASS] target_derive     # 发送目标反查（session_id 内部主键 ≠ openid，从 sessions.key 取完整 openid；c2c/group 双场景）
+[PASS] msg_seq           # 被动回复序号单调递增（毫秒时间戳量级）且失败自动降级主动发送
 [PASS] singleton_lock    # 单实例锁（僵尸锁清理 / 存活 pid 探测，防双进程双写 db）
 [PASS] web_api_settings_logs # /api/config 白名单热更新写回、密钥脱敏、越权忽略；/api/logs
 [PASS] web_static        # web/ 前端拆分托管（/ + /static）、无 token 401、日志目录 temp/logs

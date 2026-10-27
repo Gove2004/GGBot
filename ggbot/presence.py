@@ -133,7 +133,10 @@ class PresenceManager:
         self._debounce: list[dict] = []
         self._debounce_task: asyncio.Task | None = None
         self._lock = threading.RLock()
-        self._recent_reply_ts = 0.0  # 用于面板展示
+        self._recent_reply_ts = 0.0
+        # 被动回复 msg_seq：必须大于被回复消息的全局消息序号且单调递增，
+        # 用毫秒时间戳起步的计数器保证（传 1/小号会被 QQ 静默拒收）
+        self._msg_seq_counter = int(time.time() * 1000)  # 用于面板展示
 
     # ---------- 生命周期 ----------
 
@@ -379,6 +382,11 @@ class PresenceManager:
 
     # ---------- 发送 ----------
 
+    def _next_seq(self) -> int:
+        """被动回复消息序号：单调递增且大于被回复消息的全局序号。"""
+        self._msg_seq_counter = max(int(time.time() * 1000), self._msg_seq_counter + 1)
+        return self._msg_seq_counter
+
     async def _send_chunked(self, inbound: dict, reply: str, passive: bool = True) -> bool:
         """分段发送。返回是否实际发送了内容（空回复返回 False）。"""
         segments = split_reply(reply, self.r.get("max_chars_per_segment", 80), self.r.get("max_segments", 5))
@@ -389,9 +397,17 @@ class PresenceManager:
         scene = inbound.get("scene") or self._target_of(inbound.get("session_id") or "")[1]
         logger.info("回复发送 target=%s scene=%s 段数=%d passive=%s", target, scene, len(segments), passive)
         gap = float(self.r.get("segment_gap_sec", 2))
+        msg_id = inbound.get("msg_id") if passive else None
         for i, seg in enumerate(segments):
-            msg_id = inbound.get("msg_id") if passive else None
-            await self.bot.send_text(target, seg, scene, msg_id, i + 1)
+            try:
+                await self.bot.send_text(target, seg, scene, msg_id, self._next_seq())
+            except Exception as e:  # noqa: BLE001
+                if passive and msg_id:
+                    # 被动回复失败（msg_id 过期 / 序号冲突等）→ 降级主动发送，确保送达
+                    logger.warning("被动回复失败，降级主动发送 %s: %s", target, e)
+                    await self.bot.send_text(target, seg, scene, None, self._next_seq())
+                else:
+                    raise
             if i < len(segments) - 1:
                 await asyncio.sleep(gap)
         self._recent_reply_ts = time.monotonic()
