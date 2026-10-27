@@ -410,7 +410,8 @@ class PresenceManager:
         base_seq = inbound.get("msg_seq")
         for i, seg in enumerate(segments):
             try:
-                await self.bot.send_text(target, seg, scene, msg_id, self._next_seq(sid, base_seq))
+                await self.bot.send_text(target, seg, scene, msg_id, self._next_seq(sid, base_seq),
+                                         inbound.get("event_id"))
             except Exception as e:  # noqa: BLE001
                 if passive and msg_id:
                     # 被动回复失败（msg_id 过期 / 参数校验等）→ 降级主动发送，确保送达

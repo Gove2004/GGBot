@@ -114,6 +114,7 @@ class QQBot(botpy.Client):
         return {
             "msg_id": message.id,
             "msg_seq": getattr(message, "msg_seq", None),
+            "event_id": getattr(message, "event_id", None),
             "key": key,
             "scene": scene,
             "target": target,
@@ -186,16 +187,19 @@ class QQBot(botpy.Client):
 
     # ---------- 发送 ----------
 
-    async def send_text(self, target: str, content: str, scene: str, msg_id: str | None = None, msg_seq: int = 1):
-        """发送文本。携带 msg_id 为被动回复（msg_seq 递增支持同一消息多次回复）。"""
+    async def send_text(self, target: str, content: str, scene: str, msg_id: str | None = None,
+                        msg_seq: int = 1, event_id: str | None = None):
+        """发送文本。携带 msg_id 为被动回复（msg_seq 递增支持同一消息多次回复，event_id 为前置事件 ID）。"""
         logger.debug("send_text scene=%s target=%s msg_id=%s msg_seq=%d content=%.60r",
                      scene, target, msg_id, msg_seq, content)
         if scene == "group":
             return await self.api.post_group_message(
-                group_openid=target, msg_type=0, content=content, msg_id=msg_id, msg_seq=msg_seq
+                group_openid=target, msg_type=0, content=content,
+                msg_id=msg_id, msg_seq=msg_seq, event_id=event_id
             )
         return await self.api.post_c2c_message(
-            openid=target, msg_type=0, content=content, msg_id=msg_id, msg_seq=msg_seq
+            openid=target, msg_type=0, content=content,
+            msg_id=msg_id, msg_seq=msg_seq, event_id=event_id
         )
 
     async def upload_and_send_media(
