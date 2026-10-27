@@ -21,9 +21,9 @@ if ! "$PY" -c "import botpy, openai, edge_tts, fastapi, uvicorn, numpy" >/dev/nu
   "$PY" -m pip install -r requirements.txt
 fi
 
-mkdir -p logs
-nohup "$PY" main.py >> logs/ggbot.log 2>&1 &
+mkdir -p temp/logs
+nohup "$PY" main.py >> temp/logs/stdout.log 2>&1 &
 PID=$!
 echo "[GGBot] started in background, PID=${PID}"
-echo "[GGBot] logs: logs/ggbot.log"
+echo "[GGBot] logs: temp/logs/ggbot.log (rotating) + temp/logs/stdout.log (console)"
 echo "[GGBot] stop: kill ${PID}"

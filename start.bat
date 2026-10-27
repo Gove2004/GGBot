@@ -2,7 +2,7 @@
 rem ============================================================
 rem  GGBot launcher - Windows FOREGROUND mode
 rem  Auto: create .venv if missing, pip install if deps missing
-rem  Logs: logs\ggbot.log  (rotating, 5x5MB)
+rem  Logs: temp\logs\ggbot.log  (rotating, 5x5MB)
 rem  Stop: Ctrl+C
 rem ============================================================
 setlocal
@@ -31,9 +31,9 @@ if errorlevel 1 (
     )
 )
 
-if not exist "logs" mkdir "logs"
+if not exist "temp" mkdir "temp"
 
-echo [GGBot] starting ... log file: logs\ggbot.log
+echo [GGBot] starting ... log file: temp\logs\ggbot.log
 echo [GGBot] press Ctrl+C to stop
 ".venv\Scripts\python.exe" main.py
 set "EXIT_CODE=%ERRORLEVEL%"

@@ -1,88 +1,217 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>GGBot 控制面板</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<h1>GGBot 控制面板</h1>
-<div class="sub">QQ 群聊机器人 · 在线/离线作息 · 向量记忆 · 人设进化</div>
+<div class="app">
 
-<div class="grid">
-  <div class="card">
-    <h2>运行状态</h2>
-    <div class="row"><span class="lbl">状态</span><span id="st-state" class="badge off">加载中…</span></div>
-    <div class="row"><span class="lbl">下一个事件</span><b id="st-event">—</b></div>
-    <div class="row"><span class="lbl">剩余秒</span><b id="st-remain">—</b></div>
-    <div class="row"><span class="lbl">积压待处理</span><b id="st-pending">—</b></div>
-    <div class="row"><span class="lbl">抖动窗口内</span><b id="st-debounce">—</b></div>
-    <div class="row"><span class="lbl">在线时长 / 离线周期</span><b id="st-dur">—</b></div>
-    <div class="row"><span class="lbl">聊得火热(续期)</span><b id="st-renew">—</b></div>
-    <div class="row"><span class="lbl">积压扫描/合并</span><b id="st-backlog">—</b></div>
+  <!-- 令牌条：首次访问或 401 时出现 -->
+  <div id="token-bar" class="token-bar hidden">
+    <span class="token-label">面板令牌</span>
+    <input id="token-input" type="password" placeholder="config.json → web.token" autocomplete="off">
+    <button id="token-save" class="btn primary">进入</button>
+    <span class="token-hint">令牌在 db/config.json 的 web.token 字段</span>
   </div>
 
-  <div class="card">
-    <h2>最近消息</h2>
-    <table><thead><tr><th>会话</th><th>角色</th><th>内容</th><th>状态</th></tr></thead>
-    <tbody id="msg-body"></tbody></table>
-  </div>
-
-  <div class="card">
-    <h2>向量记忆</h2>
-    <input type="text" id="mem-q" placeholder="语义检索：输入要回忆的内容…">
-    <button onclick="searchMem()">检索</button>
-    <button class="ghost" onclick="tidyMem()">整理(合并重复)</button>
-    <div class="mt">
-      <table><thead><tr><th>相似度</th><th>内容</th><th></th></tr></thead>
-      <tbody id="mem-body"></tbody></table>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <h1>GGBot 控制面板</h1>
+      <span class="brand-sub">QQ 群聊机器人 · 作息模拟 · 向量记忆 · 人设进化</span>
     </div>
-  </div>
-
-  <div class="card">
-    <h2>规则</h2>
-    <input type="text" id="rule-content" placeholder="新增规则，如：禁止在群里讨论政治">
-    <button onclick="addRule()">添加</button>
-    <table class="mt"><thead><tr><th>规则</th><th>状态</th><th></th></tr></thead>
-    <tbody id="rule-body"></tbody></table>
-  </div>
-
-  <div class="card">
-    <h2>人设（双层 + 版本化）</h2>
-    <div class="row"><span class="lbl">内核人设（只读）</span><span id="p-inner-v">—</span></div>
-    <pre id="p-inner">—</pre>
-    <div class="row mt"><span class="lbl">动态人设（AI 可进化）</span><span id="p-dyn-v">—</span></div>
-    <pre id="p-dyn">—</pre>
-  </div>
-
-  <div class="card">
-    <h2>设置（热更新，写回 config.json）</h2>
-    <div class="frow"><span class="lbl">temperature</span><input type="number" id="s-temperature" step="0.1" min="0" max="2"></div>
-    <div class="frow"><span class="lbl">top_p</span><input type="number" id="s-top_p" step="0.05" min="0" max="1"></div>
-    <div class="frow"><span class="lbl">max_tokens</span><input type="number" id="s-max_tokens" min="1"></div>
-    <div class="frow"><span class="lbl">thinking</span><select id="s-thinking"><option>enabled</option><option>disabled</option></select></div>
-    <div class="frow"><span class="lbl">在线时长(s)</span><input type="number" id="s-online_duration_sec" min="1"></div>
-    <div class="frow"><span class="lbl">离线周期(s)</span><input type="number" id="s-offline_interval_sec" min="1"></div>
-    <div class="frow"><span class="lbl">抖动窗口(s)</span><input type="number" id="s-debounce_sec" min="1"></div>
-    <div class="frow"><span class="lbl">积压扫描上限</span><input type="number" id="s-max_scan_messages" min="1"></div>
-    <div class="frow"><span class="lbl">积压合并批次</span><input type="number" id="s-batch_size" min="1"></div>
-    <div class="frow"><span class="lbl">日志等级</span><select id="s-log_level"><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select></div>
-    <button class="mt" onclick="saveConfig()">保存设置</button>
-    <span id="cfg-msg" class="muted"></span>
-  </div>
-
-  <div class="card">
-    <h2>日志</h2>
-    <div class="frow"><span class="lbl">等级过滤</span>
-      <select id="log-level" onchange="loadLogs()">
-        <option>DEBUG</option><option selected>INFO</option><option>WARNING</option><option>ERROR</option>
-      </select>
+    <div class="topbar-right">
+      <span id="st-state" class="badge off">离线</span>
+      <button id="btn-token" class="btn ghost small" title="修改面板令牌">令牌</button>
+      <button id="btn-refresh" class="btn ghost small">刷新</button>
     </div>
-    <pre id="log-view" style="max-height:320px">加载中…</pre>
-  </div>
+  </header>
+
+  <div id="err-banner" class="err-banner hidden"></div>
+
+  <main class="grid">
+
+    <!-- ===== 左列 ===== -->
+    <section class="col col-left">
+
+      <!-- 运行状态 -->
+      <div class="card">
+        <div class="card-head"><h2>运行状态</h2><span id="st-updated" class="muted small"></span></div>
+        <div class="stats">
+          <div class="stat"><span class="stat-label">下一事件</span><span id="st-event" class="stat-value">—</span></div>
+          <div class="stat"><span class="stat-label">剩余</span><span id="st-remain" class="stat-value">—</span></div>
+          <div class="stat"><span class="stat-label">积压待处理</span><span id="st-pending" class="stat-value">—</span></div>
+          <div class="stat"><span class="stat-label">抖动窗口</span><span id="st-debounce" class="stat-value">—</span></div>
+          <div class="stat"><span class="stat-label">在线时长 / 离线周期</span><span id="st-dur" class="stat-value">—</span></div>
+          <div class="stat"><span class="stat-label">聊得火热（续期）</span><span id="st-renew" class="stat-value">—</span></div>
+          <div class="stat"><span class="stat-label">积压扫描 / 合并</span><span id="st-backlog" class="stat-value">—</span></div>
+        </div>
+      </div>
+
+      <!-- 最近消息 -->
+      <div class="card">
+        <div class="card-head">
+          <h2>最近消息</h2>
+          <div class="head-ops">
+            <label class="muted small">条数
+              <select id="msg-limit" class="sel small">
+                <option>30</option><option>50</option><option>100</option><option>200</option>
+              </select>
+            </label>
+            <button id="btn-msg-refresh" class="btn ghost small">刷新</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>时间</th><th>会话</th><th>角色</th><th>内容</th><th>状态</th></tr></thead>
+            <tbody id="msg-body"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 日志 -->
+      <div class="card">
+        <div class="card-head">
+          <h2>日志</h2>
+          <div class="head-ops">
+            <label class="muted small">等级
+              <select id="log-level" class="sel small">
+                <option value="DEBUG">DEBUG</option>
+                <option value="INFO" selected>INFO</option>
+                <option value="WARNING">WARNING</option>
+                <option value="ERROR">ERROR</option>
+              </select>
+            </label>
+            <label class="muted small"><input id="log-auto" type="checkbox" checked> 自动刷新</label>
+            <button id="btn-log-refresh" class="btn ghost small">刷新</button>
+          </div>
+        </div>
+        <pre id="log-view" class="log-view">（等待日志…）</pre>
+      </div>
+    </section>
+
+    <!-- ===== 右列 ===== -->
+    <section class="col col-right">
+
+      <!-- 向量记忆 -->
+      <div class="card">
+        <div class="card-head"><h2>向量记忆</h2><button id="btn-tidy" class="btn ghost small">整理（合并重复）</button></div>
+        <div class="row">
+          <input id="mem-add" class="input grow" placeholder="写入一条记忆…">
+          <button id="btn-mem-add" class="btn primary">写入</button>
+        </div>
+        <div class="row">
+          <input id="mem-q" class="input grow" placeholder="检索记忆…">
+          <button id="btn-mem-search" class="btn">检索</button>
+          <button id="btn-mem-all" class="btn ghost">全部</button>
+        </div>
+        <div class="table-wrap mini">
+          <table class="table">
+            <thead><tr><th>相似度</th><th>内容</th><th></th></tr></thead>
+            <tbody id="mem-body"><tr><td colspan="3" class="empty">加载中…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 规则 -->
+      <div class="card">
+        <div class="card-head"><h2>规则</h2><span class="muted small">（注入系统提示，可热加）</span></div>
+        <div class="row">
+          <input id="rule-content" class="input grow" placeholder="添加一条规则…">
+          <button id="btn-rule-add" class="btn primary">添加</button>
+        </div>
+        <div class="table-wrap mini">
+          <table class="table">
+            <thead><tr><th>内容</th><th>状态</th><th></th></tr></thead>
+            <tbody id="rule-body"><tr><td colspan="3" class="empty">加载中…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 人设 -->
+      <div class="card">
+        <div class="card-head"><h2>人设（双层 + 版本化）</h2></div>
+        <div class="persona">
+          <div class="persona-block">
+            <div class="persona-head">
+              <span class="persona-title">内核人设 <em>（只读 · AI 不可改）</em></span>
+              <span id="p-inner-v" class="badge gray">v?</span>
+              <button class="btn ghost small" data-rollback="inner">回滚</button>
+            </div>
+            <pre id="p-inner" class="persona-pre">（无）</pre>
+          </div>
+          <div class="persona-block">
+            <div class="persona-head">
+              <span class="persona-title">动态人设 <em>（AI 可进化）</em></span>
+              <span id="p-dyn-v" class="badge gray">v?</span>
+              <button class="btn ghost small" data-rollback="dynamic">回滚</button>
+            </div>
+            <pre id="p-dyn" class="persona-pre">（无）</pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- 设置 -->
+      <div class="card">
+        <div class="card-head">
+          <h2>设置 <span class="muted small">（热更新，写回 config.json）</span></h2>
+          <span id="cfg-msg" class="cfg-msg muted small"></span>
+        </div>
+
+        <div class="cfg-group"><h3>LLM 请求参数</h3>
+          <div class="form-grid">
+            <label>temperature <input id="s-temperature" type="number" step="0.1" class="input"></label>
+            <label>top_p <input id="s-top_p" type="number" step="0.05" class="input"></label>
+            <label>max_tokens <input id="s-max_tokens" type="number" step="1" class="input"></label>
+            <label>thinking
+              <select id="s-thinking" class="sel">
+                <option value="disabled">disabled</option><option value="enabled">enabled</option>
+              </select></label>
+            <label><input id="s-stream" type="checkbox" class="chk"> stream 流式</label>
+          </div>
+        </div>
+
+        <div class="cfg-group"><h3>在线作息</h3>
+          <div class="form-grid">
+            <label>在线时长(s) <input id="s-online_duration_sec" type="number" step="1" class="input"></label>
+            <label>离线周期(s) <input id="s-offline_interval_sec" type="number" step="1" class="input"></label>
+            <label><input id="s-wake_on_at_message" type="checkbox" class="chk"> @消息立即唤醒</label>
+            <label><input id="s-wake_on_c2c" type="checkbox" class="chk"> 私聊唤醒</label>
+            <label><input id="s-renew_on_reply" type="checkbox" class="chk"> 回复续期（聊得火热）</label>
+          </div>
+        </div>
+
+        <div class="cfg-group"><h3>回复与积压</h3>
+          <div class="form-grid">
+            <label>最大分段 <input id="s-max_segments" type="number" step="1" class="input"></label>
+            <label>段长上限(字) <input id="s-max_chars_per_segment" type="number" step="1" class="input"></label>
+            <label>段间隔(s) <input id="s-segment_gap_sec" type="number" step="0.5" class="input"></label>
+            <label>抖动窗口(s) <input id="s-debounce_sec" type="number" step="1" class="input"></label>
+            <label>积压扫描上限 <input id="s-max_scan_messages" type="number" step="1" class="input"></label>
+            <label>积压合并批次 <input id="s-batch_size" type="number" step="1" class="input"></label>
+            <label>优先级规则
+              <select id="s-priority_rule" class="sel">
+                <option value="llm">llm</option><option value="at">at</option>
+              </select></label>
+            <label>日志等级
+              <select id="s-log_level" class="sel">
+                <option value="DEBUG">DEBUG</option><option value="INFO">INFO</option>
+                <option value="WARNING">WARNING</option><option value="ERROR">ERROR</option>
+              </select></label>
+          </div>
+        </div>
+
+        <div class="row end">
+          <button id="btn-save-cfg" class="btn primary">保存设置</button>
+        </div>
+      </div>
+    </section>
+  </main>
 </div>
 
-<script src="/static/app.js" defer></script>
+<script src="/static/app.js"></script>
 </body>
 </html>

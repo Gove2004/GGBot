@@ -97,7 +97,10 @@ class Config:
 
     @property
     def logs_dir(self) -> Path:
-        return BASE_DIR / "logs"
+        """日志目录：随 storage.temp_dir 走（temp/logs），目录自动创建。"""
+        d = self.temp_dir / "logs"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
 
     @property
     def log_file(self) -> Path:

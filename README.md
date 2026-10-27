@@ -16,12 +16,11 @@ GGBot/
 │   ├── config.json      # 全部配置（QQ 凭据 / DeepSeek / Embedding / 行为 / 存储 / Web；含密钥，gitignored）
 │   ├── persona_core.md  # 内核人设（owner 定义，AI 只读；文件变化重启自动同步新版本）
 │   └── ggbot.db         # SQLite 持久化：会话/消息/记忆/规则/人设版本（运行时生成，gitignored）
-├── temp/                # 富媒体附件临时落地（默认保留 24h 自动清理，gitignored）
+├── temp/                # 富媒体附件临时落地 + 日志（temp/logs/ggbot.log；附件默认保留 24h 自动清理，gitignored）
 ├── requirements.txt
 ├── main.py              # 入口
 ├── start.bat            # Windows 前台启动（Ctrl+C 停止）
 ├── start.sh             # Linux 后台启动（nohup，kill <PID> 停止）
-├── logs/                # 运行日志（5MB × 5 轮转，gitignored）
 ├── web/                 # Web 前端（与后端分离，经 /static 托管，改完即热加载）
 │   ├── index.html
 │   ├── style.css
@@ -86,13 +85,13 @@ start.bat                    # Windows 前台（Ctrl+C 停止）
 ./start.sh
 ```
 
-启动后：QQ gateway 连接成功 → 群@消息触发 → Presence 状态机（离线积压 / @唤醒 / 在线抖动聚合 / 选择性回复）。Web 面板：`http://127.0.0.1:8080`（需 `?token=ggbot-local` 或 `X-Token` 头）。
+启动后：QQ gateway 连接成功 → 群@消息触发 → Presence 状态机（离线积压 / @唤醒 / 在线抖动聚合 / 选择性回复）。Web 面板：`http://127.0.0.1:8080`（首次访问在页面输入 `db/config.json → web.token` 的令牌，浏览器 localStorage 记忆，无需手动拼 URL）。
 
 ## 日志与 Web 运维
 
-- **日志文件**：`logs/ggbot.log`（RotatingFileHandler，5MB × 5 轮转；stderr 同时输出）。格式 `时间 | 等级 | 模块 | 内容`；botpy/openai/httpx 等第三方库默认 WARNING 降噪
+- **日志文件**：`temp/logs/ggbot.log`（RotatingFileHandler，5MB × 5 轮转；目录随 `storage.temp_dir` 自动创建；stderr 同时输出）。格式 `时间 | 等级 | 模块 | 内容`；botpy/openai/httpx 等第三方库默认 WARNING 降噪
 - **等级控制**：`db/config.json → web.log_level`（默认 INFO）；面板保存设置即时热切换。项目**纯配置文件驱动**，不使用环境变量、不设启动参数（Web 面板开关：`web.enable`）
-- **Web 面板查看**：设置卡（LLM 参数 / Presence / 积压 / 日志等级，白名单热更新并写回 config.json）+ 日志卡（等级过滤，5s 自动刷新）
+- **Web 面板查看**：运行状态卡（作息/续期/积压）、最近消息流、向量记忆（检索/写入/整理）、规则、人设（双层+版本回滚）、设置卡（LLM 参数 / Presence / 积压 / 日志等级，白名单热更新并写回 config.json）、日志卡（等级过滤，自动刷新）
 - **API**：`GET /api/config`（密钥脱敏）、`POST /api/config`（`[{"path": "a.b.c", "value": x}]` 批量，越权路径忽略）、`GET /api/logs?lines=&level=`
 
 ## 关键行为（config.json `behavior`）
@@ -191,8 +190,11 @@ stateDiagram-v2
 [PASS] config_read       # 纯配置文件驱动（无环境变量）+ persona/temp/db 路径
 [PASS] logging_system    # 多等级写文件 + tail 等级过滤 + set_level 热切换
 [PASS] presence_backlog  # 上线积压处理（wake-on-at 全链路：锁/会话分组/attachments 反序列化/目标派生）
-[PASS] presence_fail     # 发送失败隔离（失效群 11255 标记 failed，不中断其余会话积压）
+[PASS] presence_fail     # 发送失败隔离（失效会话标记 failed，不中断其余会话积压）
+[PASS] target_derive     # 发送目标反查（session_id 内部主键 ≠ openid，从 sessions.key 取完整 openid；c2c/group 双场景）
+[PASS] singleton_lock    # 单实例锁（僵尸锁清理 / 存活 pid 探测，防双进程双写 db）
 [PASS] web_api_settings_logs # /api/config 白名单热更新写回、密钥脱敏、越权忽略；/api/logs
+[PASS] web_static        # web/ 前端拆分托管（/ + /static）、无 token 401、日志目录 temp/logs
 [PASS] temp_video_policy # 视频附件不下载 + temp 过期文件清理
 ```
 
@@ -203,4 +205,4 @@ stateDiagram-v2
 - qq-botpy 1.2.1（2024-03 停更）但内置新鉴权（appId+clientSecret → access_token 自动缓存刷新），实测可用
 - 语音 TTS 产出 mp3，QQ 语音富媒体为 silk 格式，平台不接收时该工具返回错误（转发收到的语音不受影响）
 - 表情消息类型官方未单列，`send_emoji` 以文本形式发送
-- Web 面板无登录页，仅本地 token 鉴权；公网暴露请自行加反向代理
+- Web 面板为本地令牌鉴权（页面输入 token，localStorage 记忆）；公网暴露请自行加反向代理

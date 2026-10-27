@@ -1,98 +1,334 @@
 "use strict";
 
-const TOKEN = new URLSearchParams(location.search).get("token") || "";
-const Q = (u, o) => fetch(u + (TOKEN ? (u.includes("?") ? "&" : "?") + "token=" + TOKEN : ""), o).then(r => r.json());
-const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" })[c]);
+/* ============ 令牌管理 ============ */
+let TOKEN = localStorage.getItem("ggbot_token") || "";
+const tokenBar = document.getElementById("token-bar");
+const errBanner = document.getElementById("err-banner");
 
+function showTokenBar(force) {
+  tokenBar.classList.toggle("hidden", !(force || !TOKEN));
+}
+
+async function api(url, options) {
+  const opts = options || {};
+  const headers = Object.assign({}, opts.headers || {});
+  if (TOKEN) headers["X-Token"] = TOKEN;
+  const resp = await fetch(url, Object.assign({}, opts, { headers }));
+  if (resp.status === 401) {
+    TOKEN = "";
+    localStorage.removeItem("ggbot_token");
+    showTokenBar(true);
+    showErr("令牌无效或缺失，请输入 config.json 中的 web.token");
+    throw new Error("unauthorized");
+  }
+  return resp.json();
+}
+
+function showErr(msg) {
+  errBanner.textContent = msg;
+  errBanner.classList.remove("hidden");
+  setTimeout(() => errBanner.classList.add("hidden"), 4000);
+}
+
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" })[c]);
+const fmtTs = ts => {
+  if (!ts) return "—";
+  const s = String(ts);
+  return s.length >= 16 ? s.slice(5, 16) : s;   // MM-DD HH:MM:SS
+};
+const statusBadge = st => {
+  if (st === "replied") return '<span class="badge ok">已回复</span>';
+  if (st === "skipped") return '<span class="badge gray">跳过</span>';
+  if (st === "failed") return '<span class="badge fail">失败</span>';
+  if (st === "pending") return '<span class="badge warn">待处理</span>';
+  return `<span class="badge gray">${esc(st || "—")}</span>`;
+};
+
+/* ============ 运行状态 ============ */
 async function refreshStatus() {
-  const s = await Q("/api/status");
-  const el = document.getElementById("st-state");
-  el.textContent = s.state === "online" ? "在线" : "离线";
-  el.className = "badge " + (s.state === "online" ? "on" : "off");
-  document.getElementById("st-event").textContent = s.next_event;
-  document.getElementById("st-remain").textContent = s.remaining_sec;
-  document.getElementById("st-pending").textContent = s.pending_count;
-  document.getElementById("st-debounce").textContent = s.debounce_count;
-  document.getElementById("st-dur").textContent = `${s.online_duration_sec}s / ${s.offline_interval_sec}s`;
-  document.getElementById("st-renew").textContent = s.renew_on_reply ? "开启" : "关闭";
-  document.getElementById("st-backlog").textContent = `${s.backlog_max_scan} / ${s.backlog_batch_size}`;
+  try {
+    const s = await api("/api/status");
+    const st = document.getElementById("st-state");
+    const online = s.state === "online";
+    st.textContent = online ? "在线" : "离线";
+    st.className = "badge " + (online ? "on" : "off");
+    document.getElementById("st-event").textContent = s.next_event || "—";
+    document.getElementById("st-remain").textContent =
+      (s.remaining_sec != null ? s.remaining_sec.toFixed(0) : "—") + " s";
+    document.getElementById("st-pending").textContent = s.pending_count ?? "—";
+    document.getElementById("st-debounce").textContent = s.debounce_count ?? "—";
+    document.getElementById("st-dur").textContent =
+      (s.online_duration_sec != null ? s.online_duration_sec + "s" : "—") + " / " +
+      (s.offline_interval_sec != null ? s.offline_interval_sec + "s" : "—");
+    document.getElementById("st-renew").textContent =
+      s.renew_on_reply ? "开启（聊得火热）" : "关闭";
+    document.getElementById("st-backlog").textContent =
+      (s.backlog_max_scan ?? "—") + " / " + (s.backlog_batch_size ?? "—");
+    document.getElementById("st-updated").textContent = new Date().toLocaleTimeString();
+  } catch (e) { /* 401 已处理 */ }
 }
+
+/* ============ 最近消息 ============ */
 async function refreshMessages() {
-  const d = await Q("/api/messages?limit=30");
-  document.getElementById("msg-body").innerHTML = d.map(m =>
-    `<tr><td class="muted">${esc(m.skey)}</td><td>${esc(m.role)}</td><td>${esc((m.content || "").slice(0, 60))}</td><td class="muted">${esc(m.status)}</td></tr>`).join("");
+  try {
+    const limit = document.getElementById("msg-limit").value;
+    const d = await api("/api/messages?limit=" + limit);
+    const rows = (d || []).map(m => {
+      const roleCls = m.role === "assistant" ? "role-assistant" : "role-user";
+      const content = (m.content || "").replace(/\s+/g, " ").slice(0, 80);
+      return `<tr>
+        <td class="mono muted">${esc(fmtTs(m.ts))}</td>
+        <td class="skey" title="${esc(m.skey || "")}">${esc((m.skey || "").split(":")[0])}:${esc((m.skey || "").split(":")[1] || "").slice(0, 8)}</td>
+        <td class="${roleCls}">${esc(m.role === "assistant" ? "机器人" : "成员")}</td>
+        <td class="msg">${esc(content)}</td>
+        <td>${statusBadge(m.status)}</td>
+      </tr>`;
+    }).join("");
+    document.getElementById("msg-body").innerHTML =
+      rows || '<tr><td colspan="5" class="empty">暂无消息</td></tr>';
+  } catch (e) {}
 }
+
+/* ============ 向量记忆 ============ */
 async function refreshMemories(q) {
-  const d = await Q(q ? "/api/memories/search?q=" + encodeURIComponent(q) + "&k=8" : "/api/memories?limit=10");
-  document.getElementById("mem-body").innerHTML = d.map(m =>
-    `<tr><td class="muted">${m.score != null ? m.score : "—"}</td><td>${esc(m.content)}</td>` +
-    `<td><button class="ghost" onclick="delMem('${m.id}')">删</button></td></tr>`).join("");
+  try {
+    const url = q ? "/api/memories/search?q=" + encodeURIComponent(q) + "&k=8" : "/api/memories?limit=15";
+    const d = await api(url);
+    const rows = (d || []).map(m => `<tr>
+      <td class="mono muted">${m.score != null ? m.score.toFixed(3) : "—"}</td>
+      <td>${esc(m.content)}</td>
+      <td><button class="btn ghost small" onclick="delMem('${esc(m.id)}')">删</button></td>
+    </tr>`).join("");
+    document.getElementById("mem-body").innerHTML =
+      rows || '<tr><td colspan="3" class="empty">暂无记忆</td></tr>';
+  } catch (e) {}
 }
-async function searchMem() { refreshMemories(document.getElementById("mem-q").value); }
-async function tidyMem() { const r = await Q("/api/memories/tidy", { method: "POST" }); alert("合并删除 " + r.removed + " 条"); refreshMemories(); }
-async function delMem(id) { await Q("/api/memories/" + id, { method: "DELETE" }); refreshMemories(); }
+
+async function addMem() {
+  const v = document.getElementById("mem-add").value.trim();
+  if (!v) return;
+  try {
+    await api("/api/memories", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: v, importance: 1 }),
+    });
+    document.getElementById("mem-add").value = "";
+    refreshMemories();
+  } catch (e) {}
+}
+
+async function tidyMem() {
+  try {
+    const r = await api("/api/memories/tidy", { method: "POST" });
+    showTmp("整理完成，合并删除 " + (r.removed || 0) + " 条");
+    refreshMemories();
+  } catch (e) {}
+}
+
+async function delMem(id) {
+  try { await api("/api/memories/" + id, { method: "DELETE" }); refreshMemories(); } catch (e) {}
+}
+
+/* ============ 规则 ============ */
 async function refreshRules() {
-  const d = await Q("/api/rules");
-  document.getElementById("rule-body").innerHTML = d.map(r =>
-    `<tr><td>${esc(r.content)}</td><td class="muted">${r.active ? "启用" : "停用"}</td>` +
-    `<td><button class="ghost" onclick="toggleRule(${r.id})">切换</button></td></tr>`).join("");
+  try {
+    const d = await api("/api/rules");
+    const rows = (d || []).map(r => `<tr>
+      <td>${esc(r.content)}</td>
+      <td>${r.active ? '<span class="badge ok">启用</span>' : '<span class="badge gray">停用</span>'}</td>
+      <td><button class="btn ghost small" onclick="toggleRule(${r.id})">切换</button></td>
+    </tr>`).join("");
+    document.getElementById("rule-body").innerHTML =
+      rows || '<tr><td colspan="3" class="empty">暂无规则</td></tr>';
+  } catch (e) {}
 }
+
 async function addRule() {
   const v = document.getElementById("rule-content").value.trim();
   if (!v) return;
-  await Q("/api/rules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: v }) });
-  document.getElementById("rule-content").value = "";
-  refreshRules();
+  try {
+    await api("/api/rules", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: v }),
+    });
+    document.getElementById("rule-content").value = "";
+    refreshRules();
+  } catch (e) {}
 }
-async function toggleRule(id) { await Q("/api/rules/" + id + "/toggle", { method: "POST" }); refreshRules(); }
+
+async function toggleRule(id) {
+  try { await api("/api/rules/" + id + "/toggle", { method: "POST" }); refreshRules(); } catch (e) {}
+}
+
+/* ============ 人设 ============ */
 async function refreshPersona() {
-  const d = await Q("/api/persona");
-  document.getElementById("p-inner-v").textContent = "v" + (d.inner.version ?? "?");
-  document.getElementById("p-inner").textContent = d.inner.content || "（无）";
-  document.getElementById("p-dyn-v").textContent = "v" + (d.dynamic.version ?? "?");
-  document.getElementById("p-dyn").textContent = d.dynamic.content || "（无）";
+  try {
+    const d = await api("/api/persona");
+    const inner = d.inner || {}, dyn = d.dynamic || {};
+    document.getElementById("p-inner-v").textContent = "v" + (inner.version ?? "?");
+    document.getElementById("p-inner").textContent = inner.content || "（无）";
+    document.getElementById("p-dyn-v").textContent = "v" + (dyn.version ?? "?");
+    document.getElementById("p-dyn").textContent = dyn.content || "（无）";
+    window._personaHistory = { inner: inner.history || [], dynamic: dyn.history || [] };
+  } catch (e) {}
 }
+
+async function rollbackPersona(layer) {
+  const hist = (window._personaHistory || {})[layer] || [];
+  if (!hist.length) { alert("无历史版本可回滚"); return; }
+  const pick = prompt(
+    layer + " 历史版本（输入版本号回滚）：\n" +
+    hist.map(h => `v${h.version}  ${h.ts}  ${(h.diff || "").slice(0, 30)}`).join("\n"),
+    String(hist[0].version)
+  );
+  if (!pick) return;
+  try {
+    const r = await api("/api/persona/rollback", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ layer, version: parseInt(pick) }),
+    });
+    if (r.ok) { showTmp("已回滚 " + layer + " → v" + pick); refreshPersona(); }
+  } catch (e) {}
+}
+
+/* ============ 设置 ============ */
+const CHK = ["s-stream", "s-wake_on_at_message", "s-wake_on_c2c", "s-renew_on_reply"];
+const NUM = ["s-temperature", "s-top_p", "s-max_tokens", "s-online_duration_sec", "s-offline_interval_sec",
+  "s-max_segments", "s-max_chars_per_segment", "s-segment_gap_sec", "s-debounce_sec",
+  "s-max_scan_messages", "s-batch_size"];
 
 async function loadConfig() {
-  const d = await Q("/api/config");
-  const c = d.config || {};
-  const set = (id, val) => { const el = document.getElementById(id); if (el && val != null) el.value = val; };
-  set("s-temperature", (c.deepseek || {}).request?.temperature);
-  set("s-top_p", (c.deepseek || {}).request?.top_p);
-  set("s-max_tokens", (c.deepseek || {}).request?.max_tokens);
-  set("s-thinking", (c.deepseek || {}).request?.thinking);
-  set("s-online_duration_sec", (c.behavior || {}).presence?.online_duration_sec);
-  set("s-offline_interval_sec", (c.behavior || {}).presence?.offline_interval_sec);
-  set("s-debounce_sec", (c.behavior || {}).reply?.debounce_sec);
-  set("s-max_scan_messages", (c.behavior || {}).backlog?.max_scan_messages);
-  set("s-batch_size", (c.behavior || {}).backlog?.batch_size);
-  set("s-log_level", (c.web || {}).log_level);
-}
-async function saveConfig() {
-  const g = id => document.getElementById(id).value;
-  const items = [
-    { path: "deepseek.request.temperature", value: parseFloat(g("s-temperature")) },
-    { path: "deepseek.request.top_p", value: parseFloat(g("s-top_p")) },
-    { path: "deepseek.request.max_tokens", value: parseInt(g("s-max_tokens")) },
-    { path: "deepseek.request.thinking", value: g("s-thinking") },
-    { path: "behavior.presence.online_duration_sec", value: parseInt(g("s-online_duration_sec")) },
-    { path: "behavior.presence.offline_interval_sec", value: parseInt(g("s-offline_interval_sec")) },
-    { path: "behavior.reply.debounce_sec", value: parseInt(g("s-debounce_sec")) },
-    { path: "behavior.backlog.max_scan_messages", value: parseInt(g("s-max_scan_messages")) },
-    { path: "behavior.backlog.batch_size", value: parseInt(g("s-batch_size")) },
-    { path: "web.log_level", value: g("s-log_level") },
-  ];
-  const r = await Q("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(items) });
-  document.getElementById("cfg-msg").textContent = "已更新: " + (r.updated || []).join(", ");
-  loadConfig();
-}
-async function loadLogs() {
-  const level = document.getElementById("log-level").value;
-  const d = await Q("/api/logs?lines=120&level=" + level);
-  document.getElementById("log-view").textContent = (d.lines || []).join("\n") || "(空)";
+  try {
+    const d = await api("/api/config");
+    const c = d.config || {};
+    const req = (c.deepseek || {}).request || {};
+    const pr = (c.behavior || {}).presence || {};
+    const rp = (c.behavior || {}).reply || {};
+    const bk = (c.behavior || {}).backlog || {};
+    const wb = (c.web || {});
+    const vals = {
+      "s-temperature": req.temperature, "s-top_p": req.top_p, "s-max_tokens": req.max_tokens,
+      "s-thinking": req.thinking, "s-stream": req.stream,
+      "s-online_duration_sec": pr.online_duration_sec, "s-offline_interval_sec": pr.offline_interval_sec,
+      "s-wake_on_at_message": pr.wake_on_at_message, "s-wake_on_c2c": pr.wake_on_c2c,
+      "s-renew_on_reply": pr.renew_on_reply,
+      "s-max_segments": rp.max_segments, "s-max_chars_per_segment": rp.max_chars_per_segment,
+      "s-segment_gap_sec": rp.segment_gap_sec, "s-debounce_sec": rp.debounce_sec,
+      "s-max_scan_messages": bk.max_scan_messages, "s-batch_size": bk.batch_size,
+      "s-priority_rule": bk.priority_rule, "s-log_level": wb.log_level,
+    };
+    for (const [id, v] of Object.entries(vals)) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      if (CHK.includes(id)) el.checked = !!v;
+      else if (v != null) el.value = v;
+    }
+  } catch (e) {}
 }
 
+const CFG_PATHS = {
+  "s-temperature": "deepseek.request.temperature",
+  "s-top_p": "deepseek.request.top_p",
+  "s-max_tokens": "deepseek.request.max_tokens",
+  "s-thinking": "deepseek.request.thinking",
+  "s-stream": "deepseek.request.stream",
+  "s-online_duration_sec": "behavior.presence.online_duration_sec",
+  "s-offline_interval_sec": "behavior.presence.offline_interval_sec",
+  "s-wake_on_at_message": "behavior.presence.wake_on_at_message",
+  "s-wake_on_c2c": "behavior.presence.wake_on_c2c",
+  "s-renew_on_reply": "behavior.presence.renew_on_reply",
+  "s-max_segments": "behavior.reply.max_segments",
+  "s-max_chars_per_segment": "behavior.reply.max_chars_per_segment",
+  "s-segment_gap_sec": "behavior.reply.segment_gap_sec",
+  "s-debounce_sec": "behavior.reply.debounce_sec",
+  "s-max_scan_messages": "behavior.backlog.max_scan_messages",
+  "s-batch_size": "behavior.backlog.batch_size",
+  "s-priority_rule": "behavior.backlog.priority_rule",
+  "s-log_level": "web.log_level",
+};
+
+async function saveConfig() {
+  const items = Object.entries(CFG_PATHS).map(([id, path]) => {
+    const el = document.getElementById(id);
+    let value;
+    if (CHK.includes(id)) value = el.checked;
+    else if (NUM.includes(id)) value = parseFloat(el.value);
+    else value = el.value;
+    return { path, value };
+  });
+  try {
+    const r = await api("/api/config", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(items),
+    });
+    const msg = document.getElementById("cfg-msg");
+    msg.textContent = "已更新: " + (r.updated || []).length + " 项";
+    setTimeout(() => { msg.textContent = ""; }, 4000);
+  } catch (e) {}
+}
+
+/* ============ 日志 ============ */
+async function loadLogs() {
+  try {
+    const level = document.getElementById("log-level").value;
+    const d = await api("/api/logs?lines=300&level=" + level);
+    const lines = d.lines || [];
+    const view = document.getElementById("log-view");
+    const stick = view.scrollTop + view.clientHeight >= view.scrollHeight - 24;
+    view.textContent = lines.length ? lines.join("\n") : "（无日志）";
+    if (stick) view.scrollTop = view.scrollHeight;
+  } catch (e) {}
+}
+
+/* ============ 杂项 ============ */
+let _tmpTimer = null;
+function showTmp(msg) {
+  const el = document.getElementById("cfg-msg");
+  el.textContent = msg;
+  clearTimeout(_tmpTimer);
+  _tmpTimer = setTimeout(() => { el.textContent = ""; }, 4000);
+}
+
+function bind() {
+  document.getElementById("token-save").onclick = () => {
+    const v = document.getElementById("token-input").value.trim();
+    if (!v) return;
+    TOKEN = v;
+    localStorage.setItem("ggbot_token", v);
+    tokenBar.classList.add("hidden");
+    fullRefresh();
+  };
+  document.getElementById("btn-token").onclick = () => showTokenBar(true);
+  document.getElementById("btn-refresh").onclick = fullRefresh;
+  document.getElementById("btn-msg-refresh").onclick = refreshMessages;
+  document.getElementById("msg-limit").onchange = refreshMessages;
+  document.getElementById("btn-log-refresh").onclick = loadLogs;
+  document.getElementById("log-level").onchange = loadLogs;
+  document.getElementById("btn-tidy").onclick = tidyMem;
+  document.getElementById("btn-mem-add").onclick = addMem;
+  document.getElementById("btn-mem-search").onclick = () => refreshMemories(document.getElementById("mem-q").value.trim());
+  document.getElementById("btn-mem-all").onclick = () => { document.getElementById("mem-q").value = ""; refreshMemories(); };
+  document.getElementById("mem-add").onkeydown = e => { if (e.key === "Enter") addMem(); };
+  document.getElementById("mem-q").onkeydown = e => { if (e.key === "Enter") refreshMemories(e.target.value.trim()); };
+  document.getElementById("btn-rule-add").onclick = addRule;
+  document.getElementById("rule-content").onkeydown = e => { if (e.key === "Enter") addRule(); };
+  document.querySelectorAll("[data-rollback]").forEach(b => {
+    b.onclick = () => rollbackPersona(b.getAttribute("data-rollback"));
+  });
+  document.getElementById("btn-save-cfg").onclick = saveConfig;
+}
+
+function fullRefresh() {
+  refreshStatus(); refreshMessages(); refreshMemories(); refreshRules(); refreshPersona(); loadConfig(); loadLogs();
+}
+
+/* 启动 */
+showTokenBar(false);
+bind();
+fullRefresh();
 setInterval(refreshStatus, 2000);
 setInterval(refreshMessages, 5000);
-setInterval(loadLogs, 5000);
-refreshStatus(); refreshMessages(); refreshMemories(); refreshRules(); refreshPersona(); loadConfig(); loadLogs();
+setInterval(() => {
+  if (document.getElementById("log-auto").checked) loadLogs();
+}, 3000);
+setInterval(() => { refreshMemories(); refreshRules(); refreshPersona(); }, 15000);
