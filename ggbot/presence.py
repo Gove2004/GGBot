@@ -134,9 +134,9 @@ class PresenceManager:
         self._debounce_task: asyncio.Task | None = None
         self._lock = threading.RLock()
         self._recent_reply_ts = 0.0
-        # 被动回复 msg_seq：必须大于被回复消息的全局消息序号且单调递增，
-        # 用毫秒时间戳起步的计数器保证（传 1/小号会被 QQ 静默拒收）
-        self._msg_seq_counter = int(time.time() * 1000)  # 用于面板展示
+        # 回复消息序号：小整数递增（与 msg_id 联合防重；官方默认 1）。
+        # 切勿用毫秒时间戳等 int32 超限值——QQ 服务端会 400「请求数据异常」
+        self._seq_by_sid: dict[str, int] = {}  # 用于面板展示
 
     # ---------- 生命周期 ----------
 
@@ -382,10 +382,18 @@ class PresenceManager:
 
     # ---------- 发送 ----------
 
-    def _next_seq(self) -> int:
-        """被动回复消息序号：单调递增且大于被回复消息的全局序号。"""
-        self._msg_seq_counter = max(int(time.time() * 1000), self._msg_seq_counter + 1)
-        return self._msg_seq_counter
+    def _next_seq(self, sid: str, base_seq: int | None = None) -> int:
+        """回复消息序号：会话内单调小递增（不超 int32）。
+
+        - 被动回复：若已知被回复消息的全局序号 base_seq，从 base_seq+1 起，
+          确保大于被回复消息序号且递增；
+        - 主动发送：从 1 起递增即可（官方默认语义）。
+        """
+        prev = self._seq_by_sid.get(sid, 0)
+        floor = int(base_seq or 0)
+        nxt = max(prev + 1, floor + 1)
+        self._seq_by_sid[sid] = nxt
+        return nxt
 
     async def _send_chunked(self, inbound: dict, reply: str, passive: bool = True) -> bool:
         """分段发送。返回是否实际发送了内容（空回复返回 False）。"""
@@ -398,14 +406,16 @@ class PresenceManager:
         logger.info("回复发送 target=%s scene=%s 段数=%d passive=%s", target, scene, len(segments), passive)
         gap = float(self.r.get("segment_gap_sec", 2))
         msg_id = inbound.get("msg_id") if passive else None
+        sid = inbound.get("session_id") or ""
+        base_seq = inbound.get("msg_seq")
         for i, seg in enumerate(segments):
             try:
-                await self.bot.send_text(target, seg, scene, msg_id, self._next_seq())
+                await self.bot.send_text(target, seg, scene, msg_id, self._next_seq(sid, base_seq))
             except Exception as e:  # noqa: BLE001
                 if passive and msg_id:
-                    # 被动回复失败（msg_id 过期 / 序号冲突等）→ 降级主动发送，确保送达
+                    # 被动回复失败（msg_id 过期 / 参数校验等）→ 降级主动发送，确保送达
                     logger.warning("被动回复失败，降级主动发送 %s: %s", target, e)
-                    await self.bot.send_text(target, seg, scene, None, self._next_seq())
+                    await self.bot.send_text(target, seg, scene, None, self._next_seq(sid, None))
                 else:
                     raise
             if i < len(segments) - 1:
