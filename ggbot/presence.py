@@ -221,19 +221,47 @@ class PresenceManager:
 
     # ---------- 回复核心 ----------
 
+    async def _safe_reply(self, msgs: list[dict], passive: bool) -> bool:
+        """生成并发送回复；任何失败只标记状态，不向上抛（避免单条失效群打崩整轮积压）。
+
+        状态：成功 replied / 生成失败或发送失败 failed / 无需回复 skipped。
+        """
+        inbound = msgs[-1]
+        sid = inbound["session_id"]
+        ids = [m["msg_id"] for m in msgs if m.get("msg_id")]
+
+        def _mark(status: str) -> None:
+            self.storage.mark_pending_processed(ids, status)
+
+        try:
+            reply = await self._agent_loop(sid, msgs, inbound)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("回复生成失败 n=%d sid=%s: %s", len(msgs), sid, e)
+            _mark("failed")
+            return False
+        if not reply or reply == NO_REPLY:
+            _mark("skipped")
+            return False
+        try:
+            await self._send_chunked(inbound, reply, passive=passive)
+            _mark("replied")
+            return True
+        except Exception as e:  # noqa: BLE001
+            target = inbound.get("target") or _derive_target(sid)[0]
+            scene = inbound.get("scene") or _derive_target(sid)[1]
+            logger.warning("回复发送失败 n=%d target=%s scene=%s: %s", len(msgs), target, scene, e)
+            _mark("failed")
+            return False
+
     async def _reply_now(self, inbound: dict) -> None:
         """唤醒即时回复：单条消息直接走 agent 循环。"""
-        reply = await self._agent_loop(inbound["session_id"], [inbound], inbound)
-        if reply and reply != NO_REPLY:
-            await self._send_chunked(inbound, reply)
+        if await self._safe_reply([inbound], passive=True):
             self._renew_online()
 
     async def _process_batch(self, msgs: list[dict]) -> None:
         """在线批次：聚合多条消息一次决策。"""
         last = msgs[-1]
-        reply = await self._agent_loop(last["session_id"], msgs, last)
-        if reply and reply != NO_REPLY:
-            await self._send_chunked(last, reply)
+        if await self._safe_reply(msgs, passive=True):
             self._renew_online()
 
     async def _process_backlog(self) -> None:
@@ -246,15 +274,11 @@ class PresenceManager:
                 continue
             priority, rest = self._split_priority(pend)
             for m in priority:
-                await self._reply_now(m)
-                self.storage.mark_message_status(m["msg_id"], "replied")
+                await self._safe_reply([m], passive=True)
             if rest:
                 for i in range(0, len(rest), self.b.get("batch_size", 100)):
                     chunk = rest[i : i + self.b.get("batch_size", 100)]
-                    reply = await self._agent_loop(sid, chunk, chunk[-1])
-                    if reply and reply != NO_REPLY:
-                        await self._send_chunked(chunk[-1], reply, passive=False)
-                    self.storage.mark_pending_processed([m["msg_id"] for m in chunk], "replied")
+                    await self._safe_reply(chunk, passive=False)
 
     def _iter_pending_sessions(self) -> list[str]:
         limit = int(self.b.get("max_scan_messages", 1000))
