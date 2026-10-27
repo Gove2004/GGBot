@@ -12,6 +12,7 @@ import logging
 import re
 import threading
 import time
+from datetime import datetime
 
 from ggbot.tools import NO_REPLY, agent_loop
 
@@ -176,13 +177,16 @@ class PresenceManager:
         inbound["session_id"] = sid
         self.storage.add_message(
             sid, "user", inbound["sender"], inbound["content"],
-            inbound.get("attachments"), inbound["msg_id"], status="pending",
+            inbound.get("attachments"), inbound["msg_id"], inbound.get("msg_seq"),
+            inbound.get("event_id"), inbound.get("is_at", False), status="pending",
         )
         if self.state == "offline":
             if inbound.get("is_at") and self.p.get("wake_on_at_message", True):
                 logger.info("收到@消息，唤醒上线并立即回复: %s", inbound["msg_id"])
-                await self._go_online("wake-on-at")
+                # 先即时被动回复该条（5 分钟窗口内有效、不耗主动消息额度），
+                # 成功后状态标记 replied，之后处理积压不会再重复回复它
                 await self._reply_now(inbound)
+                await self._go_online("wake-on-at")
                 return True
             logger.debug("离线：消息入库 %s (pending)", inbound["msg_id"])
             return True
@@ -282,7 +286,11 @@ class PresenceManager:
             self._renew_online()
 
     async def _process_backlog(self) -> None:
-        """上线积压处理：优先级单独回 + 其余按 batch_size 合并。"""
+        """上线积压处理：优先级单独回 + 其余按 batch_size 合并。
+
+        @/问句若仍在被动回复窗口（5 分钟内）走被动通道（带 msg_id+event_id，
+        不耗主动消息额度）；过窗的与其余消息合并为主动回复（每月 4 条/群额度）。
+        """
         sessions = {}
         for sid in self._iter_pending_sessions():
             sessions[sid] = self._pending_of(sid)
@@ -290,12 +298,25 @@ class PresenceManager:
             if not pend:
                 continue
             priority, rest = self._split_priority(pend)
+            fresh, stale = [], []
             for m in priority:
+                (fresh if self._is_fresh(m) else stale).append(m)
+            for m in fresh:
                 await self._safe_reply([m], passive=True)
+            if stale:
+                rest = stale + rest
             if rest:
                 for i in range(0, len(rest), self.b.get("batch_size", 100)):
                     chunk = rest[i : i + self.b.get("batch_size", 100)]
                     await self._safe_reply(chunk, passive=False)
+
+    def _is_fresh(self, m: dict, window_sec: int = 300) -> bool:
+        """消息是否仍在被动回复窗口内（入库时间距今 ≤ window_sec）。"""
+        try:
+            t = datetime.strptime((m.get("ts") or "").strip(), "%Y-%m-%d %H:%M:%S")
+            return (datetime.now() - t).total_seconds() <= window_sec
+        except Exception:  # noqa: BLE001
+            return False
 
     def _iter_pending_sessions(self) -> list[str]:
         limit = int(self.b.get("max_scan_messages", 1000))
@@ -409,9 +430,12 @@ class PresenceManager:
         sid = inbound.get("session_id") or ""
         base_seq = inbound.get("msg_seq")
         for i, seg in enumerate(segments):
+            seq = self._next_seq(sid, base_seq)
             try:
-                await self.bot.send_text(target, seg, scene, msg_id, self._next_seq(sid, base_seq),
-                                         inbound.get("event_id"))
+                resp = await self.bot.send_text(target, seg, scene, msg_id, seq, inbound.get("event_id"))
+                if resp is not None:
+                    # botpy 解析 QQ 返回的 Message（含新消息 id）；有 id 说明平台已受理
+                    logger.info("QQ 已受理 seq=%d resp_id=%s", seq, getattr(resp, "id", resp))
             except Exception as e:  # noqa: BLE001
                 if passive and msg_id:
                     # 被动回复失败（msg_id 过期 / 参数校验等）→ 降级主动发送，确保送达

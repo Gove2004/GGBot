@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS messages(
     attachments TEXT,
     msg_id TEXT,
     msg_seq INTEGER,
+    event_id TEXT,
+    is_at INTEGER DEFAULT 0,
     status TEXT,
     ts TEXT
 );
@@ -75,6 +77,8 @@ def _row_to_dict(row) -> dict:
             d["attachments"] = json.loads(d["attachments"])
         except (json.JSONDecodeError, TypeError):
             d["attachments"] = []
+    if "is_at" in d:
+        d["is_at"] = bool(d["is_at"])
     return d
 
 
@@ -86,8 +90,17 @@ class Storage:
         self._open_conns: list[sqlite3.Connection] = []
         with self._conn() as c:
             c.executescript(SCHEMA)
+            self._ensure_columns(c)
         # 首次导入内核人设（db/persona_core.md），仅当 persona 表为空
         self._seed_core_persona()
+
+    def _ensure_columns(self, c: sqlite3.Connection) -> None:
+        """旧库迁移：messages 表补齐 event_id / is_at 列。"""
+        cols = {r[1] for r in c.execute("PRAGMA table_info(messages)").fetchall()}
+        if "event_id" not in cols:
+            c.execute("ALTER TABLE messages ADD COLUMN event_id TEXT")
+        if "is_at" not in cols:
+            c.execute("ALTER TABLE messages ADD COLUMN is_at INTEGER DEFAULT 0")
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30)
@@ -184,12 +197,14 @@ class Storage:
         attachments: list | None = None,
         msg_id: str | None = None,
         msg_seq: int | None = None,
+        event_id: str | None = None,
+        is_at: bool = False,
         status: str = "received",
     ) -> int:
         with self._lock, self._conn() as c:
             cur = c.execute(
-                "INSERT INTO messages(session_id, role, sender, content, attachments, msg_id, msg_seq, status, ts) "
-                "VALUES(?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO messages(session_id, role, sender, content, attachments, msg_id, msg_seq, "
+                "event_id, is_at, status, ts) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     session_id,
                     role,
@@ -198,6 +213,8 @@ class Storage:
                     json.dumps(attachments or [], ensure_ascii=False),
                     msg_id,
                     msg_seq,
+                    event_id,
+                    1 if is_at else 0,
                     status,
                     _now(),
                 ),
