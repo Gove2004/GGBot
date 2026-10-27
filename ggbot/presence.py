@@ -431,11 +431,15 @@ class PresenceManager:
         base_seq = inbound.get("msg_seq")
         for i, seg in enumerate(segments):
             seq = self._next_seq(sid, base_seq)
+            logger.info("回复发送 target=%s scene=%s 段数=%d passive=%s 段%d: %.60r",
+                        target, scene, len(segments), passive, i + 1, seg)
             try:
                 resp = await self.bot.send_text(target, seg, scene, msg_id, seq, inbound.get("event_id"))
                 if resp is not None:
-                    # botpy 解析 QQ 返回的 Message（含新消息 id）；有 id 说明平台已受理
-                    logger.info("QQ 已受理 seq=%d resp_id=%s", seq, getattr(resp, "id", resp))
+                    # botpy 解析 QQ 返回（含新消息 id）；有 id 说明平台已受理并生成消息
+                    rid, ts = (resp.get("id"), resp.get("timestamp")) if isinstance(resp, dict) \
+                        else (getattr(resp, "id", None), getattr(resp, "timestamp", None))
+                    logger.info("QQ 已受理 seq=%d resp_id=%s ts=%s", seq, rid, ts)
             except Exception as e:  # noqa: BLE001
                 if passive and msg_id:
                     # 被动回复失败（msg_id 过期 / 参数校验等）→ 降级主动发送，确保送达

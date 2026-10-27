@@ -42,6 +42,18 @@ class QQBot(botpy.Client):
     async def on_group_add_robot(self, message) -> None:
         logger.info("机器人加入群聊: %s", getattr(message, "group_openid", None))
 
+    # ---------- 消息审核事件（消息被平台审核拦截时推送，用于排查"受理但未展示"） ----------
+
+    async def on_message_audit_pass(self, audit) -> None:
+        logger.info("消息审核通过 message_id=%s audit_id=%s",
+                    getattr(audit, "message_id", None), getattr(audit, "audit_id", None))
+
+    async def on_message_audit_reject(self, audit) -> None:
+        # 审核不通过：消息不会展示；对比我们发送返回的 resp_id 即可确认是哪条
+        logger.error("消息审核不通过，未展示 message_id=%s audit_id=%s guild=%s channel=%s",
+                     getattr(audit, "message_id", None), getattr(audit, "audit_id", None),
+                     getattr(audit, "guild_id", None), getattr(audit, "channel_id", None))
+
     def _register_group_message_parser(self) -> None:
         """注册群全量消息事件（GROUP_MESSAGE_CREATE，私域群全量消息）。
 

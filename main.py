@@ -77,7 +77,7 @@ async def main() -> None:
     llm = DeepSeekClient(cfg)
     log.info("LLM 就绪: %s @ %s", cfg.model, cfg.llm.get("base_url"))
 
-    intents = botpy.Intents(public_messages=True, public_guild_messages=True)
+    intents = botpy.Intents(public_messages=True, public_guild_messages=True, message_audit=True)
     bot = QQBot(cfg, presence=None, intents=intents)
     executor = ToolExecutor(cfg, storage, memory, bot)
     presence = PresenceManager(cfg, storage, llm, executor, bot)
