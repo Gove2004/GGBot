@@ -35,6 +35,7 @@ class QQBot(botpy.Client):
 
     async def on_group_at_message_create(self, message: GroupMessage) -> None:
         # GROUP_AT_MESSAGE_CREATE：只有真正被@本机器人时触发
+        logger.info("群@消息事件（@本机器人）: id=%s group=%s", message.id, message.group_openid)
         await self._route(message, is_at=True)
 
     async def on_c2c_message_create(self, message: C2CMessage) -> None:
@@ -84,7 +85,7 @@ class QQBot(botpy.Client):
         is_at 仅由 GROUP_AT_MESSAGE_CREATE 事件判定为 True——
         全量消息里 mentions 可能包含被@的其他成员/机器人，不能据此误判为自己。
         """
-        logger.debug("群全量消息事件: id=%s group=%s", message.id, message.group_openid)
+        logger.info("群全量消息事件: id=%s group=%s", message.id, message.group_openid)
         await self._route(message, is_at=False)
 
     async def _route(self, message, is_at: bool = False) -> None:
