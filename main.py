@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
 
 import botpy
 
@@ -32,7 +31,7 @@ async def main() -> None:
     args = parser.parse_args()
 
     cfg = Config(args.config)
-    log_level = args.log_level or os.environ.get("LOG_LEVEL") or (cfg.web_cfg or {}).get("log_level", "INFO")
+    log_level = args.log_level or (cfg.web_cfg or {}).get("log_level", "INFO")
     setup_logging(cfg.log_file, log_level)
     log = logging.getLogger("ggbot.main")
     log.info("日志系统就绪: %s (level=%s)", cfg.log_file, log_level)
@@ -55,6 +54,17 @@ async def main() -> None:
 
     await presence.start()
 
+    async def _temp_cleanup_loop():
+        """temp 目录过期文件清理（storage.temp_ttl_hours，默认 24h），每小时巡检一次。"""
+        while True:
+            try:
+                bot.cleanup_temp()
+            except Exception as e:  # noqa: BLE001
+                log.warning("temp 清理失败: %s", e)
+            await asyncio.sleep(3600)
+
+    cleanup_task = asyncio.create_task(_temp_cleanup_loop())
+
     web_task = None
     if not args.no_web and (cfg.web_cfg or {}).get("enable", True):
         from ggbot.web import start_web
@@ -66,6 +76,7 @@ async def main() -> None:
         await bot.start(cfg.qq["appid"], cfg.qq["secret"])
     finally:
         await presence.stop()
+        cleanup_task.cancel()
         if web_task:
             web_task.cancel()
         storage.close()

@@ -10,7 +10,6 @@ config.json 实际结构（与文件保持一致）：
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -46,14 +45,13 @@ class Config:
 
     @property
     def embedding(self) -> dict:
-        """向量化配置：环境变量优先（EMBEDDING_BASE_URL / EMBEDDING_MODEL / EMBEDDING_API_KEY），否则读 config.json。"""
+        """向量化配置（仅读 config.json，项目靠配置文件驱动，无环境变量覆盖）。"""
         emb = self.data.get("embedding", {})
         return {
             "provider": emb.get("provider", "siliconflow"),
-            "base_url": os.environ.get("EMBEDDING_BASE_URL")
-            or emb.get("base_url", "https://api.siliconflow.cn/v1"),
-            "model": os.environ.get("EMBEDDING_MODEL") or emb.get("model", "Qwen/Qwen3-Embedding-4B"),
-            "api_key": os.environ.get("EMBEDDING_API_KEY") or emb.get("api_key", ""),
+            "base_url": emb.get("base_url", "https://api.siliconflow.cn/v1"),
+            "model": emb.get("model", "Qwen/Qwen3-Embedding-4B"),
+            "api_key": emb.get("api_key", ""),
             "batch_size": max(1, int(emb.get("batch_size", 32))),
         }
 

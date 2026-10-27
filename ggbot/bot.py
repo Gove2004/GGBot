@@ -96,17 +96,24 @@ class QQBot(botpy.Client):
         }
 
     async def _download_attachments(self, attachments) -> list[dict]:
-        """富媒体落地：下载到 Temp/，同时保留公网 URL（可转发）。"""
+        """富媒体落地：下载到 temp/（视频默认不下载），保留公网 URL（可转发）。
+
+        - storage.download_video=false 时，视频附件不下载不处理，仅保留 url/元信息供上下文引用
+        - temp 文件由 cleanup_temp() 按 storage.temp_ttl_hours 定期清理
+        """
+        download_video = bool((self.cfg.storage_cfg or {}).get("download_video", False))
         out = []
         for a in attachments:
+            ctype = a.content_type or ""
             rec = {
-                "content_type": a.content_type,
+                "content_type": ctype,
                 "filename": a.filename,
                 "url": a.url,
                 "size": a.size,
                 "local_path": None,
             }
-            if a.url:
+            is_video = "video" in ctype.lower()
+            if a.url and not (is_video and not download_video):
                 try:
                     fname = f"{int(time.time() * 1000)}_{Path(a.filename or 'file').name}"
                     data = await self._http_get(a.url)
@@ -116,8 +123,30 @@ class QQBot(botpy.Client):
                     logger.info("富媒体落地: %s (%d bytes)", p, len(data))
                 except Exception as e:  # noqa: BLE001
                     logger.warning("富媒体下载失败: %s", e)
+            elif is_video and not download_video:
+                logger.debug("视频附件不下载（download_video=false），保留 URL: %s", a.filename)
             out.append(rec)
         return out
+
+    def cleanup_temp(self) -> int:
+        """清理 temp/ 下超过 storage.temp_ttl_hours 小时的文件，返回移除数。"""
+        ttl_hours = float((self.cfg.storage_cfg or {}).get("temp_ttl_hours", 24))
+        cutoff = time.time() - ttl_hours * 3600
+        removed = 0
+        if not self.temp_dir.exists():
+            return 0
+        for p in self.temp_dir.iterdir():
+            if not p.is_file():
+                continue
+            try:
+                if p.stat().st_mtime < cutoff:
+                    p.unlink()
+                    removed += 1
+            except OSError:
+                continue
+        if removed:
+            logger.info("temp 清理: 移除 %d 个过期文件（>%.0fh）", removed, ttl_hours)
+        return removed
 
     @staticmethod
     async def _http_get(url: str) -> bytes:
