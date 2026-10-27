@@ -34,10 +34,12 @@ class QQBot(botpy.Client):
         logger.info("QQBot 已连接 WebSocket gateway")
 
     async def on_group_at_message_create(self, message: GroupMessage) -> None:
-        await self._route(message)
+        # GROUP_AT_MESSAGE_CREATE：只有真正被@本机器人时触发
+        await self._route(message, is_at=True)
 
     async def on_c2c_message_create(self, message: C2CMessage) -> None:
-        await self._route(message)
+        # 私聊 = 直接找机器人对话，等价于 @
+        await self._route(message, is_at=True)
 
     async def on_group_add_robot(self, message) -> None:
         logger.info("机器人加入群聊: %s", getattr(message, "group_openid", None))
@@ -77,11 +79,15 @@ class QQBot(botpy.Client):
             logger.warning("注册 group_message_create 解析失败: %s", e)
 
     async def on_group_message_create(self, message: GroupMessage) -> None:
-        """群全量消息（私域权限，普通消息无需@）：走统一路由（去重/归一化/Presence 分流）。"""
-        logger.debug("群全量消息事件: id=%s group=%s", message.id, message.group_openid)
-        await self._route(message)
+        """群全量消息（私域权限，所有普通消息；含@别人的消息，不含对本机器人的@）。
 
-    async def _route(self, message) -> None:
+        is_at 仅由 GROUP_AT_MESSAGE_CREATE 事件判定为 True——
+        全量消息里 mentions 可能包含被@的其他成员/机器人，不能据此误判为自己。
+        """
+        logger.debug("群全量消息事件: id=%s group=%s", message.id, message.group_openid)
+        await self._route(message, is_at=False)
+
+    async def _route(self, message, is_at: bool = False) -> None:
         msg_id = getattr(message, "id", None)
         if not msg_id or msg_id in self._seen:
             logger.debug("重复/空消息忽略: id=%s", msg_id)
@@ -89,7 +95,7 @@ class QQBot(botpy.Client):
         self._seen.add(msg_id)
         if len(self._seen) > self._max_seen:
             self._seen = set(list(self._seen)[-self._max_seen // 2 :])
-        inbound = await self._normalize(message)
+        inbound = await self._normalize(message, is_at=is_at)
         if inbound is None:
             logger.warning("消息归一化失败，跳过: id=%s", msg_id)
             return
@@ -105,7 +111,7 @@ class QQBot(botpy.Client):
 
     # ---------- 归一化 ----------
 
-    async def _normalize(self, message) -> dict | None:
+    async def _normalize(self, message, is_at: bool = False) -> dict | None:
         is_group = isinstance(message, GroupMessage)
         if is_group:
             key = f"group:{message.group_openid}"
@@ -122,7 +128,8 @@ class QQBot(botpy.Client):
             scene = "c2c"
         content = (message.content or "").strip()
         attachments = await self._download_attachments(message.attachments or [])
-        is_at = bool(getattr(message, "mentions", None)) or "@" in content[:10]
+        # is_at 由事件类型决定：GROUP_AT_MESSAGE_CREATE 才为 True。
+        # 不能看 mentions/文本里的 @（全量消息可能@其他成员/机器人）。
         return {
             "msg_id": message.id,
             "msg_seq": getattr(message, "msg_seq", None),
