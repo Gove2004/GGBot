@@ -37,7 +37,6 @@ async def main() -> None:
     log = logging.getLogger("ggbot.main")
     log.info("日志系统就绪: %s (level=%s)", cfg.log_file, log_level)
 
-    cfg = Config(args.config)
     storage = Storage(cfg.db_path)
     log.info("存储就绪: %s", cfg.db_path)
 

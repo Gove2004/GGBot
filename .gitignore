@@ -15,8 +15,14 @@ config.json
 *.log
 logs/
 
-# 富媒体临时落地目录（图片/语音/视频附件）
-Temp/
+# 运行时数据（db/ 下的 config.json / ggbot.db 由上面全局模式忽略；
+# db/persona_core.md 需入库，不在此忽略）
+*.db
+*.db-wal
+*.db-shm
+
+# 富媒体临时落地目录（图片/语音/视频附件）与本地验证脚本
+temp/
 
 # 编辑器
 .idea/

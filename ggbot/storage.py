@@ -70,11 +70,12 @@ def _now() -> str:
 class Storage:
     def __init__(self, db_path: Path | str):
         self.db_path = str(db_path)
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._open_conns: list[sqlite3.Connection] = []
         with self._conn() as c:
             c.executescript(SCHEMA)
-        # 首次导入内核人设（persona_core.md），仅当 persona 表为空
+        # 首次导入内核人设（db/persona_core.md），仅当 persona 表为空
         self._seed_core_persona()
 
     def _conn(self) -> sqlite3.Connection:
@@ -99,7 +100,7 @@ class Storage:
         """将 persona_core.md 导入内核人设层（AI 只读）。"""
         from ggbot.config import BASE_DIR
 
-        core_file = BASE_DIR / "persona_core.md"
+        core_file = BASE_DIR / "db" / "persona_core.md"
         if not core_file.exists():
             return
         with self._lock, self._conn() as c:

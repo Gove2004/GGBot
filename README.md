@@ -3,7 +3,7 @@
 基于官方 QQ 开放平台 api-v2（qq-botpy 1.2.1）+ DeepSeek（deepseek-flash）+ SiliconFlow 向量记忆的群聊机器人。
 
 **四大模块：**
-1. **消息收发网关**（`ggbot/bot.py`）— 群@/单聊事件接收、归一化、去重，富媒体附件落地 `Temp/`
+1. **消息收发网关**（`ggbot/bot.py`）— 群@/单聊事件接收、归一化、去重，富媒体附件落地 `temp/`
 2. **AI 请求装置**（`ggbot/llm.py`）— DeepSeek Chat Completions，function calling 原生工具
 3. **上下文组织 / 持久化记忆 / 自我进化**（`ggbot/storage.py` + `ggbot/memory.py` + `ggbot/tools.py`）
 4. **Web 控制面板**（`ggbot/web.py`）— FastAPI，在线状态 / 消息流 / 记忆检索 / 规则 / 人设管理
@@ -12,12 +12,15 @@
 
 ```
 GGBot/
-├── config.json          # 全部配置（QQ 凭据 / DeepSeek / Embedding / 行为 / 存储 / Web）
+├── db/
+│   ├── config.json      # 全部配置（QQ 凭据 / DeepSeek / Embedding / 行为 / 存储 / Web；含密钥，gitignored）
+│   ├── persona_core.md  # 内核人设（owner 定义，AI 只读；首次启动自动导入）
+│   └── ggbot.db         # SQLite 持久化：会话/消息/记忆/规则/人设版本（运行时生成，gitignored）
+├── temp/                # 富媒体附件临时落地（图片/语音/视频/文件，gitignored）
 ├── requirements.txt
 ├── main.py              # 入口
 ├── start.bat            # Windows 前台启动（Ctrl+C 停止）
 ├── start.sh             # Linux 后台启动（nohup，kill <PID> 停止）
-├── persona_core.md      # 内核人设（owner 定义，AI 只读；首次启动自动导入）
 ├── logs/                # 运行日志（5MB × 5 轮转，gitignored）
 ├── ggbot/
 │   ├── config.py        # 配置加载（embedding 支持环境变量覆盖 + 热更新）
@@ -29,7 +32,6 @@ GGBot/
 │   ├── presence.py      # 在线/离线状态机（唤醒/积压分流/抖动/分段发送）
 │   ├── bot.py           # QQ 网关
 │   └── web.py           # Web 面板（状态/消息/记忆/设置/日志）
-├── Temp/                # 富媒体附件落地（gitignored）
 └── docs/实施方案.md
 ```
 
@@ -40,7 +42,7 @@ GGBot/
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
-# 2. 配置 config.json（密钥已写入）：
+# 2. 配置 db/config.json（密钥已写入）：
 #    appid / appsecret          → QQ 机器人凭据（qq 开放平台后台）
 #    deepseek.api_key           → DeepSeek key
 #    embedding.api_key          → SiliconFlow key（Qwen3-Embedding-4B）

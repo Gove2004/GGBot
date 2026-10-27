@@ -20,7 +20,7 @@ class Config:
     """config.json 加载器。字段缺失时用默认值兜底，避免启动崩溃。"""
 
     def __init__(self, path: Path | str | None = None):
-        self.path = Path(path) if path else BASE_DIR / "config.json"
+        self.path = Path(path) if path else BASE_DIR / "db" / "config.json"
         with open(self.path, encoding="utf-8") as f:
             self.data = json.load(f)
 
@@ -76,7 +76,7 @@ class Config:
 
     @property
     def temp_dir(self) -> Path:
-        d = self.storage_cfg.get("temp_dir", "Temp")
+        d = self.storage_cfg.get("temp_dir", "temp")
         p = Path(d)
         if not p.is_absolute():
             p = BASE_DIR / p
@@ -85,11 +85,17 @@ class Config:
 
     @property
     def db_path(self) -> Path:
-        d = self.storage_cfg.get("db_path", "ggbot.db")
+        d = self.storage_cfg.get("db_path", "db/ggbot.db")
         p = Path(d)
         if not p.is_absolute():
             p = BASE_DIR / p
+        p.parent.mkdir(parents=True, exist_ok=True)
         return p
+
+    @property
+    def persona_path(self) -> Path:
+        """内核人设（owner 定义，AI 只读），位于 db/ 目录。"""
+        return BASE_DIR / "db" / "persona_core.md"
 
     @property
     def logs_dir(self) -> Path:
