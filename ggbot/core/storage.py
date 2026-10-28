@@ -289,16 +289,6 @@ class Storage:
                 ).fetchone()[0]
             return c.execute("SELECT COUNT(*) FROM messages WHERE status='pending'").fetchone()[0]
 
-    def get_recent_messages_global_pending(self, limit: int = 1000) -> list[dict]:
-        """全局 pending 用户消息（按到达顺序），供积压分组扫描。"""
-        with self._lock, self._conn() as c:
-            rows = c.execute(
-                "SELECT * FROM messages WHERE status='pending' AND role='user' "
-                "ORDER BY id ASC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        return [_row_to_dict(r) for r in rows]
-
     # ---------- 记忆 ----------
 
     def add_memory(

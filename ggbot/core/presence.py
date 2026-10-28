@@ -1,13 +1,12 @@
-"""Presence 状态机：每会话独立 在线/离线 作息、唤醒、积压分流、抖动聚合、选择性回复。
+"""Presence 状态机：每会话独立 在线/离线 作息、唤醒、积压只读、抖动聚合、选择性回复。
 
 离线（默认 10 分钟，带 ±40% 抖动）：普通消息仅入库积压（≤1000）；收到@（本会话）
 或倒计时结束 → 本会话上线。
-在线（默认 1 分钟，带 ±30% 抖动）：先处理本会话积压；消息进入 5s 抖动窗口聚合 →
-选择性回复；每发送一条消息按 renew_per_reply_sec（带抖动）续期；倒计时结束 → 下线。
+在线（默认 1 分钟，带 ±30% 抖动）：上线只把积压标记为 seen 读入上下文、不回复；
+消息进入 5s 抖动窗口聚合 → 选择性回复；每成功回复一轮按 renew_per_reply_sec 递增续期
+（连续聊得越久奖励越多，直到 renew_max_sec 上限）；倒计时结束 → 下线。
 拟人化：回复前有阅读停顿，发送前按内容长度模拟打字耗时（可用 behavior.reply 关闭）。
 会话相互独立：私聊唤醒不会让群聊上线，A 群唤醒不影响 B 群。
-积压：上线后扫描本会话 pending（≤max_scan_messages），被动事件（@/C2C）窗口内单独回，
-  其余每 ≤batch_size 条合并为一条主动回。
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ import random
 import re
 import threading
 import time
-from datetime import datetime
 
 from ggbot.tool import agent_loop
 from ggbot.util.human import jitter, read_delay_sec, sample_duration, typing_delay_sec
@@ -43,7 +41,7 @@ SYSTEM_TEMPLATE = """你是 QQ 群/私聊里的聊天伙伴，昵称“{name}”
 3. 被@时必须回应。
 4. 图片/语音/视频的地址标注在消息里，可以直接转发（send_image 等）或点评。
 5. 想不起的事用 memory_search 回忆；值得长期记住的用 memory_write。
-6. 只聊当下，不翻旧账；离线积压的旧消息没必要回就不回。
+6. 只聊当下，不翻旧账；离线积压的消息只是让你知道期间发生了什么，不需要逐条回应。
 """
 
 
@@ -222,8 +220,9 @@ class PresenceManager:
         if st.state == "offline":
             if inbound.get("is_at") and self.p.get("wake_on_at_message", True):
                 logger.debug("收到@，立即唤醒本会话", extra={"session": st.label})
-                # 先即时被动回复该条（5 分钟窗口内有效、不耗主动消息额度），
-                # 成功后状态标记 replied，之后处理积压不会再重复回复它
+                # 先读入离线积压（不含本条），让本次回复能看到期间发生了什么；
+                # 旧消息只标记 seen 不回复，本条@仍走即时被动回复
+                self._read_backlog_sid(sid, exclude_msg_id=inbound.get("msg_id"))
                 await self._reply_now(inbound)
                 await st.go_online("wake-on-at")
                 return True
@@ -331,56 +330,18 @@ class PresenceManager:
         """唤醒即时回复：单条消息直接走 agent 循环（发送成功即续期）。"""
         await self._safe_reply([inbound], passive=True)
 
-    async def _process_backlog(self) -> None:
-        """兼容入口：遍历全部有积压的会话，逐个处理（保留给外部调用/验证脚本）。"""
-        for sid in self._iter_pending_sessions():
-            st = self._state_of(sid)
-            if st.state == "online":
-                await self._process_backlog_sid(sid)
+    def _read_backlog_sid(self, sid: str, exclude_msg_id: str | None = None) -> int:
+        """上线只读积压：本会话 pending 标记为 seen 读入上下文，绝不回复。
 
-    async def _process_backlog_sid(self, sid: str) -> None:
-        """上线积压处理（单会话）：被动事件（@/C2C）且窗口内的单独被动回复，其余合并主动。
-
-        平台硬限制：仅 @本机器人事件 / C2C 事件消息可用被动回复（带 msg_id+event_id）；
-        全量消息（含问句、普通消息）的 event_id 不能用于被动回复（40034027），
-        一律主动发送。主动消息额度：每月 4 条/群，故其余消息按 batch_size 合并省额度。
+        seen 消息会作为历史参与后续生成，但不会单独触发 LLM 回合；
+        被@唤醒时先读入旧积压再回复本条，因此回复里能自然看到离线期间的内容。
         """
-        pend = self._pending_of(sid)
-        if not pend:
-            return
-        # 仅可被动事件（@/C2C）消息可被动；窗口内单独回，过窗并入主动合并
-        at_msgs = [m for m in pend if m.get("passive_ok")]
-        rest = [m for m in pend if not m.get("passive_ok")]
-        fresh, stale = [], []
-        for m in at_msgs:
-            (fresh if self._is_fresh(m) else stale).append(m)
-        for m in fresh:
-            await self._safe_reply([m], passive=True)
-        if stale:
-            rest = stale + rest
-        if rest:
-            for i in range(0, len(rest), self.b.get("batch_size", 100)):
-                chunk = rest[i : i + self.b.get("batch_size", 100)]
-                await self._safe_reply(chunk, passive=False)
-
-    def _is_fresh(self, m: dict, window_sec: int = 300) -> bool:
-        """消息是否仍在被动回复窗口内（入库时间距今 ≤ window_sec）。"""
-        try:
-            t = datetime.strptime((m.get("ts") or "").strip(), "%Y-%m-%d %H:%M:%S")
-            return (datetime.now() - t).total_seconds() <= window_sec
-        except Exception:  # noqa: BLE001
-            return False
-
-    def _iter_pending_sessions(self) -> list[str]:
-        limit = int(self.b.get("max_scan_messages", 1000))
-        # 简化：从全局 pending 中按 session 分组
-        with self._lock:
-            rows = self.storage.get_recent_messages_global_pending(limit)
-        seen = []
-        for r in rows:
-            if r["session_id"] not in seen:
-                seen.append(r["session_id"])
-        return seen
+        ids = [
+            m["msg_id"] for m in self._pending_of(sid)
+            if m.get("msg_id") and m["msg_id"] != exclude_msg_id
+        ]
+        self.storage.mark_pending_processed(ids, "seen")
+        return len(ids)
 
     def _pending_of(self, sid: str) -> list[dict]:
         return self.storage.get_pending_messages(sid, int(self.b.get("max_scan_messages", 1000)))
@@ -550,21 +511,22 @@ class PresenceManager:
             "offline_interval_jitter": self.p.get("offline_interval_jitter", 0.4),
             "renew_on_reply": self.p.get("renew_on_reply"),
             "renew_per_reply_sec": self.p.get("renew_per_reply_sec"),
+            "renew_streak_step": self.p.get("renew_streak_step", 0.5),
+            "renew_max_sec": self.p.get("renew_max_sec", 600),
             "renew_jitter": self.p.get("renew_jitter", 0.3),
             "read_delay_min_sec": self.r.get("read_delay_min_sec", 0),
             "read_delay_max_sec": self.r.get("read_delay_max_sec", 0),
             "typing_chars_per_sec": self.r.get("typing_chars_per_sec", 0),
             "debounce_sec": self.r.get("debounce_sec"),
             "backlog_max_scan": self.b.get("max_scan_messages"),
-            "backlog_batch_size": self.b.get("batch_size"),
         }
 
 
 class _SessionState:
     """单会话 在线/离线 状态机。
 
-    离线：普通消息积压；收到@或倒计时结束 → 上线（先处理本会话积压）。
-    在线：消息进 5s 抖动窗口；每发送一条消息续期 +renew_per_reply_sec；倒计时结束下线。
+    离线：普通消息积压；收到@或倒计时结束 → 上线（只读积压，不回复）。
+    在线：消息进 5s 抖动窗口；每成功回复一轮按连续轮数递增续期；倒计时结束下线。
     """
 
     def __init__(self, pm: "PresenceManager", sid: str):
@@ -574,6 +536,7 @@ class _SessionState:
         self.state = "offline"
         self.reason = "initial"
         self._online_deadline = 0.0
+        self._renew_streak = 0
         self._last_active = time.monotonic()
         # 首次上线在离线周期内随机错开，避免所有会话整点同时上线
         self._next_online = time.monotonic() + self._offline_span() * random.uniform(0.4, 1.0)
@@ -608,19 +571,20 @@ class _SessionState:
             return
         self.state = "online"
         self.reason = reason
+        self._renew_streak = 0
         span = self._online_span()
         self._online_deadline = time.monotonic() + span
         self.touch()
-        logger.info("上线（%s），预计在线 %.0fs，先处理积压", reason, span,
+        seen = self.pm._read_backlog_sid(self.sid)
+        logger.info("上线（%s），预计在线 %.0fs，读到积压 %d 条（不回复）", reason, span, seen,
                     extra={"session": self.label})
-        # 上线先处理本会话积压（唤醒即时回复的那条已标记 replied，不会重复）
-        await self.pm._process_backlog_sid(self.sid)
 
     async def go_offline(self, reason: str) -> None:
         if self.state == "offline":
             return
         self.state = "offline"
         self.reason = reason
+        self._renew_streak = 0
         wait = self._offline_span()
         self._next_online = time.monotonic() + wait
         # 清理本会话未发送的抖动批次（下线即停，避免残留任务/消息堆积）
@@ -635,14 +599,17 @@ class _SessionState:
         logger.info("下线（%s），%.0fs 后再次上线", reason, wait, extra={"session": self.label})
 
     def renew(self) -> None:
-        """每发送一条消息：在线时长 +renew_per_reply_sec（带抖动，聊得火热）。"""
+        """每成功回复一轮：在线时长按连续对话轮数递增（聊得越久越火热，封顶续期上限）。"""
         if not self._p.get("renew_on_reply", True):
             return
-        inc = jitter(
-            float(self._p.get("renew_per_reply_sec", 30)),
-            float(self._p.get("renew_jitter", 0.3)),
-            minimum=0.0,
-        )
+        self._renew_streak += 1
+        base = float(self._p.get("renew_per_reply_sec", 60))
+        step = max(0.0, float(self._p.get("renew_streak_step", 0.5)))
+        cap = max(0.0, float(self._p.get("renew_max_sec", 600)))
+        inc = jitter(base * (1 + step * (self._renew_streak - 1)), float(self._p.get("renew_jitter", 0.3)),
+                     minimum=0.0)
+        if cap:
+            inc = min(inc, cap)
         self._online_deadline = max(self._online_deadline, time.monotonic()) + inc
-        self.reason = "reply-renew"
+        self.reason = f"reply-renew x{self._renew_streak}"
         self.touch()

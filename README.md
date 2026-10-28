@@ -31,7 +31,7 @@ GGBot/
 │   ├── core/             # 核心业务
 │   │   ├── config.py     #   配置加载（纯配置文件驱动 + Web 热更新）
 │   │   ├── storage.py    #   SQLite（会话/消息/记忆/规则）
-│   │   └── presence.py   #   在线/离线状态机（会话级唤醒/积压分流/抖动/分段发送）
+│   │   └── presence.py   #   在线/离线状态机（会话级唤醒/积压只读/抖动/分段发送）
 │   ├── llm/
 │   │   ├── llm.py        #   DeepSeek 请求装置
 │   │   └── memory.py     #   向量记忆（SiliconFlow Embedding + 余弦检索 + 去重/整理）
@@ -109,7 +109,7 @@ start.bat                    # Windows 前台（Ctrl+C 停止）
 - **日志文件**：只写 `temp/logs/ggbot.log`（RotatingFileHandler，5MB × 5 轮转；目录随 `storage.temp_dir` 自动创建；stderr 同时输出）。项目根目录不再产生 `botpy.log` / `logs/`——botpy 的文件 handler 已关闭（`bot_log=None, ext_handlers=False`）。格式 `时间 | 等级 | 位置 | 会话 | 内容`——会话列统一为 `群聊xxxxxxxx` / `私聊xxxxxxxx` / `系统00000000`（8 位 openid），控制台、文件、Web 面板三处一致；第三方库默认 WARNING 降噪
 - **启动日志**：仅六条就绪信息——`日志就绪`（相对路径）/ `存储就绪`（相对路径）/ `记忆就绪`（模型）/ `LLM就绪`（模型 + 地址）/ `Web就绪`（地址）/ `QQBot就绪`（gateway）；收发消息只保留一条入站日志和一条发送内容，不再重复打印 `seq/passive` 等内部字段
 - **等级控制**：`db/config.json → web.log_level`（默认 INFO）；面板保存设置即时热切换。项目**纯配置文件驱动**，不使用环境变量、不设启动参数（Web 面板开关：`web.enable`）
-- **Web 面板**：分组导航 + 响应式布局。仪表盘（在线状态 / 会话倒计时 / 指标 / 最近消息）、会话与上下文（历史摘要、消息气泡、单独清空）、消息流、向量记忆（语义检索 / 写入 / 编辑 / 整理）、规则启停、工具（13 个 Tool 的启停与脱敏配置概览）、设置分组（LLM / 在线作息 / 拟人回复 / 积压与日志，白名单热更新并写回 config.json）、日志（等级 / 会话 / 内容过滤，自动刷新）
+- **Web 面板**：分组导航 + 响应式布局。仪表盘（在线状态 / 会话倒计时 / 指标 / 最近消息）、会话与上下文（历史摘要、消息气泡、单独清空）、消息流、向量记忆（语义检索 / 写入 / 编辑 / 整理）、规则启停、工具（13 个 Tool 的启停与脱敏配置概览）、设置分组（LLM / 在线作息 / 拟人回复 / 积压读取与日志，白名单热更新并写回 config.json）、日志（等级 / 会话 / 内容过滤，自动刷新）
 - **运维 CLI**：`python tools/manage.py stats|sessions|context|clear|reset-chat|memory ...`，可直接查看统计、导出会话上下文、清空单个会话、检索/增改/整理记忆（`--yes` 跳过确认）
 - **API**：登录 `POST /api/login`（HttpOnly Cookie，失败限流 8 次/60s）、`GET /api/auth`、`POST /api/logout`；业务 `GET /api/stats|sessions|messages|memories|rules|tools|config|logs`，`POST /api/config`（`[{"path": "a.b.c", "value": x}]` 批量，白名单 + 类型校验，越权拒绝）、`POST /api/tools/{name}/toggle`（共享配置的 Tool 返回 400）；`GET /api/config|tools` 密钥脱敏；`GET /media/{exp}/{sig}/{rel}` 为 QQ 提供签名媒体，不参与 Cookie 鉴权
 - **安全**：Cookie 鉴权（常量时间比较）、`/ws` 同源 + Cookie 校验、跨站写请求拦截、CSP / X-Frame-Options DENY / nosniff / no-store，FastAPI 文档端点关闭；公网部署建议再加 HTTPS 反向代理并设 `web.cookie_secure=true`
@@ -119,16 +119,16 @@ start.bat                    # Windows 前台（Ctrl+C 停止）
 | 机制 | 配置 | 说明 |
 |---|---|---|
 | 在线/离线作息 | `presence.online_duration_sec`（默认 60）/ `offline_interval_sec`（默认 600） | 每会话独立：定时上线、在线一段时间后下线 |
-| @唤醒 | `presence.wake_on_at_message` | 离线被@（本会话）→ 本会话上线并立即回复该条（不进积压） |
-| 聊得火热 | `presence.renew_on_reply` + `renew_per_reply_sec`（默认 30） | 每发送一条消息，本会话在线时长 +30s |
+| @唤醒 | `presence.wake_on_at_message` | 离线被@（本会话）→ 先读入离线积压（不含本条），本会话上线并立即回复该条 |
+| 聊得火热 | `presence.renew_on_reply` + `renew_per_reply_sec`（默认 60）/ `renew_streak_step`（默认 0.5）/ `renew_max_sec`（默认 600） | 每成功回复一轮续期递增：第 1 轮 +60s、第 2 轮 +90s、第 3 轮 +120s……单次封顶 600s；下线后连聊计数归零 |
+| 积压只读 | `backlog.max_scan_messages`（默认 1000） | 上线把离线 pending（≤上限）标记为 `seen` 读入上下文，**不回复、不触发 LLM**；下次回复时能看到期间发生了什么 |
 | 抖动聚合 | `reply.debounce_sec`（默认 5） | 在线消息 5s 窗口聚合，LLM 选择性回复（非每条必回） |
-| 积压分流 | `backlog.*` | 上线扫描本会话 pending（≤1000）；@/C2C 事件窗口内单独被动回，其余每 100 条合并主动回 |
 | 分段发送 | `reply.max_segments` / `max_chars_per_segment` / `segment_gap_sec` | 回复拆短句逐条发送（msg_seq 递增，官方支持同一消息多次回复） |
 | 作息抖动 | `presence.online_duration_jitter` / `offline_interval_jitter` / `renew_jitter` | 上下线时长、续期时长按 ±比例随机，避免机械整点；每会话首次上线时间也随机错开 |
-| 阅读停顿 | `reply.read_delay_min_sec` / `read_delay_max_sec` | 被动回复前随机"看一眼"停顿（积压批量 ≤3 条时才加，避免拖过被动窗口；默认 0 关闭） |
+| 阅读停顿 | `reply.read_delay_min_sec` / `read_delay_max_sec` | 被动回复前随机"看一眼"停顿（仅被动且消息 ≤3 条时加，避免拖过 5 分钟窗口；默认 0.4–1.6s） |
 | 打字速度 | `reply.typing_chars_per_sec` / `typing_min_sec` / `typing_max_sec` / `typing_jitter` | 按文本长度估算打字耗时再发送（受最短/最长限制与随机抖动；默认 0 关闭） |
 
-> **会话隔离**：每个会话（每个群 / 每段私聊）是独立状态机——私聊被@只唤醒私聊会话，不会让群聊上线；A 群唤醒不影响 B 群；群聊积压只有本群被唤醒时才处理。离线倒计时/在线时长/抖动窗口均按会话独立计时。
+> **会话隔离**：每个会话（每个群 / 每段私聊）是独立状态机——私聊被@只唤醒私聊会话，不会让群聊上线；A 群唤醒不影响 B 群；群聊积压只在本群上线时读入，不会跨群回复。离线倒计时/在线时长/抖动窗口均按会话独立计时。
 
 **状态机（每会话）**
 
@@ -137,11 +137,11 @@ stateDiagram-v2
     [*] --> offline
     offline --> online: 收到@消息(唤醒) / 离线倒计时到期(默认600s)
     offline --> offline: 普通消息入库积压(≤1000条)
-    online --> online: 先处理本会话积压→在线消息5s抖动聚合→选择性回复<br/>每发送一条消息在线时长+30s(renew_per_reply_sec)
+    online --> online: 积压标记seen读入上下文(不回复)→在线消息5s抖动聚合→选择性回复<br/>每成功回复一轮续期递增(+60s/+90s/+120s…封顶600s)
     online --> offline: 在线计时器到期(默认60s, 未续)
 ```
 
-**消息处理路径**：收到消息 → 归属会话 → 该会话离线？→ 入库标记 pending（不调 LLM）；若被@且 `wake_on_at_message` → 本会话唤醒并**立即被动回复该条**（不进积压）→ 本会话上线流程。在线：先浏览本会话积压 pending（≤1000 条）：`passive_ok` 事件（群@/C2C）且窗口内单独被动回，其余每 ≤`batch_size` 条合并为一条主动回（省额度），然后进入实时模式：5s 抖动窗口聚合 → LLM 选择性回复 → 每段发送成功续期 +30s。
+**消息处理路径**：收到消息 → 归属会话 → 该会话离线？→ 入库标记 pending（不调 LLM）；若被@且 `wake_on_at_message` → 先把旧积压标记 `seen` 读入上下文，再**立即被动回复本条** → 本会话上线。定时上线：把本会话积压（≤1000）标记 `seen` 后**直接进入在线状态，不回复任何积压消息**（`seen` 历史会参与之后生成，所以 AI 知道离线期间聊了什么）。在线：5s 抖动窗口聚合 → 仅含 `passive_ok`（群@/C2C）的批次才走 LLM 与回复 → 每成功回复一轮按连聊轮数递增续期（60/90/120… 封顶 600s）。
 
 > **平台被动回复硬规则**：只有 `GROUP_AT_MESSAGE_CREATE`（群@本机器人）与 `C2C_MSG_RECEIVE`（私聊）事件的消息能带 `msg_id+event_id` 被动回复（不限额度）；`GROUP_MESSAGE_CREATE`（群全量）事件的 `event_id` 平台拒绝用于被动回复（400 40034027），只能主动发送（额度每月 4 条/群）。代码按事件来源持久化 `passive_ok` 标记并据此选通道。
 
@@ -186,8 +186,9 @@ stateDiagram-v2
     "presence": { "online_duration_sec": 300, "offline_interval_sec": 900,
                   "online_duration_jitter": 0.3, "offline_interval_jitter": 0.4,
                   "renew_jitter": 0.3, "wake_on_at_message": true, "wake_on_c2c": false,
-                  "renew_on_reply": true, "renew_per_reply_sec": 30 },
-    "backlog": { "max_scan_messages": 1000, "batch_size": 100, "priority_rule": "llm" },
+                  "renew_on_reply": true, "renew_per_reply_sec": 60,
+                  "renew_streak_step": 0.5, "renew_max_sec": 600 },
+    "backlog": { "max_scan_messages": 1000 },
     "reply": { "max_segments": 5, "max_chars_per_segment": 80,
                "segment_gap_sec": 2, "debounce_sec": 10,
                "read_delay_min_sec": 0.4, "read_delay_max_sec": 1.6,
@@ -286,7 +287,8 @@ stateDiagram-v2
 [PASS] tool_loop         # function calling 端到端：AI 调用 memory_write 真实入库
 [PASS] config_read       # 纯配置文件驱动（无环境变量）+ temp/db 路径
 [PASS] logging_system    # 多等级写文件 + tail 等级过滤 + set_level 热切换；根目录不产生 botpy.log
-[PASS] presence_backlog  # 上线积压处理（wake-on-at 全链路：锁/会话分组/attachments 反序列化/目标派生）
+[PASS] presence_backlog  # 上线积压只读：pending→seen、零 LLM 调用/零发送；唤醒先读旧积压再回本条
+[PASS] renew_streak      # 连聊续期递增 60→90→120…、renew_max_sec 封顶、下线归零
 [PASS] presence_fail     # 发送失败隔离（失效会话标记 failed，不中断其余会话积压）
 [PASS] target_derive     # 发送目标反查（session_id 内部主键 ≠ openid，从 sessions.key 取完整 openid；c2c/group 双场景）
 [PASS] msg_seq           # 回复序号会话内小整数递增（被动 base+1 / 主动 1 起，int32 内防 400），失败自动降级主动发送
@@ -306,10 +308,10 @@ stateDiagram-v2
 代码能**收**到群全量消息 ≠ 机器人能**发**消息。以下为 QQ 开放平台侧硬性要求，缺任一项都会出现「群里显示：该机器人的服务异常，暂时无法响应」而本地日志无 ERROR（HTTP 200 但未投递）：
 
 1. **机器人必须已加入目标群**（未认证开发者仅能添加自己是群主/管理员身份的群；机器人进群能力在管理后台/客户端添加）
-2. **群主需在 QQ 客户端打开【机器人主动在群聊内发言】**——2026-06-22 起主动推送能力全量开放，未打开则主动消息（积压合并回复）全部失败
+2. **群主需在 QQ 客户端打开【机器人主动在群聊内发言】**——2026-06-22 起主动推送能力全量开放；未打开则主动消息全部失败（本版本正常回复走被动通道，只有被动回复降级时才用到主动）
 3. **开放平台需订阅群@事件（`GROUP_AT_MESSAGE_CREATE`）**：未订阅则@本机器人的消息不推该事件（只有群全量流），机器人无法识别被@；可用 config `bot_openid` 兜底
 4. 被动回复（@ 消息）依赖前置事件 ID `event_id`（代码已随消息事件透传）
-5. 频控硬限制：群被动消息每条消息 5 分钟内最多回复 5 次；**群主动消息每月 4 条/群**（积压合并回复属主动消息，额度极低，优先依赖在线时被动回复）
+5. 频控硬限制：群被动消息每条消息 5 分钟内最多回复 5 次；**群主动消息每月 4 条/群**（仅在被动回复降级时兜底，正常路径不消耗）
 6. 消息内容含 URL 需在 q.qq.com 后台「开发设置 → 消息URL配置」预先配置，否则发送失败
 
 ## 已知限制

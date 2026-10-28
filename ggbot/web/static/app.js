@@ -219,11 +219,16 @@ function labelFromKey(key) {
   const raw = rest.slice(0, 8);
   return raw && raw.toLowerCase() !== "system" ? `系统${raw}` : "系统00000000";
 }
-function reasonLabel(reason) { return REASON[reason] || reason || "—"; }
+function reasonLabel(reason) {
+  const m = /^(\S+)\s+x(\d+)$/.exec(reason || "");
+  if (m && REASON[m[1]]) return `${REASON[m[1]]} ×${m[2]}`;
+  return REASON[reason] || reason || "—";
+}
 function statusBadge(status) {
   if (status === "replied") return '<span class="badge ok">已回复</span>';
   if (status === "skipped") return '<span class="badge gray">跳过</span>';
   if (status === "failed") return '<span class="badge fail">失败</span>';
+  if (status === "seen") return '<span class="badge gray">已读</span>';
   if (status === "pending") return '<span class="badge warn">待处理</span>';
   if (status === "received") return '<span class="badge gray">已接收</span>';
   return `<span class="badge gray">${esc(status || "—")}</span>`;
