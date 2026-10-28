@@ -1,17 +1,17 @@
 """GGBot 运维 CLI：会话/上下文/记忆管理。
 
 用法（在项目根目录）：
-    .venv\\Scripts\\python tools\\manage.py stats
-    .venv\\Scripts\\python tools\\manage.py sessions
-    .venv\\Scripts\\python tools\\manage.py context 群1A2B3C4D
-    .venv\\Scripts\\python tools\\manage.py clear 群1A2B3C4D --yes
+    .venv\\Scripts\\python -m ggbot.cli stats
+    .venv\\Scripts\\python -m ggbot.cli sessions
+    .venv\\Scripts\\python -m ggbot.cli context 群1A2B3C4D
+    .venv\\Scripts\\python -m ggbot.cli clear 群1A2B3C4D --yes
 
-    .venv\\Scripts\\python tools\\manage.py memory list [--session 群1A2B3C4D]
-    .venv\\Scripts\\python tools\\manage.py memory search 喜欢的食物
-    .venv\\Scripts\\python tools\\manage.py memory add "小明喜欢喝美式" --importance 3
-    .venv\\Scripts\\python tools\\manage.py memory edit <id> --content "新的内容"
-    .venv\\Scripts\\python tools\\manage.py memory delete <id> --yes
-    .venv\\Scripts\\python tools\\manage.py memory tidy --yes
+    .venv\\Scripts\\python -m ggbot.cli memory list [--session 群1A2B3C4D]
+    .venv\\Scripts\\python -m ggbot.cli memory search 喜欢的食物
+    .venv\\Scripts\\python -m ggbot.cli memory add "小明喜欢喝美式" --importance 3
+    .venv\\Scripts\\python -m ggbot.cli memory edit <id> --content "新的内容"
+    .venv\\Scripts\\python -m ggbot.cli memory delete <id> --yes
+    .venv\\Scripts\\python -m ggbot.cli memory tidy --yes
 
 会话引用支持：完整 id（group:... / c2c:...）、8 位标签（群1A2B3C4D / 私聊1A2B3C4D）、
 openid 前缀（1A2B3C4D）。配置了 embedding 时记忆检索为语义检索，否则按关键词匹配。
@@ -197,7 +197,8 @@ def cmd_memory_tidy(memory: MemoryStore, threshold: float, yes: bool) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="GGBot 会话 / 上下文 / 记忆管理")
+    p = argparse.ArgumentParser(prog="python -m ggbot.cli",
+                                description="GGBot 会话 / 上下文 / 记忆管理")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("stats", help="数据概览")

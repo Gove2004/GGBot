@@ -27,11 +27,10 @@ GGBot/
 ├── temp/                # 富媒体附件临时落地 + 日志 + Tool 运行产物（temp/tool/<name>/；默认 24h 清理，gitignored）
 ├── requirements.txt
 ├── main.py              # 入口
-├── tools/
-│   └── manage.py        # 运维 CLI（stats / sessions / context / memory / clear）
 ├── start.bat            # Windows 前台启动（Ctrl+C 停止）
 ├── start.sh             # Linux 后台启动（nohup，kill <PID> 停止）
 ├── ggbot/
+│   ├── cli.py            # 运维 CLI（python -m ggbot.cli stats|sessions|context|memory|clear）
 │   ├── core/             # 核心业务
 │   │   ├── config.py     #   配置加载（纯配置文件驱动 + Web 热更新）
 │   │   ├── storage.py    #   SQLite（会话/消息/记忆/规则）
@@ -140,7 +139,7 @@ start.bat                    # Windows 前台（Ctrl+C 停止）
 - **启动日志**：仅六条就绪信息——`日志就绪`（相对路径 + 等级）/ `存储就绪`（相对路径）/ `记忆就绪`（模型 + 地址；未配置 embedding 时为 `关键词模式`）/ `LLM 就绪`（模型 + 地址）/ `Web 就绪`（地址）/ `Bot 就绪`（gateway）；收发消息只保留一条入站日志（`私聊[昵称/54019C24] 内容` / `群@[昵称/54019C24] 内容`；无昵称时只显示 8 位 id，引用消息显示为 `[引用 被引内容] 正文`；纯富媒体消息（图片/语音/视频/文件）没有文本时显示 `[图片 cat.gif]` / `[语音]` / `[视频]` / `[文件 报告.pdf]` 等标记，不会出现空内容）和一条发送内容；上下文与 token 统计为 `agent 上下文: history = 40 / 64 tokens ≈ 9000 / 16000`、`LLM 请求 tokens ≈ 9000`、`LLM 响应 tokens ≈ 52`（上下文日志与请求日志使用同一估算口径，不再重复计算 system 提示词）；上下线只打 `自然上线 预计在线 53s, 积压消息 0 / 128 条` / `强制上线 …` / `下线 预计离线 438s`
 - **等级控制**：`db/config.json → web.log_level`（默认 INFO）；面板保存设置即时热切换。`start.bat` / `start.sh` 默认带 `--log-level DEBUG`，直接 `python main.py` 则用配置值；项目不使用环境变量（Web 面板开关：`web.enable`）
 - **Web 面板**：深色玻璃拟态 + 响应式。桌面端侧栏可折叠为图标栏（78px，状态记忆在 localStorage；≤900px 改为抽屉）；仪表盘为 bento 布局——主卡显示运行状态 / 在线会话 / 待处理，右侧 6 个指标两列排布，下方图表与最近消息；会话与上下文改为左右分栏（左列表支持筛选与待处理角标、滚动位置保持，右侧详情含摘要、统计、消息气泡与单独清空）；消息流为时间线卡片（角色色点 / 会话标签 / 状态徽标）；日志改为等宽控制台（时间去色、等级 / 会话 / 内容四列，警告与错误行带底色，≤620px 隐藏会话列）；向量记忆（语义检索 / 写入 / 编辑 / 整理）、规则启停、工具（10 个 Tool 的启停与脱敏配置概览）、设置分组（LLM / 在线作息 / 回复节奏 / 上下文与积压 / 日志，白名单热更新并写回 config.json）
-- **运维 CLI**：`python tools/manage.py stats|sessions|context|clear|reset-chat|memory ...`，可直接查看统计、导出会话上下文、清空单个会话、检索/增改/整理记忆（`--yes` 跳过确认）
+- **运维 CLI**：`python -m ggbot.cli stats|sessions|context|clear|reset-chat|memory ...`，可直接查看统计、导出会话上下文、清空单个会话、检索/增改/整理记忆（`--yes` 跳过确认）
 - **API**：登录 `POST /api/login`（HttpOnly Cookie，失败限流 8 次/60s）、`GET /api/auth`、`POST /api/logout`；业务 `GET /api/stats|sessions|messages|memories|rules|tools|config|logs`，`POST /api/config`（`[{"path": "a.b.c", "value": x}]` 批量，白名单 + 类型校验，越权拒绝）、`POST /api/tools/{name}/toggle`（共享配置的 Tool 返回 400）；`GET /api/config|tools` 密钥脱敏；`GET /media/{exp}/{sig}/{rel}` 为 QQ 提供签名媒体，不参与 Cookie 鉴权
 - **安全**：Cookie 鉴权（常量时间比较）、`/ws` 同源 + Cookie 校验、跨站写请求拦截、CSP / X-Frame-Options DENY / nosniff / no-store，FastAPI 文档端点关闭；公网部署建议再加 HTTPS 反向代理并设 `web.cookie_secure=true`
 
@@ -311,11 +310,11 @@ stateDiagram-v2
 ## 运维 CLI
 
 ```powershell
-.\.venv\Scripts\python.exe tools\manage.py stats            # 会话/消息/待处理/记忆/规则统计
-.\.venv\Scripts\python.exe tools\manage.py sessions         # 会话列表（标签 / 消息数 / 最后活动）
-.\.venv\Scripts\python.exe tools\manage.py context 群聊8825F8A7 --limit 50  # 导出某会话上下文
-.\.venv\Scripts\python.exe tools\manage.py clear 群聊8825F8A7 --yes          # 只清该会话消息
-.\.venv\Scripts\python.exe tools\manage.py memory list|search|add|edit|delete|tidy
+.\.venv\Scripts\python.exe -m ggbot.cli stats            # 会话/消息/待处理/记忆/规则统计
+.\.venv\Scripts\python.exe -m ggbot.cli sessions         # 会话列表（标签 / 消息数 / 最后活动）
+.\.venv\Scripts\python.exe -m ggbot.cli context 群聊8825F8A7 --limit 50  # 导出某会话上下文
+.\.venv\Scripts\python.exe -m ggbot.cli clear 群聊8825F8A7 --yes          # 只清该会话消息
+.\.venv\Scripts\python.exe -m ggbot.cli memory list|search|add|edit|delete|tidy
 ```
 
 重置数据库（非 CLI，属启动参数）：`.\.venv\Scripts\python.exe main.py --reset-db` 先备份再清空全部业务数据；`--reset-chat` 只清聊天数据、保留记忆与规则。
