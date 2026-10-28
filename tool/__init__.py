@@ -3,7 +3,7 @@
 一切能力都是 Tool：插件按能力域放在项目根 tool/{core,memory,emoji,audio,media,mail}/，
 启动时自动发现并按配置挂载 schema。每个 toolset 目录自包含代码、config.json 与持久化数据。
 回合语义：LLM 的纯文本输出不会作为回复发送（会被忽略）；必须通过工具调用行动——
-send_text/seed_message 发送消息、end_call 结束本轮（或未调用任何工具时默认视为 end_call）。
+send_text 发送消息、end_call 结束本轮（或未调用任何工具时默认视为 end_call）。
 """
 
 from __future__ import annotations
@@ -51,15 +51,13 @@ class ToolExecutor:
             known = name in self.registry.tools
             return {"ok": False, "error": f"工具 {name} 未启用" if known else f"未知工具 {name}"}
         sid = session_label(ctx.get("session_id"))
-        if name not in ("send_text", "seed_message", "end_call"):
-            logger.debug("工具 %s args=%s", name, json.dumps(args, ensure_ascii=False)[:200],
-                         extra={"session": sid})
+        logger.debug("工具 %s args=%s", name, json.dumps(args, ensure_ascii=False)[:200],
+                     extra={"session": sid})
         try:
             return await tool.run(args, ctx)
         except Exception as e:  # noqa: BLE001
             logger.exception("工具 %s 执行失败", name, extra={"session": sid})
-            if name.startswith(("send_", "seed_")):
-                ctx["send_error"] = str(e)  # 发送类工具失败标记，供回合收尾区分 skipped/failed
+            ctx["tool_error"] = f"{name}: {e}"
             return {"ok": False, "error": str(e)}
 
 
@@ -70,7 +68,7 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
     - LLM 某轮未调用任何工具 → 默认 end_call，该轮纯文本被忽略；
     - LLM 显式调用 end_call → 立即结束；
     - 达到 max_rounds。
-    回复内容由工具发送（send_text / seed_message / send_image 等），不依赖返回文本。
+    回复内容由工具发送（send_text / send_image 等），不依赖返回文本。
     """
     tools = executor.schemas
     if not tools:

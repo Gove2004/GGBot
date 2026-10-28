@@ -295,11 +295,11 @@ class PresenceManager:
         return _derive_target(sid)
 
     async def _safe_reply(self, msgs: list[dict], passive: bool, renew_sid: str | None = None) -> bool:
-        """工具制回合：LLM 通过 send_text/seed_message 等工具实际发送消息。
+        """工具制回合：LLM 通过 send_text 等工具实际发送消息。
 
         状态判定：
         - 回合内工具实际发送成功（ctx.sent_any）→ replied（续期）；
-        - 发送工具报错（ctx.send_error）→ failed；
+        - 任一工具执行报错（ctx.tool_error）→ failed；
         - 未调用工具 / end_call / 无话可说 → skipped。
         任何失败只标记状态，不向上抛（避免单条失效群打崩整轮积压）。
         """
@@ -327,8 +327,8 @@ class PresenceManager:
         if ctx.get("sent_any"):
             _mark("replied")
             return True
-        if ctx.get("send_error"):
-            logger.warning("回复发送失败 n=%d: %s", len(msgs), ctx["send_error"],
+        if ctx.get("tool_error"):
+            logger.warning("工具执行失败 n=%d: %s", len(msgs), ctx["tool_error"],
                            extra={"session": label})
             _mark("failed")
             return False

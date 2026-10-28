@@ -17,7 +17,7 @@ GGBot/
 │   ├── config.json      # 全局配置（QQ 凭据 / DeepSeek / Embedding / 行为 / 存储 / Web；含密钥，gitignored）
 │   └── ggbot.db         # SQLite 持久化：会话/消息/记忆/规则（运行时生成，gitignored）
 ├── tool/                # Tool 自包含目录：每个 toolset = 代码 + config.json + 持久化数据（整目录可复制迁移）
-│   ├── core/            #   send_text / seed_message / end_call
+│   ├── core/            #   send_text / end_call
 │   ├── memory/          #   memory_search / memory_write
 │   ├── emoji/           #   sticker.py + config.json + index.json + stickers/（内置素材）+ user/（用户投喂）
 │   ├── audio/           #   voice_clone.py + config.json（MiMo key）+ voice_ref.wav（参考音频）
@@ -79,7 +79,7 @@ flowchart LR
 
 数据流：QQ 事件 → 网关归一化 → 上下文装置组织会话 → AI 装置请求 DeepSeek → 回复回传网关 → QQ；全链路事件同步推送到 Web 面板。
 
-**核心循环**：`Tool 插件（按配置动态挂载）+ 上下文（群窗口≤128k，超限摘要压缩）+ 相关记忆 → Tool 行动`。Tool 层通过 DeepSeek function calling 实现，插件在项目根 `tool/<分类>/` 下自动发现；**回合语义：LLM 纯文本输出不发送、会被忽略，必须通过 Tool 行动——send_text/seed_message 发送消息、end_call（或未调用任何 Tool）结束回合**；认知状态只有记忆：AI 通过 `memory_write` 沉淀、`memory_search` 回忆，system prompt 只注入规则、各 Tool 自己挂载的提示与当前话题相关的 top-3 记忆（不设固定人设，避免上下文膨胀）。
+**核心循环**：`Tool 插件（按配置动态挂载）+ 上下文（群窗口≤128k，超限摘要压缩）+ 相关记忆 → Tool 行动`。Tool 层通过 DeepSeek function calling 实现，插件在项目根 `tool/<分类>/` 下自动发现；**回合语义：LLM 纯文本输出不发送、会被忽略，必须通过 Tool 行动——send_text 发送消息、end_call（或未调用任何 Tool）结束回合**；认知状态只有记忆：AI 通过 `memory_write` 沉淀、`memory_search` 回忆，system prompt 只注入规则、各 Tool 自己挂载的提示与当前话题相关的 top-3 记忆（不设固定人设，避免上下文膨胀）。
 
 ## 快速开始
 
@@ -108,7 +108,7 @@ start.bat                    # Windows 前台（Ctrl+C 停止）
 - **日志文件**：只写 `temp/logs/ggbot.log`（RotatingFileHandler，5MB × 5 轮转；目录随 `storage.temp_dir` 自动创建；stderr 同时输出）。项目根目录不再产生 `botpy.log` / `logs/`——botpy 的文件 handler 已关闭（`bot_log=None, ext_handlers=False`）。格式 `时间 | 等级 | 位置 | 会话 | 内容`——会话列统一为 `群聊xxxxxxxx` / `私聊xxxxxxxx` / `系统00000000`（8 位 openid），控制台、文件、Web 面板三处一致；DEBUG 只输出业务状态（入站 / 上下文 / LLM 请求 / 工具 / 发送 / 上下线），第三方库（botpy / openai / httpx / httpcore2 / uvicorn 等）固定 WARNING，不打印连接与报文细节
 - **启动日志**：仅六条就绪信息——`日志就绪`（相对路径 + 等级）/ `存储就绪`（相对路径）/ `记忆就绪`（模型 + 地址）/ `LLM就绪`（模型 + 地址）/ `Web就绪`（地址）/ `QQBot就绪`（gateway）；收发消息只保留一条入站日志（`私聊[54019C24] 内容` / `群@[54019C24] 内容`）和一条发送内容；上下线只打 `自然上线 预计在线 53s, 积压消息 0 条` / `强制上线 …` / `下线 预计离线 438s`
 - **等级控制**：`db/config.json → web.log_level`（默认 INFO）；面板保存设置即时热切换。`start.bat` / `start.sh` 默认带 `--log-level DEBUG`，直接 `python main.py` 则用配置值；项目不使用环境变量（Web 面板开关：`web.enable`）
-- **Web 面板**：分组导航 + 响应式布局。仪表盘（在线状态 / 会话倒计时 / 指标 / 最近消息）、会话与上下文（历史摘要、消息气泡、单独清空）、消息流、向量记忆（语义检索 / 写入 / 编辑 / 整理）、规则启停、工具（12 个 Tool 的启停与脱敏配置概览）、设置分组（LLM / 在线作息 / 拟人回复 / 积压读取与日志，白名单热更新并写回 config.json）、日志（等级 / 会话 / 内容过滤，自动刷新）
+- **Web 面板**：分组导航 + 响应式布局。仪表盘（在线状态 / 会话倒计时 / 指标 / 最近消息）、会话与上下文（历史摘要、消息气泡、单独清空）、消息流、向量记忆（语义检索 / 写入 / 编辑 / 整理）、规则启停、工具（11 个 Tool 的启停与脱敏配置概览）、设置分组（LLM / 在线作息 / 拟人回复 / 积压读取与日志，白名单热更新并写回 config.json）、日志（等级 / 会话 / 内容过滤，自动刷新）
 - **运维 CLI**：`python tools/manage.py stats|sessions|context|clear|reset-chat|memory ...`，可直接查看统计、导出会话上下文、清空单个会话、检索/增改/整理记忆（`--yes` 跳过确认）
 - **API**：登录 `POST /api/login`（HttpOnly Cookie，失败限流 8 次/60s）、`GET /api/auth`、`POST /api/logout`；业务 `GET /api/stats|sessions|messages|memories|rules|tools|config|logs`，`POST /api/config`（`[{"path": "a.b.c", "value": x}]` 批量，白名单 + 类型校验，越权拒绝）、`POST /api/tools/{name}/toggle`（共享配置的 Tool 返回 400）；`GET /api/config|tools` 密钥脱敏；`GET /media/{exp}/{sig}/{rel}` 为 QQ 提供签名媒体，不参与 Cookie 鉴权
 - **安全**：Cookie 鉴权（常量时间比较）、`/ws` 同源 + Cookie 校验、跨站写请求拦截、CSP / X-Frame-Options DENY / nosniff / no-store，FastAPI 文档端点关闭；公网部署建议再加 HTTPS 反向代理并设 `web.cookie_secure=true`
@@ -213,8 +213,7 @@ stateDiagram-v2
 
 | 分类 | Tool | 作用 | 配置/数据（`tool/<分类>/`） |
 |---|---|---|---|
-| core | `send_text` | 发送一条聊天消息（回合的主要出口） | 无（首次停用才生成 config） |
-| core | `seed_message` | 先埋一句再继续，用于分段/接话 | 无 |
+| core | `send_text` | 发送一条聊天消息（回应、主动开场、分段接话都用它） | 无（首次停用才生成 config） |
 | core | `end_call` | 结束本回合 | 无 |
 | memory | `memory_search` / `memory_write` | 向量记忆检索 / 沉淀 | 无 |
 | emoji | `send_sticker` | 按情绪/场景从素材库挑图发送 | `config.json`、`index.json`、`stickers/`、`user/` |
@@ -296,7 +295,7 @@ stateDiagram-v2
 [PASS] storage_crud      # SQLite 会话/消息/记忆/规则 CRUD + 积压查询
 [PASS] memory_vector     # SiliconFlow embedding 真实调用 + 语义检索 + 去重/ tidy 合并
 [PASS] llm_chat          # DeepSeek deepseek-flash 真实调用（thinking=disabled 生效）
-[PASS] tools_schema      # 12 个 Tool 插件自动发现 + schema 校验 + 启用状态过滤
+[PASS] tools_schema      # 11 个 Tool 插件自动发现 + schema 校验 + 启用状态过滤
 [PASS] tool_layout       # 根目录 tool/ 按分类包自动发现（core/memory/emoji/audio/media/mail）+ 自包含数据目录 + config-less 工具 toggle 生效
 [PASS] assistant_persist # 发送成功后 assistant 消息入库；pending 不进历史；本轮消息独立标注（防逐条重答旧消息）
 [PASS] tool_plugin       # 插件配置隔离（send_email→tool/mail）、共享配置同组不可单独启停、/api/tools 密钥脱敏
