@@ -191,6 +191,8 @@ class ToolExecutor:
                                  ctx.get("event_id"))
         ctx["msg_seq"] = seq + 1  # 递增 msg_seq，支持同一消息多次回复
         ctx["sent_any"] = True    # 回合内已实际发送 → 收尾标记 replied 而非 skipped
+        logger.info("send_text target=%s scene=%s seq=%d passive=%s: %.80s",
+                    ctx["target"], ctx["scene"], seq, bool(ctx.get("event_id")), content)
         return {"ok": True, "sent": content}
 
     async def _tool_send_emoji(self, args: dict, ctx: dict) -> dict:
@@ -245,6 +247,8 @@ class ToolExecutor:
         if ok:
             ctx["msg_seq"] = seq + 1
             ctx["sent_any"] = True
+            logger.info("send_media %s target=%s scene=%s seq=%d passive=%s: %s",
+                        label, ctx["target"], ctx["scene"], seq, bool(ctx.get("event_id")), detail)
             return {"ok": True, "sent": f"{label}已发送: {detail}"}
         return {"ok": False, "error": detail}
 

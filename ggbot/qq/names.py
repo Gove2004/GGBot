@@ -5,7 +5,7 @@ QQ 群/用户 openid 是 32 位十六进制串，日志里不可读。解析顺�
 2. 官方 v2 API（api.sgroup.qq.com，带内存缓存；测试 app 可能无权限，失败降级显示 id）
 
 - token：POST bots.qq.com/app/getAppAccessToken（appId+clientSecret）
-- 群信息：GET /v2/groups/{group_openid}/info        → {"name": ...}（注意必须带 /info）
+- 群信息：GET /v2/groups/{group_openid}/info        → {"group_name": ...}（注意必须带 /info，字段名是 group_name）
 - 群成员：GET /v2/groups/{group_openid}/members/{member_openid} → {"nickname": ...}
 - 用户：  GET /v2/users/{openid}               → {"nickname": ...}
 
@@ -90,9 +90,8 @@ class NameResolver:
                             self._miss_until[key] = now + 3600  # 权限/不存在，1h 内不再试
                         return None
                     d = await r.json()
-            if "name" in d:
-                return d.get("name")
-            return d.get("nickname") or d.get("name")
+            # 群信息 → group_name；群成员/用户 → nickname（文档字段名，勿用 name）
+            return d.get("group_name") or d.get("nickname") or d.get("name")
         except Exception as e:  # noqa: BLE001
             self._miss.add(key)
             self._miss_until[key] = now + 300
