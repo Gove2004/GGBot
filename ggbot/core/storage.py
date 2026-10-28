@@ -285,6 +285,19 @@ class Storage:
             c.execute("DELETE FROM sessions")
             return {"messages": m, "sessions": s}
 
+    def reset_all_data(self) -> dict:
+        """清空全部业务数据：messages + sessions + memories + rules。"""
+        with self._lock, self._conn() as c:
+            counts = {
+                "messages": c.execute("SELECT COUNT(*) FROM messages").fetchone()[0],
+                "sessions": c.execute("SELECT COUNT(*) FROM sessions").fetchone()[0],
+                "memories": c.execute("SELECT COUNT(*) FROM memories").fetchone()[0],
+                "rules": c.execute("SELECT COUNT(*) FROM rules").fetchone()[0],
+            }
+            for table in ("messages", "sessions", "memories", "rules"):
+                c.execute(f"DELETE FROM {table}")
+            return counts
+
     def count_pending(self, session_id: str | None = None) -> int:
         with self._lock, self._conn() as c:
             if session_id:

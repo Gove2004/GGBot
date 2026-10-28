@@ -70,6 +70,34 @@ def _acquire_singleton(lock_path: Path) -> None:
     lock_path.write_text(str(os.getpid()), encoding="utf-8")
 
 
+def _backup_db(db_path: Path) -> Path | None:
+    """重置前用 SQLite 在线备份 API 生成快照（包含 WAL 中的最新数据）。"""
+    import sqlite3
+    import time as _time
+
+    if not Path(db_path).exists():
+        return None
+    bak = Path(db_path).with_name(f"{Path(db_path).name}.bak-{_time.strftime('%Y%m%d_%H%M%S')}")
+    src = sqlite3.connect(db_path)
+    dst = sqlite3.connect(bak)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+    return bak
+
+
+def _wipe_db(db_path: Path) -> None:
+    """删除数据库及 WAL/SHM（调用前需保证没有其他进程在使用）。"""
+    for suffix in ("", "-wal", "-shm"):
+        p = Path(str(db_path) + suffix)
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
+
+
 async def main(cfg: Config | None = None) -> None:
     cfg = cfg or Config()
     lock_path = Path(cfg.db_path).parent / ".bot.lock"
@@ -78,6 +106,12 @@ async def main(cfg: Config | None = None) -> None:
     setup_logging(cfg.log_file, log_level)
     log = logging.getLogger("ggbot.main")
     log.info("日志就绪: %s (level=%s)", _rel(cfg.log_file), log_level)
+
+    if getattr(cfg, "_reset_db", False):
+        bak = _backup_db(Path(cfg.db_path))
+        _wipe_db(Path(cfg.db_path))
+        log.info("数据库已重置（聊天/记忆/规则全部清空）%s",
+                 f"，备份: {_rel(bak)}" if bak else "，原库不存在")
 
     storage = Storage(cfg.db_path)
     log.info("存储就绪: %s", _rel(cfg.db_path))
@@ -135,6 +169,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GGBot")
     parser.add_argument("--reset-chat", action="store_true",
                         help="清理 messages/sessions 聊天数据（保留记忆与规则）后启动")
+    parser.add_argument("--reset-db", action="store_true",
+                        help="备份后删除整个数据库（聊天/记忆/规则全部清空）再启动")
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default=None,
                         help="覆盖 config web.log_level（start 脚本默认 DEBUG）")
     args = parser.parse_args()
@@ -142,6 +178,7 @@ if __name__ == "__main__":
     async def _run() -> None:
         cfg = Config()
         cfg._reset_chat = args.reset_chat
+        cfg._reset_db = args.reset_db
         cfg._log_level = args.log_level
         await main(cfg)
 

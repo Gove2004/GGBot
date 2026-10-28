@@ -1,6 +1,6 @@
 """日志系统：多等级、文件轮转、控制台输出、第三方库降噪。
 
-- 输出：temp/logs/ggbot.log（RotatingFileHandler，5MB × 5 备份）+ stderr 控制台
+- 输出：temp/logs/ggbot.log（RotatingFileHandler，5MB × 5 备份，每次启动截断重写）+ stderr 控制台
 - 格式（所有日志统一）：`时间 | 等级 | 会话 | 内容`
   - 会话列优先取 logger extra={"session": ...}（业务代码显式传入，8 位 id）；
     未传时从内容兜底识别（群=xx / 会话X），否则系统00000000
@@ -66,7 +66,7 @@ def setup_logging(log_file: Path, level: str = "INFO", console: bool = True) -> 
     formatter = SessionFormatter(FMT)
 
     fh = logging.handlers.RotatingFileHandler(
-        log_file, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        log_file, mode="w", maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
     )
     fh.setFormatter(formatter)
     root.addHandler(fh)

@@ -21,6 +21,7 @@ import botpy
 from botpy.http import Route
 from botpy.message import C2CMessage, GroupMessage
 
+from ggbot.util.media import media_kind_label
 from ggbot.util.session import oid8, session_label
 
 logger = logging.getLogger("ggbot.bot")
@@ -48,6 +49,18 @@ def clean_content(content: str) -> str:
     text = FACE_RE.sub(_face_text, content or "")
     text = AT_RE.sub("", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def attachment_summary(attachments) -> str:
+    """附件概要：[图片 cat.gif] [语音 a.silk]，用于无文本消息的日志/展示。"""
+    parts = []
+    for a in attachments or []:
+        label = media_kind_label(getattr(a, "content_type", ""))
+        name = (getattr(a, "filename", "") or "").strip()
+        if len(name) > 32:
+            name = name[:29] + "…"
+        parts.append(f"[{label} {name}]" if name else f"[{label}]")
+    return " ".join(parts)
 
 
 def extract_quote(elements) -> str:
@@ -253,8 +266,11 @@ class QQBot(botpy.Client):
 
     @staticmethod
     def _message_text(message) -> str:
-        """清洗正文；引用消息前置 [引用 被引用内容]。"""
+        """清洗正文并附富媒体标记；引用消息前置 [引用 被引用内容]。"""
         text = clean_content(message.content)
+        media = attachment_summary(getattr(message, "attachments", None))
+        if media:
+            text = f"{text} {media}".strip()
         quote = (getattr(message, "quote_text", "") or "").strip()
         return f"[引用 {quote}] {text}" if quote else text
 

@@ -94,8 +94,12 @@
     </nav>
 
     <div class="side-foot">
-      <span class="dot"></span>
-      <span>v0.1 · 配置文件驱动</span>
+      <div class="side-live"><span id="side-dot" class="dot"></span><span id="side-state">运行中</span></div>
+      <div class="side-stat-row">
+        <div><strong id="side-online">—</strong><small>在线会话</small></div>
+        <div><strong id="side-pending">—</strong><small>待处理</small></div>
+      </div>
+      <div class="side-ver">v0.1 · 配置文件驱动</div>
     </div>
   </aside>
 
@@ -111,6 +115,9 @@
       <div class="topbar-actions">
         <span id="conn-pill" class="pill off"><i></i>离线</span>
         <span id="pending-pill" class="pill ghost">0 待处理</span>
+        <button class="icon-btn rail-btn" data-action="toggle-rail" title="收起 / 展开侧栏">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="M9 5v14M6 9l-2 3 2 3"/></svg>
+        </button>
         <button class="icon-btn" data-action="refresh" title="刷新">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg>
         </button>
@@ -126,29 +133,31 @@
 
       <!-- 仪表盘 -->
       <section id="page-dash" class="page">
-        <div id="dash-hero" class="hero card">
-          <div class="hero-main">
-            <div class="eyebrow">运行状态</div>
-            <div class="hero-title">
-              <span id="dash-dot" class="state-dot off"></span>
-              <span id="dash-state">离线</span>
+        <div class="dash-top">
+          <div id="dash-hero" class="hero card">
+            <div class="hero-main">
+              <div class="eyebrow">运行状态</div>
+              <div class="hero-title">
+                <span id="dash-dot" class="state-dot off"></span>
+                <span id="dash-state">离线</span>
+              </div>
+              <p id="dash-event" class="hero-sub">等待下一次上线</p>
             </div>
-            <p id="dash-event" class="hero-sub">等待下一次上线</p>
+            <div class="hero-side">
+              <div class="countdown"><span id="dash-remain">—</span><small>s</small></div>
+              <progress id="dash-progress" class="hero-progress" value="0" max="1" aria-label="状态倒计时进度"></progress>
+              <div id="dash-caption" class="hero-caption">—</div>
+            </div>
           </div>
-          <div class="hero-side">
-            <div class="countdown"><span id="dash-remain">—</span><small>s</small></div>
-            <progress id="dash-progress" class="hero-progress" value="0" max="1" aria-label="状态倒计时进度"></progress>
-            <div id="dash-caption" class="hero-caption">—</div>
-          </div>
-        </div>
 
-        <div class="metrics">
-          <div class="metric"><span class="metric-label">在线会话</span><strong id="m-online">—</strong><span class="metric-foot">当前活跃</span></div>
-          <div class="metric"><span class="metric-label">积压待处理</span><strong id="m-pending">—</strong><span class="metric-foot">离线消息</span></div>
-          <div class="metric"><span class="metric-label">记忆条目</span><strong id="m-memories">—</strong><span class="metric-foot">长期记忆</span></div>
-          <div class="metric"><span class="metric-label">会话总数</span><strong id="m-sessions">—</strong><span class="metric-foot">群聊 + 私聊</span></div>
-          <div class="metric"><span class="metric-label">今日消息</span><strong id="m-today">—</strong><span class="metric-foot">收到 + 发出</span></div>
-          <div class="metric"><span class="metric-label">规则</span><strong id="m-rules">—</strong><span class="metric-foot">注入提示词</span></div>
+          <div class="metrics">
+            <div class="metric"><span class="metric-label">在线会话</span><strong id="m-online">—</strong><span class="metric-foot">当前活跃</span></div>
+            <div class="metric"><span class="metric-label">积压待处理</span><strong id="m-pending">—</strong><span class="metric-foot">离线消息</span></div>
+            <div class="metric"><span class="metric-label">记忆条目</span><strong id="m-memories">—</strong><span class="metric-foot">长期记忆</span></div>
+            <div class="metric"><span class="metric-label">会话总数</span><strong id="m-sessions">—</strong><span class="metric-foot">群聊 + 私聊</span></div>
+            <div class="metric"><span class="metric-label">今日消息</span><strong id="m-today">—</strong><span class="metric-foot">收到 + 发出</span></div>
+            <div class="metric"><span class="metric-label">规则</span><strong id="m-rules">—</strong><span class="metric-foot">注入提示词</span></div>
+          </div>
         </div>
 
         <div class="grid-2">
@@ -177,19 +186,20 @@
 
       <!-- 会话与上下文 -->
       <section id="page-sessions" class="page hidden">
-        <div class="card">
-          <div class="card-head">
-            <div><h2>会话与上下文</h2><p class="card-sub">查看每个会话的历史摘要与消息，可单独清空上下文</p></div>
-            <div class="head-ops">
-              <input id="sess-q" class="input small-input search-input" placeholder="筛选会话 / 摘要…">
+        <div class="master-detail">
+          <aside class="card list-pane">
+            <div class="pane-head">
+              <div><h2>会话与上下文</h2><p class="card-sub">每个群 / 私聊独立作息</p></div>
               <button class="btn ghost small" data-action="refresh-sessions">刷新</button>
             </div>
-          </div>
-          <div class="table-wrap tall">
-            <table class="table">
-              <thead><tr><th>会话</th><th>状态</th><th class="col-sm-hide">消息</th><th class="col-sm-hide">待处理</th><th class="col-sm-hide">最后活动</th><th>摘要 / 最后消息</th><th></th></tr></thead>
-              <tbody id="sessions-body"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
-            </table>
+            <input id="sess-q" class="input search-input" placeholder="筛选会话 / 摘要…">
+            <div id="sessions-list" class="session-list"><div class="empty">加载中…</div></div>
+          </aside>
+          <div id="session-detail" class="card detail-pane">
+            <div class="detail-empty">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H8l-4 4V5Z"/></svg>
+              <p>选择左侧会话查看上下文</p>
+            </div>
           </div>
         </div>
       </section>
@@ -210,11 +220,8 @@
               <button class="btn ghost small" data-action="refresh-messages">刷新</button>
             </div>
           </div>
-          <div class="table-wrap tall">
-            <table class="table">
-              <thead><tr><th>时间</th><th>会话</th><th class="col-sm-hide">发送者</th><th>内容</th><th class="col-sm-hide">状态</th></tr></thead>
-              <tbody id="msg-body"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
-            </table>
+          <div class="stream-wrap">
+            <div id="msg-body" class="stream"><div class="empty">加载中…</div></div>
           </div>
         </div>
       </section>
@@ -371,11 +378,8 @@
               <button class="btn ghost small" data-action="refresh-logs">刷新</button>
             </div>
           </div>
-          <div class="table-wrap tall">
-            <table class="table log-table">
-              <thead><tr><th class="col-ts">时间</th><th class="col-lv">等级</th><th class="col-sess col-sm-hide">会话</th><th>内容</th></tr></thead>
-              <tbody id="log-body"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
-            </table>
+          <div class="log-wrap">
+            <div id="log-body" class="log-console"><div class="empty">加载中…</div></div>
           </div>
         </div>
       </section>

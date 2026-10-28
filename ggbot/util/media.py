@@ -22,6 +22,21 @@ MEDIA_EXTS = {
 MAX_TTL = 7 * 24 * 3600
 DEFAULT_TTL = 3600
 
+MEDIA_KINDS = (
+    (("voice", "audio", "silk"), "语音"),
+    (("video",), "视频"),
+    (("image", "emoji", "face", "gif", "png", "jpeg", "jpg", "webp"), "图片"),
+)
+
+
+def media_kind_label(content_type: str) -> str:
+    """附件类型的中文标签（图片/语音/视频/文件）。"""
+    c = (content_type or "").lower()
+    for keys, label in MEDIA_KINDS:
+        if any(k in c for k in keys):
+            return label
+    return "文件" if c else "富媒体"
+
 
 def _secret(cfg) -> str:
     return str((cfg.web_cfg or {}).get("token") or "") or str((cfg.qq or {}).get("secret") or "")

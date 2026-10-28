@@ -32,6 +32,7 @@ const state = {
   status: null,
   stats: null,
   sessions: [],
+  selectedSession: null,
   memItems: [],
   memoryQuery: "",
   memoryUseSearch: false,
@@ -312,6 +313,15 @@ function closeSidebar() {
   qs("#side-overlay").classList.add("hidden");
 }
 
+function setRail(on) {
+  qs("#app").classList.toggle("rail", !!on);
+  qsa(".nav-item").forEach((n) => {
+    const t = n.querySelector("span");
+    if (t) n.title = t.textContent;
+  });
+  try { localStorage.setItem("ggbot.rail", on ? "1" : "0"); } catch (_) { /* ignore */ }
+}
+
 /* ================= 状态 / 统计 ================= */
 async function refreshStatus() {
   const s = await api("/api/status");
@@ -324,6 +334,11 @@ async function refreshStatus() {
   const pend = qs("#pending-pill");
   pend.className = `pill ${pending > 0 ? "warn" : "ghost"}`;
   pend.textContent = `${pending} 待处理`;
+
+  qs("#side-dot").className = `dot${online ? "" : " off"}`;
+  qs("#side-state").textContent = online ? "在线" : "离线";
+  qs("#side-online").textContent = s.online_sessions != null ? s.online_sessions : "—";
+  qs("#side-pending").textContent = pending;
 
   qs("#dash-hero").classList.toggle("online", online);
   qs("#dash-dot").className = `state-dot ${online ? "on" : "off"}`;
@@ -389,29 +404,44 @@ async function refreshSessions() {
   renderSessions();
   populateSessionSelects();
   renderDashSessions();
+  if (state.page === "sessions") {
+    const still = state.selectedSession && state.sessions.some((s) => s.id === state.selectedSession);
+    if (!still) {
+      const first = state.sessions[0];
+      if (first) openSessionDetail(first.id);
+      else {
+        state.selectedSession = null;
+        const pane = qs("#session-detail");
+        if (pane) pane.innerHTML = detailEmptyHTML();
+      }
+    }
+  }
 }
 
 function renderSessions() {
+  const list = qs("#sessions-list");
+  if (!list) return;
   const q = (qs("#sess-q").value || "").trim().toLowerCase();
   const rows = state.sessions.filter((s) => {
     if (!q) return true;
     return [s.label, s.id, s.summary, s.last_message].some((v) => String(v || "").toLowerCase().includes(q));
   });
-  const body = qs("#sessions-body");
-  body.innerHTML = rows.map((s) => {
+  const top = list.scrollTop;
+  list.innerHTML = rows.map((s) => {
     const l = s.live || { state: "offline", reason: "idle", remaining_sec: 0, idle_sec: null };
     const preview = s.summary || s.last_message || "—";
-    return `<tr>
-      <td><div>${sessChip(s.id)}</div><div class="sid-line">${esc(s.id)}</div></td>
-      <td>${stateBadge(l.state)}<div class="small muted">${esc(reasonLabel(l.reason))}</div></td>
-      <td class="mono col-sm-hide">${s.message_count || 0}</td>
-      <td class="col-sm-hide">${s.pending_count ? `<span class="badge warn">${s.pending_count}</span>` : '<span class="muted">0</span>'}</td>
-      <td class="muted small col-sm-hide">${esc(fmtTs(s.last_ts || s.updated_at))}</td>
-      <td class="msg" title="${esc(preview)}">${esc(preview)}</td>
-      <td class="col-actions"><button class="btn ghost small" data-action="session-view" data-sid="${esc(s.id)}">查看</button></td>
-    </tr>`;
+    return `<button class="session-item${s.id === state.selectedSession ? " active" : ""}" data-action="session-view" data-sid="${esc(s.id)}">
+      <div class="session-top">${sessChip(s.id)}${stateBadge(l.state)}</div>
+      <div class="session-preview">${esc(preview)}</div>
+      <div class="session-meta">
+        <span>${s.message_count || 0} 条</span>
+        <span class="${s.pending_count ? "warn" : ""}">${s.pending_count || 0} 待处理</span>
+        <span>${esc(fmtTs(s.last_ts || s.updated_at))}</span>
+      </div>
+    </button>`;
   }).join("");
-  if (!rows.length) body.innerHTML = '<tr><td colspan="7" class="empty">暂无会话</td></tr>';
+  if (!rows.length) list.innerHTML = '<div class="empty">暂无会话</div>';
+  list.scrollTop = top;
 }
 
 function populateSessionSelects() {
@@ -427,10 +457,23 @@ function populateSessionSelects() {
   });
 }
 
+function detailEmptyHTML() {
+  return `<div class="detail-empty">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H8l-4 4V5Z"/></svg>
+    <p>选择左侧会话查看上下文</p>
+  </div>`;
+}
+
 async function openSessionDetail(sid) {
-  openModal("会话详情", '<div class="empty">加载中…</div>', "");
+  if (!sid) return;
+  state.selectedSession = sid;
+  renderSessions();
+  const pane = qs("#session-detail");
+  if (!pane) return;
+  pane.innerHTML = '<div class="empty detail-loading">加载中…</div>';
   try {
     const d = await api(`/api/sessions/${encodeURIComponent(sid)}/messages?limit=100`);
+    if (state.selectedSession !== sid) return;
     const s = d.session || {};
     const summary = d.summary
       ? `<div class="modal-section"><h3>历史摘要</h3><div class="summary-box">${esc(d.summary)}</div></div>`
@@ -440,16 +483,29 @@ async function openSessionDetail(sid) {
       const pending = m.status === "pending" ? " · 待处理" : "";
       return `<div class="chat ${role}"><div class="chat-meta">${senderCell(m)} · ${esc(fmtTs(m.ts))}${pending}</div>${esc(m.content || "（无文本）")}</div>`;
     }).join("");
-    openModal(
-      `会话 ${s.label || labelFromKey(s.id)}`,
-      `<div class="modal-section"><div class="summary-box">ID ${esc(s.id)} · 消息 ${s.message_count || 0} · 待处理 ${s.pending_count || 0} · 更新 ${esc(fmtTs(s.updated_at))}</div></div>
-       ${summary}
-       <div class="modal-section"><h3>最近消息</h3><div class="chat-list">${chats || '<div class="empty">暂无消息</div>'}</div></div>`,
-      `<button class="btn ghost" data-action="modal-close">关闭</button>
-       <button class="btn danger" data-action="session-clear" data-sid="${esc(s.id)}">清空上下文</button>`
-    );
+    pane.innerHTML = `<div class="detail-inner">
+      <div class="detail-head">
+        <div>
+          <div class="detail-title">${sessChip(s.id || sid)}</div>
+          <div class="sid-line">${esc(s.id || sid)}</div>
+        </div>
+        <div class="row-actions">
+          <button class="btn danger small" data-action="session-clear" data-sid="${esc(s.id || sid)}">清空上下文</button>
+        </div>
+      </div>
+      <div class="detail-stats">
+        <span class="stat-chip">消息 <b>${s.message_count || 0}</b></span>
+        <span class="stat-chip">待处理 <b>${s.pending_count || 0}</b></span>
+        <span class="stat-chip">更新 <b>${esc(fmtTs(s.updated_at))}</b></span>
+      </div>
+      <div class="detail-scroll">
+        ${summary}
+        <div class="modal-section"><h3>最近消息</h3><div class="chat-list">${chats || '<div class="empty">暂无消息</div>'}</div></div>
+      </div>
+    </div>`;
   } catch (err) {
-    openModal("会话详情", `<p class="muted">${esc(err.message)}</p>`, '<button class="btn ghost" data-action="modal-close">关闭</button>');
+    if (state.selectedSession !== sid) return;
+    pane.innerHTML = `<div class="detail-empty"><p>${esc(err.message)}</p></div>`;
   }
 }
 
@@ -458,9 +514,9 @@ async function clearSession(sid) {
   if (!ok) return;
   try {
     const r = await api(`/api/sessions/${encodeURIComponent(sid)}/context`, { method: "DELETE" });
-    closeModal();
     toast(`已清空 ${r.messages || 0} 条消息`, "success");
-    refreshSessions();
+    await refreshSessions();
+    openSessionDetail(sid);
     refreshStatus();
   } catch (err) { toast(err.message, "error"); }
 }
@@ -475,14 +531,21 @@ async function refreshMessages() {
   if (role) params.set("role", role);
   const rows = await api(`/api/messages?${params}`);
   const body = qs("#msg-body");
-  body.innerHTML = (rows || []).map((m) => `<tr>
-    <td class="mono muted">${esc(fmtTs(m.ts))}</td>
-    <td>${sessChip(m.skey || m.session_id)}</td>
-    <td class="col-sm-hide">${senderCell(m)}</td>
-    <td class="msg" title="${esc(m.content)}">${esc(m.content || "（无文本）")}</td>
-    <td class="col-sm-hide">${statusBadge(m.status)}</td>
-  </tr>`).join("");
-  if (!rows || !rows.length) body.innerHTML = '<tr><td colspan="5" class="empty">暂无消息</td></tr>';
+  body.innerHTML = (rows || []).map((m) => {
+    const role = m.role === "assistant" ? "assistant" : "user";
+    return `<article class="stream-item ${role}">
+      <div class="stream-card">
+        <div class="stream-top">
+          ${senderCell(m)}
+          ${sessChip(m.skey || m.session_id, "tiny")}
+          <span class="stream-ts muted">${esc(fmtTs(m.ts))}</span>
+          <span class="stream-status">${statusBadge(m.status)}</span>
+        </div>
+        <div class="stream-text">${esc(m.content || "（无文本）")}</div>
+      </div>
+    </article>`;
+  }).join("");
+  if (!rows || !rows.length) body.innerHTML = '<div class="empty">暂无消息</div>';
 }
 
 async function refreshDashRecent() {
@@ -771,13 +834,16 @@ async function refreshLogs() {
   const d = await api(`/api/logs?${params}`);
   if (d.file) qs("#log-file").textContent = d.file;
   const lvClass = { DEBUG: "lv-debug", INFO: "lv-info", WARNING: "lv-warning", ERROR: "lv-error", CRITICAL: "lv-critical" };
-  const rows = (d.logs || []).map((l) => `<tr class="log-row ${lvClass[l.level] || ""}">
-    <td class="muted">${esc(fmtLogTs(l.ts))}</td>
-    <td><span class="lv ${lvClass[l.level] || ""}">${esc(l.level)}</span></td>
-    <td class="col-sm-hide">${logSessChip(l.session)}</td>
-    <td class="msg">${esc(l.content)}</td>
-  </tr>`).join("");
-  qs("#log-body").innerHTML = rows || '<tr><td colspan="4" class="empty">（无日志）</td></tr>';
+  const rows = (d.logs || []).map((l) => {
+    const lv = lvClass[l.level] || "";
+    return `<div class="log-line ${lv}">
+      <span class="log-ts">${esc(fmtLogTs(l.ts))}</span>
+      <span class="log-lv"><span class="lv ${lv}">${esc(l.level)}</span></span>
+      <span class="log-sess">${logSessChip(l.session)}</span>
+      <span class="log-msg">${esc(l.content)}</span>
+    </div>`;
+  }).join("");
+  qs("#log-body").innerHTML = rows || '<div class="empty">（无日志）</div>';
 }
 
 /* ================= 刷新 ================= */
@@ -814,6 +880,9 @@ document.addEventListener("click", async (event) => {
       break;
     case "close-sidebar":
       closeSidebar();
+      break;
+    case "toggle-rail":
+      setRail(!qs("#app").classList.contains("rail"));
       break;
     case "refresh":
       toast("正在刷新…", "info");
@@ -925,6 +994,10 @@ window.addEventListener("hashchange", () => {
 
 document.addEventListener("DOMContentLoaded", () => {
   qs("#login-form").addEventListener("submit", doLogin);
+
+  let rail = false;
+  try { rail = localStorage.getItem("ggbot.rail") === "1"; } catch (_) { /* ignore */ }
+  setRail(rail);
 
   qs("#sess-q").addEventListener("input", renderSessions);
   qs("#msg-session").addEventListener("change", () => guarded("messages", refreshMessages));

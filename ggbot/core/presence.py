@@ -20,6 +20,7 @@ import time
 
 from tool import agent_loop
 from ggbot.util.human import jitter, read_delay_sec, sample_duration
+from ggbot.util.media import media_kind_label
 from ggbot.util.session import oid8, session_label
 
 logger = logging.getLogger("ggbot.presence")
@@ -72,8 +73,12 @@ def _fmt_user_messages(msgs: list[dict]) -> str:
         if m.get("is_at"):
             parts.append("(艾特了你)")
         content = m.get("content") or ""
-        parts.append(content or "（无文本）")
-        for a in m.get("attachments", []) or []:
+        attachments = m.get("attachments", []) or []
+        if content:
+            parts.append(content)
+        elif not attachments:
+            parts.append("（无文本）")
+        for a in attachments:
             ct = (a.get("content_type") or "").lower()
             url = a.get("url") or ""
             # 已落地的本地副本可直接作为 send_image/send_voice 的 source 转发
@@ -81,14 +86,9 @@ def _fmt_user_messages(msgs: list[dict]) -> str:
             ref = f" url={url}" if url else ""
             if local:
                 ref += f" local={local}"
-            if "image" in ct:
-                parts.append(f"[图片{ref}]")
-            elif "video" in ct:
-                parts.append(f"[视频{ref}]")
-            elif "voice" in ct:
-                parts.append(f"[语音{ref}]")
-            else:
-                parts.append(f"[文件 {a.get('filename')}{ref}]")
+            if not ref:
+                continue  # 正文里已有 [图片 文件名] 标记，无需重复
+            parts.append(f"[{media_kind_label(ct)}{ref}]")
         lines.append(" ".join(parts))
     return "\n".join(lines)
 
