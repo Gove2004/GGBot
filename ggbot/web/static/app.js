@@ -38,6 +38,8 @@ const state = {
   loading: {},
   timers: [],
   confirmResolve: null,
+  tools: [],
+  toolCat: "",
 };
 
 /* ================= API ================= */
@@ -77,7 +79,11 @@ function toast(msg, type) {
   const stack = qs("#toast-stack");
   const el = document.createElement("div");
   el.className = `toast ${type || "info"}`;
-  el.textContent = msg;
+  el.innerHTML = `<span class="toast-ico">${type === "success" ? "✓" : type === "error" ? "!" : "i"}</span>
+    <div class="toast-body">${esc(msg)}</div>
+    <button class="toast-x" type="button" aria-label="关闭">×</button>
+    <span class="toast-bar"></span>`;
+  el.querySelector(".toast-x").addEventListener("click", () => el.remove());
   stack.appendChild(el);
   setTimeout(() => el.remove(), 3600);
 }
@@ -129,6 +135,8 @@ function showApp() {
   qs("#login").classList.add("hidden");
   qs("#login-error").classList.add("hidden");
   qs("#app").classList.remove("hidden");
+  const initial = location.hash.slice(1);
+  if (PAGE_META[initial]) state.page = initial;
   startPolling();
   switchPage(state.page || "dash");
   refreshAll();
@@ -225,6 +233,7 @@ function reasonLabel(reason) {
   return REASON[reason] || reason || "—";
 }
 function statusBadge(status) {
+  if (status === "sent") return '<span class="badge ok">已发送</span>';
   if (status === "replied") return '<span class="badge ok">已回复</span>';
   if (status === "skipped") return '<span class="badge gray">跳过</span>';
   if (status === "failed") return '<span class="badge fail">失败</span>';
@@ -237,11 +246,24 @@ function stateBadge(st) {
   const on = st === "online";
   return `<span class="badge ${on ? "on" : "off"}">${on ? "在线" : "离线"}</span>`;
 }
+function sessKind(key) {
+  const p = String(key || "").split(":")[0];
+  return p === "group" ? "group" : p === "c2c" ? "c2c" : "sys";
+}
+function sessChip(key, extra) {
+  return `<span class="sess-chip ${sessKind(key)}${extra ? " " + extra : ""}">${esc(labelFromKey(key))}</span>`;
+}
+function logSessChip(label) {
+  const t = String(label || "—");
+  const kind = t.startsWith("群聊") ? "group" : t.startsWith("私聊") ? "c2c" : "sys";
+  return `<span class="sess-chip ${kind} tiny">${esc(t)}</span>`;
+}
 
 /* ================= 页面切换 ================= */
 function switchPage(name) {
   if (!PAGE_META[name]) name = "dash";
   state.page = name;
+  if (location.hash.slice(1) !== name) history.replaceState(null, "", "#" + name);
   qsa(".page").forEach((p) => p.classList.add("hidden"));
   const page = qs(`#page-${name}`);
   if (page) page.classList.remove("hidden");
@@ -292,11 +314,19 @@ async function refreshStatus() {
   pend.className = `pill ${pending > 0 ? "warn" : "ghost"}`;
   pend.textContent = `${pending} 待处理`;
 
+  qs("#dash-hero").classList.toggle("online", online);
   qs("#dash-dot").className = `state-dot ${online ? "on" : "off"}`;
   qs("#dash-state").textContent = online ? "在线" : "离线";
   qs("#dash-event").textContent = s.next_event || "等待下一次上线";
   qs("#dash-remain").textContent = s.remaining_sec != null ? Math.max(0, Math.round(s.remaining_sec)) : "—";
-  qs("#dash-caption").textContent = `${reasonLabel(s.sessions && s.sessions[0] ? s.sessions[0].reason : "idle")} · ${s.online_sessions || 0} 个会话在线`;
+  const base = Number(online ? s.online_duration_sec : s.offline_interval_sec) || 1;
+  const remain = Math.max(0, Number(s.remaining_sec) || 0);
+  const prog = qs("#dash-progress");
+  prog.max = Math.max(1, Math.round(base));
+  prog.value = Math.max(0, Math.min(base, base - remain));
+  const live = (s.sessions && s.sessions[0]) || null;
+  qs("#dash-caption").textContent =
+    `${reasonLabel(live ? live.reason : "idle")} · ${s.online_sessions || 0} 个会话在线 · ${pending} 条积压`;
 
   qs("#m-online").textContent = s.online_sessions != null ? s.online_sessions : "—";
   qs("#m-pending").textContent = s.pending_count != null ? s.pending_count : "—";
@@ -322,7 +352,7 @@ function renderDashSessions() {
   let rows = state.sessions.slice(0, 8).map((s) => {
     const l = (s.live && s.live.state) ? s.live : (live[s.id] || { state: "offline", reason: "idle", remaining_sec: 0, idle_sec: null });
     return `<tr>
-      <td><span class="sess-label">${esc(s.label || labelFromKey(s.id))}</span></td>
+      <td>${sessChip(s.id)}</td>
       <td>${stateBadge(l.state)}</td>
       <td class="muted small">${esc(reasonLabel(l.reason))}</td>
       <td class="mono">${l.remaining_sec != null ? Math.max(0, Math.round(l.remaining_sec)) + "s" : "—"}</td>
@@ -331,7 +361,7 @@ function renderDashSessions() {
   });
   if (!rows.length) {
     rows = ((state.status && state.status.sessions) || []).slice(0, 8).map((l) => `<tr>
-      <td><span class="sess-label">${esc(l.label || labelFromKey(l.sid))}</span></td>
+      <td>${sessChip(l.sid)}</td>
       <td>${stateBadge(l.state)}</td>
       <td class="muted small">${esc(reasonLabel(l.reason))}</td>
       <td class="mono">${l.remaining_sec != null ? Math.max(0, Math.round(l.remaining_sec)) + "s" : "—"}</td>
@@ -361,7 +391,7 @@ function renderSessions() {
     const l = s.live || { state: "offline", reason: "idle", remaining_sec: 0, idle_sec: null };
     const preview = s.summary || s.last_message || "—";
     return `<tr>
-      <td><div class="sess-label">${esc(s.label || labelFromKey(s.id))}</div><div class="small muted">${esc(s.id)}</div></td>
+      <td><div>${sessChip(s.id)}</div><div class="sid-line">${esc(s.id)}</div></td>
       <td>${stateBadge(l.state)}<div class="small muted">${esc(reasonLabel(l.reason))}</div></td>
       <td class="mono col-sm-hide">${s.message_count || 0}</td>
       <td class="col-sm-hide">${s.pending_count ? `<span class="badge warn">${s.pending_count}</span>` : '<span class="muted">0</span>'}</td>
@@ -436,7 +466,7 @@ async function refreshMessages() {
   const body = qs("#msg-body");
   body.innerHTML = (rows || []).map((m) => `<tr>
     <td class="mono muted">${esc(fmtTs(m.ts))}</td>
-    <td><span class="sess-label">${esc(labelFromKey(m.skey || m.session_id))}</span></td>
+    <td>${sessChip(m.skey || m.session_id)}</td>
     <td class="col-sm-hide ${m.role === "assistant" ? "role-assistant" : "role-user"}">${m.role === "assistant" ? "机器人" : "成员"}</td>
     <td class="msg" title="${esc(m.content)}">${esc(m.content || "（无文本）")}</td>
     <td class="col-sm-hide">${statusBadge(m.status)}</td>
@@ -450,7 +480,7 @@ async function refreshDashRecent() {
   box.innerHTML = (rows || []).map((m) => `<div class="mini-item">
     <span class="mini-role ${m.role === "assistant" ? "assistant" : ""}"></span>
     <div class="mini-main">
-      <div class="mini-meta"><span>${esc(labelFromKey(m.skey || m.session_id))}</span><span>${esc(fmtTs(m.ts))}</span></div>
+      <div class="mini-meta"><span>${sessChip(m.skey || m.session_id, "tiny")}</span><span>${esc(fmtTs(m.ts))}</span></div>
       <div class="mini-text" title="${esc(m.content)}">${esc(m.content || "（无文本）")}</div>
     </div>
   </div>`).join("") || '<div class="empty">暂无消息</div>';
@@ -479,12 +509,12 @@ function renderMemories(items, total, isSearch) {
     : `长期记忆 · 共 ${total == null ? state.memItems.length : total} 条`;
   const body = qs("#mem-body");
   body.innerHTML = state.memItems.map((m) => {
-    const scope = m.session_id ? labelFromKey(m.session_id) : "全局";
+    const scope = m.session_id ? sessChip(m.session_id, "tiny") : '<span class="badge gray">全局</span>';
     const score = m.score != null ? `<div class="score">${Number(m.score).toFixed(3)}</div>` : "";
     return `<tr>
       <td><span class="stars">${"★".repeat(Math.max(1, Math.min(5, Number(m.importance) || 1)))}</span>${score}</td>
       <td>${esc(m.content)}</td>
-      <td class="col-sm-hide"><span class="badge gray">${esc(scope)}</span></td>
+      <td class="col-sm-hide">${scope}</td>
       <td class="muted small col-sm-hide">${esc(fmtTs(m.ts))}</td>
       <td class="col-actions"><div class="row-actions">
         <button class="btn ghost small" data-action="memory-edit" data-id="${esc(m.id)}">编辑</button>
@@ -618,6 +648,13 @@ function getPath(obj, path) {
   return path.split(".").reduce((node, key) => (node && typeof node === "object" ? node[key] : undefined), obj);
 }
 
+function setConfigDirty(dirty) {
+  const bar = qs(".save-bar");
+  if (!bar) return;
+  bar.classList.toggle("dirty", !!dirty);
+  if (dirty) qs("#cfg-msg").textContent = "有未保存的修改，点击右侧保存";
+}
+
 async function loadConfig() {
   const d = await api("/api/config");
   qsa("[data-path]").forEach((el) => {
@@ -625,6 +662,8 @@ async function loadConfig() {
     if (el.type === "checkbox") el.checked = !!v;
     else if (v !== undefined && v !== null) el.value = v;
   });
+  setConfigDirty(false);
+  qs("#cfg-msg").textContent = "修改后点击保存，写回 config.json 并热生效";
 }
 
 async function saveConfig() {
@@ -647,6 +686,7 @@ async function saveConfig() {
   try {
     const r = await api("/api/config", { method: "POST", body: items });
     const rejected = (r.rejected || []).length;
+    setConfigDirty(false);
     qs("#cfg-msg").textContent = `已保存 ${(r.updated || []).length} 项${rejected ? `，拒绝 ${rejected} 项` : ""}`;
     toast(`设置已保存${rejected ? `（${rejected} 项无效）` : ""}`, rejected ? "info" : "success");
     if (r.config) {
@@ -656,28 +696,47 @@ async function saveConfig() {
         else if (v !== undefined && v !== null) el.value = v;
       });
     }
-  } catch (err) { toast(err.message, "error"); }
+  } catch (err) {
+    toast(err.message, "error");
+    setConfigDirty(true);
+  }
 }
 
 /* ================= 工具 ================= */
 const TOOL_CATS = { core: "核心", memory: "记忆", emoji: "表情", audio: "语音", media: "媒体", mail: "邮件" };
 const TOOL_CAT_ORDER = ["core", "memory", "emoji", "audio", "media", "mail"];
 function toolCat(cat) { return TOOL_CATS[cat] || cat || "其他"; }
+function toolOrder(cat) {
+  const i = TOOL_CAT_ORDER.indexOf(cat);
+  return i < 0 ? 99 : i;
+}
 async function refreshTools() {
   const d = await api("/api/tools");
-  const tools = (d.tools || []).slice().sort((a, b) => {
-    const ia = TOOL_CAT_ORDER.indexOf(a.category);
-    const ib = TOOL_CAT_ORDER.indexOf(b.category);
-    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.name.localeCompare(b.name);
-  });
+  state.tools = (d.tools || []).slice().sort((a, b) =>
+    toolOrder(a.category) - toolOrder(b.category) || a.name.localeCompare(b.name));
+  renderToolCats();
+  renderTools();
+}
+function renderToolCats() {
+  const tools = state.tools || [];
+  const counts = {};
+  tools.forEach((t) => { counts[t.category] = (counts[t.category] || 0) + 1; });
+  const cats = Object.keys(counts).sort((a, b) => toolOrder(a) - toolOrder(b));
+  const chips = [`<button class="chip ${state.toolCat ? "" : "active"}" data-action="tool-cat" data-cat="">全部<span>${tools.length}</span></button>`]
+    .concat(cats.map((c) =>
+      `<button class="chip ${state.toolCat === c ? "active" : ""}" data-action="tool-cat" data-cat="${esc(c)}">${esc(toolCat(c))}<span>${counts[c]}</span></button>`));
+  qs("#tool-cats").innerHTML = chips.join("");
+}
+function renderTools() {
+  const tools = (state.tools || []).filter((t) => !state.toolCat || t.category === state.toolCat);
   const rows = tools.map((t) => {
     const cfg = Object.entries(t.config || {})
       .filter(([k]) => k !== "enabled")
       .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(",") : v}`)
       .join(" · ");
-    return `<div class="tool-card ${t.enabled ? "" : "off"}">
+    return `<div class="tool-card ${t.enabled ? "" : "off"}" data-cat="${esc(t.category || "")}">
       <div class="tool-head">
-        <div><div class="tool-name">${esc(t.name)} <span class="badge gray">${esc(toolCat(t.category))}</span></div>
+        <div><div class="tool-name"><span class="tool-state ${t.enabled ? "on" : ""}"></span>${esc(t.name)} <span class="badge gray">${esc(toolCat(t.category))}</span></div>
         <div class="tool-desc muted small">${esc(t.description)}</div></div>
         <button class="btn ${t.enabled ? "ghost" : "primary"} small"
           data-action="tool-toggle" data-tool="${esc(t.name)}" data-enabled="${t.enabled ? 1 : 0}"
@@ -688,7 +747,7 @@ async function refreshTools() {
       ${cfg ? `<div class="tool-meta">${esc(cfg)}</div>` : ""}
     </div>`;
   }).join("");
-  qs("#tool-list").innerHTML = rows || '<p class="empty">（无工具）</p>';
+  qs("#tool-list").innerHTML = rows || `<p class="empty">${state.toolCat ? "该分类下暂无工具" : "（无工具）"}</p>`;
 }
 
 /* ================= 日志 ================= */
@@ -701,10 +760,10 @@ async function refreshLogs() {
   const d = await api(`/api/logs?${params}`);
   if (d.file) qs("#log-file").textContent = d.file;
   const lvClass = { DEBUG: "lv-debug", INFO: "lv-info", WARNING: "lv-warning", ERROR: "lv-error", CRITICAL: "lv-critical" };
-  const rows = (d.logs || []).map((l) => `<tr>
+  const rows = (d.logs || []).map((l) => `<tr class="log-row ${lvClass[l.level] || ""}">
     <td class="muted">${esc(fmtLogTs(l.ts))}</td>
     <td><span class="lv ${lvClass[l.level] || ""}">${esc(l.level)}</span></td>
-    <td class="col-sm-hide">${esc(l.session)}</td>
+    <td class="col-sm-hide">${logSessChip(l.session)}</td>
     <td class="msg">${esc(l.content)}</td>
   </tr>`).join("");
   qs("#log-body").innerHTML = rows || '<tr><td colspan="4" class="empty">（无日志）</td></tr>';
@@ -763,6 +822,11 @@ document.addEventListener("click", async (event) => {
       break;
     case "refresh-tools":
       guarded("tools", refreshTools);
+      break;
+    case "tool-cat":
+      state.toolCat = el.dataset.cat || "";
+      renderToolCats();
+      renderTools();
       break;
     case "tool-toggle": {
       const name = el.dataset.tool;
@@ -843,6 +907,11 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+window.addEventListener("hashchange", () => {
+  const name = location.hash.slice(1);
+  if (PAGE_META[name] && name !== state.page) switchPage(name);
+});
+
 document.addEventListener("DOMContentLoaded", () => {
   qs("#login-form").addEventListener("submit", doLogin);
 
@@ -857,6 +926,10 @@ document.addEventListener("DOMContentLoaded", () => {
   qs("#rule-content").addEventListener("keydown", (e) => { if (e.key === "Enter") addRule(); });
 
   qs("#log-level").addEventListener("change", () => guarded("logs", refreshLogs));
+  qsa("[data-path]").forEach((el) => {
+    el.addEventListener("input", () => setConfigDirty(true));
+    el.addEventListener("change", () => setConfigDirty(true));
+  });
   let logTimer = null;
   ["#log-session", "#log-q"].forEach((sel) => {
     qs(sel).addEventListener("input", () => {

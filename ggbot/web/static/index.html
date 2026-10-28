@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="theme-color" content="#0b0f14">
+<meta name="theme-color" content="#080c12">
+<meta name="color-scheme" content="dark">
 <title>GGBot 控制台</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -125,7 +126,7 @@
 
       <!-- 仪表盘 -->
       <section id="page-dash" class="page">
-        <div class="hero card">
+        <div id="dash-hero" class="hero card">
           <div class="hero-main">
             <div class="eyebrow">运行状态</div>
             <div class="hero-title">
@@ -136,6 +137,7 @@
           </div>
           <div class="hero-side">
             <div class="countdown"><span id="dash-remain">—</span><small>s</small></div>
+            <progress id="dash-progress" class="hero-progress" value="0" max="1" aria-label="状态倒计时进度"></progress>
             <div id="dash-caption" class="hero-caption">—</div>
           </div>
         </div>
@@ -179,7 +181,7 @@
           <div class="card-head">
             <div><h2>会话与上下文</h2><p class="card-sub">查看每个会话的历史摘要与消息，可单独清空上下文</p></div>
             <div class="head-ops">
-              <input id="sess-q" class="input small-input" placeholder="筛选会话 / 摘要…">
+              <input id="sess-q" class="input small-input search-input" placeholder="筛选会话 / 摘要…">
               <button class="btn ghost small" data-action="refresh-sessions">刷新</button>
             </div>
           </div>
@@ -229,7 +231,7 @@
 
           <div class="memory-tools">
             <div class="tool-row">
-              <input id="mem-q" class="input grow" placeholder="语义检索，例如：谁喜欢喝咖啡？">
+              <input id="mem-q" class="input grow search-input" placeholder="语义检索，例如：谁喜欢喝咖啡？">
               <button class="btn" data-action="memory-search">检索</button>
               <button class="btn ghost" data-action="memory-all">全部</button>
             </div>
@@ -347,6 +349,7 @@
             <div><h2>工具</h2><p class="card-sub">一切皆 Tool · 按能力域分类（core / memory / emoji / audio / media / mail）· 每个 toolset 自包含代码 / 配置 / 数据（tool/&lt;分类&gt;/），可单独启停</p></div>
             <div class="row-actions"><button class="btn ghost small" data-action="refresh-tools">刷新</button></div>
           </div>
+          <div id="tool-cats" class="chip-row"></div>
           <div id="tool-list" class="tool-grid"></div>
         </div>
       </section>
@@ -361,8 +364,8 @@
                 <option value="DEBUG">DEBUG</option><option value="INFO" selected>INFO</option>
                 <option value="WARNING">WARNING</option><option value="ERROR">ERROR</option>
               </select>
-              <input id="log-session" class="input small-input" placeholder="会话筛选">
-              <input id="log-q" class="input small-input" placeholder="内容搜索">
+              <input id="log-session" class="input small-input search-input" placeholder="会话筛选">
+              <input id="log-q" class="input small-input search-input" placeholder="内容搜索">
               <label class="check-field"><input id="log-auto" type="checkbox" class="chk" checked><span>自动</span></label>
               <button class="btn ghost small" data-action="refresh-logs">刷新</button>
             </div>
