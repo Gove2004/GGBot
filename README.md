@@ -119,7 +119,7 @@ start.bat                    # Windows 前台（Ctrl+C 停止）
 |---|---|---|
 | 在线/离线作息 | `presence.online_duration_sec`（默认 60）/ `offline_interval_sec`（默认 600） | 每会话独立：定时上线、在线一段时间后下线 |
 | @唤醒 | `presence.wake_on_at_message` | 离线被@（本会话）→ 先读入离线积压（不含本条），本会话上线并立即回复该条 |
-| 聊得火热 | `presence.renew_on_reply` + `renew_per_reply_sec`（默认 60）/ `renew_streak_step`（默认 0.5）/ `renew_max_sec`（默认 600） | 每成功回复一轮续期递增：第 1 轮 +60s、第 2 轮 +90s、第 3 轮 +120s……单次封顶 600s；下线后连聊计数归零 |
+| 回复续期 | `presence.renew_on_reply` + `renew_per_reply_sec`（默认 30）/ `renew_max_sec`（默认 600） | 每成功回复一轮固定续期 30s（带抖动），单次封顶 600s；不随连聊轮数递增 |
 | 积压只读 | `backlog.max_scan_messages`（默认 1000） | 上线把离线 pending（≤上限）标记为 `seen` 读入上下文，**不回复、不触发 LLM**；下次回复时能看到期间发生了什么 |
 | 抖动聚合 | `reply.debounce_sec`（默认 5） | 在线消息 5s 窗口聚合，LLM 选择性回复（非每条必回） |
 | 分段发送 | `reply.max_segments` / `max_chars_per_segment` / `segment_gap_sec` | 回复拆短句逐条发送（msg_seq 递增，官方支持同一消息多次回复） |
@@ -136,11 +136,11 @@ stateDiagram-v2
     [*] --> offline
     offline --> online: 收到@消息(唤醒) / 离线倒计时到期(默认600s)
     offline --> offline: 普通消息入库积压(≤1000条)
-    online --> online: 积压标记seen读入上下文(不回复)→在线消息5s抖动聚合→选择性回复<br/>每成功回复一轮续期递增(+60s/+90s/+120s…封顶600s)
+    online --> online: 积压标记seen读入上下文(不回复)→在线消息5s抖动聚合→选择性回复<br/>每成功回复一轮续期 +30s(封顶600s)
     online --> offline: 在线计时器到期(默认60s, 未续)
 ```
 
-**消息处理路径**：收到消息 → 归属会话 → 该会话离线？→ 入库标记 pending（不调 LLM）；若被@且 `wake_on_at_message` → 先把旧积压标记 `seen` 读入上下文，再**立即被动回复本条** → 本会话上线。定时上线：把本会话积压（≤1000）标记 `seen` 后**直接进入在线状态，不回复任何积压消息**（`seen` 历史会参与之后生成，所以 AI 知道离线期间聊了什么）。在线：5s 抖动窗口聚合 → 走 LLM 决策是否接话（@/私聊用被动回复，普通群消息用主动消息）→ 每成功回复一轮按连聊轮数递增续期（60/90/120… 封顶 600s）。
+**消息处理路径**：收到消息 → 归属会话 → 该会话离线？→ 入库标记 pending（不调 LLM）；若被@且 `wake_on_at_message` → 先把旧积压标记 `seen` 读入上下文，再**立即被动回复本条** → 本会话上线。定时上线：把本会话积压（≤1000）标记 `seen` 后**直接进入在线状态，不回复任何积压消息**（`seen` 历史会参与之后生成，所以 AI 知道离线期间聊了什么）。在线：5s 抖动窗口聚合 → 走 LLM 决策是否接话（@/私聊用被动回复，普通群消息用主动消息）→ 每成功回复一轮固定续期 30s（封顶 600s）。
 
 > **平台发送通道**：只有 `GROUP_AT_MESSAGE_CREATE`（群@本机器人）与 `C2C_MSG_RECEIVE`（私聊）事件能用 `msg_id+event_id` 被动回复（5 分钟内至多 5 次，不占主动额度）；`GROUP_MESSAGE_CREATE`（群全量）事件只能主动发送（2026-06-22 起全量开放，群主需开启「机器人主动在群聊内发言」，20 条/分钟、1000 条/天）。代码按事件来源持久化 `passive_ok` 标记并据此选通道，另加 `proactive_per_minute`（默认 6）/`proactive_per_day`（默认 1000）本地闸门。
 
@@ -185,8 +185,8 @@ stateDiagram-v2
     "presence": { "online_duration_sec": 300, "offline_interval_sec": 900,
                   "online_duration_jitter": 0.3, "offline_interval_jitter": 0.4,
                   "renew_jitter": 0.3, "wake_on_at_message": true, "wake_on_c2c": false,
-                  "renew_on_reply": true, "renew_per_reply_sec": 60,
-                  "renew_streak_step": 0.5, "renew_max_sec": 600,
+                  "renew_on_reply": true, "renew_per_reply_sec": 30,
+                  "renew_max_sec": 600,
                   "proactive_enabled": true, "proactive_per_minute": 6,
                   "proactive_per_day": 1000 },
     "backlog": { "max_scan_messages": 1000 },
@@ -311,7 +311,7 @@ stateDiagram-v2
 [PASS] logging_system    # 多等级写文件 + tail 等级过滤 + set_level 热切换；根目录不产生 botpy.log
 [PASS] presence_backlog  # 上线积压只读：pending→seen、零 LLM 调用/零发送；唤醒先读旧积压再回本条
 [PASS] presence_proactive # 在线普通消息可主动接话（不带 msg_id/event_id）、开关与每分钟/每日闸门、混合批次取被动锚点
-[PASS] renew_streak      # 连聊续期递增 60→90→120…、renew_max_sec 封顶、下线归零
+[PASS] renew_flat        # 每轮续期固定 30s（带抖动）、不随轮数递增、renew_max_sec 封顶
 [PASS] presence_fail     # 发送失败隔离（失效会话标记 failed，不中断其余会话积压）
 [PASS] target_derive     # 发送目标反查（session_id 内部主键 ≠ openid，从 sessions.key 取完整 openid；c2c/group 双场景）
 [PASS] msg_seq           # 回复序号会话内小整数递增（被动 base+1 / 主动 1 起，int32 内防 400），失败自动降级主动发送

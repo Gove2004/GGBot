@@ -141,7 +141,6 @@ class ToolRuntime:
         sid = ctx.get("session_id")
         if sid:
             self.storage.add_message(sid, "assistant", "bot", content, status="sent")
-        logger.info("发送: %.80s", content, extra={"session": session_label(ctx.get("session_id"))})
         return {"ok": True, "sent": content}
 
     async def send_media(self, ctx: dict, file_type: int, source: str, label: str) -> dict:

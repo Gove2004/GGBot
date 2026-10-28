@@ -110,7 +110,6 @@ ALLOWED_SETTINGS = [
     "behavior.presence.wake_on_c2c",
     "behavior.presence.renew_on_reply",
     "behavior.presence.renew_per_reply_sec",
-    "behavior.presence.renew_streak_step",
     "behavior.presence.renew_max_sec",
     "behavior.presence.renew_jitter",
     "behavior.reply.max_segments",

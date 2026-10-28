@@ -4,8 +4,8 @@
 或倒计时结束 → 本会话上线。
 在线（默认 1 分钟，带 ±30% 抖动）：上线只把积压标记为 seen 读入上下文、不回复；
 消息进入 5s 抖动窗口聚合 → 选择性回复（@/私聊走被动回复；普通群消息走主动消息，
-受平台每分钟/每日频控与本地 proactive_* 上限约束）；每成功回复一轮按 renew_per_reply_sec
-递增续期（连续聊得越久奖励越多，直到 renew_max_sec 上限）；倒计时结束 → 下线。
+受平台每分钟/每日频控与本地 proactive_* 上限约束）；每成功回复一轮固定续期
+renew_per_reply_sec（默认 30s，封顶 renew_max_sec）；倒计时结束 → 下线。
 拟人化：回复前有阅读停顿，发送前按内容长度模拟打字耗时（可用 behavior.reply 关闭）。
 会话相互独立：私聊唤醒不会让群聊上线，A 群唤醒不影响 B 群。
 """
@@ -496,7 +496,6 @@ class PresenceManager:
         base_seq = inbound.get("msg_seq")
         for i, seg in enumerate(segments):
             seq = self._next_seq(sid, base_seq)
-            logger.info("发送: %.60r", seg, extra={"session": session_label(sid)})
             # 模拟打字：按分段长度停顿，避免所有分段同一瞬间发出
             think = typing_delay_sec(seg, self.r)
             if think > 0:
@@ -560,8 +559,7 @@ class PresenceManager:
             "online_duration_jitter": self.p.get("online_duration_jitter", 0.3),
             "offline_interval_jitter": self.p.get("offline_interval_jitter", 0.4),
             "renew_on_reply": self.p.get("renew_on_reply"),
-            "renew_per_reply_sec": self.p.get("renew_per_reply_sec"),
-            "renew_streak_step": self.p.get("renew_streak_step", 0.5),
+            "renew_per_reply_sec": self.p.get("renew_per_reply_sec", 30),
             "renew_max_sec": self.p.get("renew_max_sec", 600),
             "renew_jitter": self.p.get("renew_jitter", 0.3),
             "read_delay_min_sec": self.r.get("read_delay_min_sec", 0),
@@ -576,7 +574,7 @@ class _SessionState:
     """单会话 在线/离线 状态机。
 
     离线：普通消息积压；收到@或倒计时结束 → 上线（只读积压，不回复）。
-    在线：消息进 5s 抖动窗口；每成功回复一轮按连续轮数递增续期；倒计时结束下线。
+    在线：消息进 5s 抖动窗口；每成功回复一轮续期固定时长；倒计时结束下线。
     """
 
     def __init__(self, pm: "PresenceManager", sid: str):
@@ -586,7 +584,6 @@ class _SessionState:
         self.state = "offline"
         self.reason = "initial"
         self._online_deadline = 0.0
-        self._renew_streak = 0
         self._last_active = time.monotonic()
         # 首次上线在离线周期内随机错开，避免所有会话整点同时上线
         self._next_online = time.monotonic() + self._offline_span() * random.uniform(0.4, 1.0)
@@ -621,7 +618,6 @@ class _SessionState:
             return
         self.state = "online"
         self.reason = reason
-        self._renew_streak = 0
         span = self._online_span()
         self._online_deadline = time.monotonic() + span
         self.touch()
@@ -636,7 +632,6 @@ class _SessionState:
             return
         self.state = "offline"
         self.reason = reason
-        self._renew_streak = 0
         wait = self._offline_span()
         self._next_online = time.monotonic() + wait
         # 清理本会话未发送的抖动批次（下线即停，避免残留任务/消息堆积）
@@ -651,17 +646,14 @@ class _SessionState:
         logger.info("下线 预计离线 %.0fs", wait, extra={"session": self.label})
 
     def renew(self) -> None:
-        """每成功回复一轮：在线时长按连续对话轮数递增（聊得越久越火热，封顶续期上限）。"""
+        """每成功回复一轮：在线时长固定续期（默认 30s，封顶 renew_max_sec）。"""
         if not self._p.get("renew_on_reply", True):
             return
-        self._renew_streak += 1
-        base = float(self._p.get("renew_per_reply_sec", 60))
-        step = max(0.0, float(self._p.get("renew_streak_step", 0.5)))
+        inc = jitter(float(self._p.get("renew_per_reply_sec", 30)),
+                     float(self._p.get("renew_jitter", 0.3)), minimum=0.0)
         cap = max(0.0, float(self._p.get("renew_max_sec", 600)))
-        inc = jitter(base * (1 + step * (self._renew_streak - 1)), float(self._p.get("renew_jitter", 0.3)),
-                     minimum=0.0)
         if cap:
             inc = min(inc, cap)
         self._online_deadline = max(self._online_deadline, time.monotonic()) + inc
-        self.reason = f"reply-renew x{self._renew_streak}"
+        self.reason = "reply-renew"
         self.touch()
