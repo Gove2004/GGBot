@@ -1,8 +1,8 @@
-"""本地媒体的签名 URL：把 temp/ 与 db/tool/ 下的文件临时暴露给 QQ 服务端下载。
+"""本地媒体的签名 URL：把 temp/ 与 tool/ 下的文件临时暴露给 QQ 服务端下载。
 
 QQ 富媒体上传只接受公网 URL，本地生成的表情/语音必须先能被公网访问。
 这里生成带 HMAC 签名与有效期的路径，由 Web 面板的 /media/ 路由读取；
-只允许媒体扩展名，绝不暴露 db/config.json、数据库或日志。
+只允许媒体扩展名，绝不暴露 config.json、数据库或日志。
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def _secret(cfg) -> str:
 
 def _roots(cfg) -> tuple[Path, Path]:
     temp = Path(cfg.temp_dir).resolve()
-    tools = (Path(cfg.db_path).parent / "tool").resolve()
+    tools = Path(cfg.tool_dir).resolve()
     return temp, tools
 
 

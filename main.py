@@ -21,7 +21,7 @@ import botpy
 from ggbot.core.config import Config
 from ggbot.core.presence import PresenceManager
 from ggbot.core.storage import Storage
-from ggbot.tool import ToolExecutor
+from tool import ToolExecutor
 from ggbot.llm.llm import DeepSeekClient
 from ggbot.llm.memory import MemoryStore
 from ggbot.qq.bot import QQBot

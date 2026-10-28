@@ -20,7 +20,7 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 echo [GGBot] checking dependencies ...
-".venv\Scripts\python.exe" -c "import botpy, openai, edge_tts, fastapi, uvicorn, numpy" >nul 2>&1
+".venv\Scripts\python.exe" -c "import botpy, openai, fastapi, uvicorn, numpy" >nul 2>&1
 if errorlevel 1 (
     echo [GGBot] installing requirements.txt ...
     ".venv\Scripts\python.exe" -m pip install -r requirements.txt

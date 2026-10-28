@@ -1,7 +1,7 @@
 """Tool 执行器与 agent 循环。
 
-一切能力都是 Tool：插件按能力域放在 ggbot/tool/{core,memory,emoji,audio,media,mail}/，
-启动时自动发现并按配置挂载 schema。
+一切能力都是 Tool：插件按能力域放在项目根 tool/{core,memory,emoji,audio,media,mail}/，
+启动时自动发现并按配置挂载 schema。每个 toolset 目录自包含代码、config.json 与持久化数据。
 回合语义：LLM 的纯文本输出不会作为回复发送（会被忽略）；必须通过工具调用行动——
 send_text/seed_message 发送消息、end_call 结束本轮（或未调用任何工具时默认视为 end_call）。
 """
@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 
-from ggbot.tool.base import ToolRegistry, ToolRuntime
+from tool.base import ToolRegistry, ToolRuntime
 from ggbot.util.session import session_label
 
 logger = logging.getLogger("ggbot.tools")

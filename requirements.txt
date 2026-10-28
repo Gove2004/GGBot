@@ -1,6 +1,5 @@
 qq-botpy==1.2.1
 openai>=1.0
-edge-tts
 fastapi
 uvicorn
 numpy

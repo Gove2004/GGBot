@@ -5,7 +5,7 @@
 **五大模块：**
 1. **消息收发网关**（`ggbot/qq/bot.py`）— 群@/单聊事件接收、归一化、去重，富媒体附件落地 `temp/`
 2. **AI 请求装置**（`ggbot/llm/llm.py`）— DeepSeek Chat Completions，function calling 原生工具
-3. **Tool 插件系统**（`ggbot/tool/base.py` + `ggbot/tool/<分类>/`）— 一切皆 Tool：按能力域分包的插件被自动发现，每个 Tool 自带 schema、配置、持久化目录，并动态挂载进上下文
+3. **Tool 插件系统**（`tool/base.py` + `tool/<分类>/`）— 一切皆 Tool：按能力域分包的 toolset 自包含代码/配置/数据，启动时自动发现并动态挂载进上下文
 4. **上下文组织 / 持久化记忆**（`ggbot/core/storage.py` + `ggbot/llm/memory.py` + `ggbot/core/presence.py`）
 5. **Web 控制面板**（`ggbot/web/server.py`）— FastAPI，分组导航（概览 / 对话 / 知识 / 工具 / 系统）：仪表盘、会话与上下文、消息流、向量记忆、规则、工具开关、设置、运行日志
 
@@ -15,11 +15,14 @@
 GGBot/
 ├── db/
 │   ├── config.json      # 全局配置（QQ 凭据 / DeepSeek / Embedding / 行为 / 存储 / Web；含密钥，gitignored）
-│   ├── ggbot.db         # SQLite 持久化：会话/消息/记忆/规则（运行时生成，gitignored）
-│   └── tool/            # Tool 自有数据目录（每个 Tool 一份 config.json，gitignored）
-│       ├── emoji/       #   表情库：config.json / index.json（含义索引）/ stickers/（内置素材）/ user/（用户投喂）
-│       ├── audio/       #   语音：config.json（MiMo key）/ voice_ref.wav（参考音频）；TTS 产物在 temp/tool/audio/
-│       └── mail/        #   邮件：config.json（SMTP 账号 / 收件人白名单）
+│   └── ggbot.db         # SQLite 持久化：会话/消息/记忆/规则（运行时生成，gitignored）
+├── tool/                # Tool 自包含目录：每个 toolset = 代码 + config.json + 持久化数据（整目录可复制迁移）
+│   ├── core/            #   send_text / seed_message / end_call
+│   ├── memory/          #   memory_search / memory_write
+│   ├── emoji/           #   sticker.py + config.json + index.json + stickers/（内置素材）+ user/（用户投喂）
+│   ├── audio/           #   voice_clone.py + config.json（MiMo key）+ voice_ref.wav（参考音频）
+│   ├── media/           #   send_image / send_video
+│   └── mail/            #   email.py + config.json（SMTP 账号 / 收件人白名单）
 ├── temp/                # 富媒体附件临时落地 + 日志 + Tool 运行产物（temp/tool/<name>/；默认 24h 清理，gitignored）
 ├── requirements.txt
 ├── main.py              # 入口
@@ -37,15 +40,6 @@ GGBot/
 │   │   └── memory.py     #   向量记忆（SiliconFlow Embedding + 余弦检索 + 去重/整理）
 │   ├── qq/
 │   │   └── bot.py        #   QQ 网关（botpy 连接 / 事件解析 / 富媒体落地）
-│   ├── tool/
-│   │   ├── base.py       #   Tool / ToolRuntime / ToolRegistry（分类发现、配置、签名发送）
-│   │   ├── __init__.py   #   ToolExecutor + agent 循环（schema 动态挂载）
-│   │   ├── core/         #   send_text / seed_message / end_call
-│   │   ├── memory/       #   memory_search / memory_write
-│   │   ├── emoji/        #   send_sticker / sticker_list / sticker_save
-│   │   ├── audio/        #   send_voice（edge-tts）/ send_voice_clone（MiMo）
-│   │   ├── media/        #   send_image / send_video
-│   │   └── mail/         #   send_email
 │   ├── util/
 │   │   ├── logging_setup.py  # 日志系统（五列格式 / 文件轮转 / 面板 tail）
 │   │   ├── human.py          # 拟人化时序（抖动 / 阅读停顿 / 打字速度）
@@ -85,7 +79,7 @@ flowchart LR
 
 数据流：QQ 事件 → 网关归一化 → 上下文装置组织会话 → AI 装置请求 DeepSeek → 回复回传网关 → QQ；全链路事件同步推送到 Web 面板。
 
-**核心循环**：`Tool 插件（按配置动态挂载）+ 上下文（群窗口≤128k，超限摘要压缩）+ 相关记忆 → Tool 行动`。Tool 层通过 DeepSeek function calling 实现，插件在 `ggbot/tool/<分类>/` 下自动发现；**回合语义：LLM 纯文本输出不发送、会被忽略，必须通过 Tool 行动——send_text/seed_message 发送消息、end_call（或未调用任何 Tool）结束回合**；认知状态只有记忆：AI 通过 `memory_write` 沉淀、`memory_search` 回忆，system prompt 只注入规则、各 Tool 自己挂载的提示与当前话题相关的 top-3 记忆（不设固定人设，避免上下文膨胀）。
+**核心循环**：`Tool 插件（按配置动态挂载）+ 上下文（群窗口≤128k，超限摘要压缩）+ 相关记忆 → Tool 行动`。Tool 层通过 DeepSeek function calling 实现，插件在项目根 `tool/<分类>/` 下自动发现；**回合语义：LLM 纯文本输出不发送、会被忽略，必须通过 Tool 行动——send_text/seed_message 发送消息、end_call（或未调用任何 Tool）结束回合**；认知状态只有记忆：AI 通过 `memory_write` 沉淀、`memory_search` 回忆，system prompt 只注入规则、各 Tool 自己挂载的提示与当前话题相关的 top-3 记忆（不设固定人设，避免上下文膨胀）。
 
 ## 快速开始
 
@@ -114,7 +108,7 @@ start.bat                    # Windows 前台（Ctrl+C 停止）
 - **日志文件**：只写 `temp/logs/ggbot.log`（RotatingFileHandler，5MB × 5 轮转；目录随 `storage.temp_dir` 自动创建；stderr 同时输出）。项目根目录不再产生 `botpy.log` / `logs/`——botpy 的文件 handler 已关闭（`bot_log=None, ext_handlers=False`）。格式 `时间 | 等级 | 位置 | 会话 | 内容`——会话列统一为 `群聊xxxxxxxx` / `私聊xxxxxxxx` / `系统00000000`（8 位 openid），控制台、文件、Web 面板三处一致；第三方库默认 WARNING 降噪
 - **启动日志**：仅六条就绪信息——`日志就绪`（相对路径 + 等级）/ `存储就绪`（相对路径）/ `记忆就绪`（模型 + 地址）/ `LLM就绪`（模型 + 地址）/ `Web就绪`（地址）/ `QQBot就绪`（gateway）；收发消息只保留一条入站日志（`私聊[54019C24] 内容` / `群@[54019C24] 内容`）和一条发送内容；上下线只打 `自然上线 预计在线 53s, 积压消息 0 条` / `强制上线 …` / `下线 预计离线 438s`
 - **等级控制**：`db/config.json → web.log_level`（默认 INFO）；面板保存设置即时热切换。`start.bat` / `start.sh` 默认带 `--log-level DEBUG`，直接 `python main.py` 则用配置值；项目不使用环境变量（Web 面板开关：`web.enable`）
-- **Web 面板**：分组导航 + 响应式布局。仪表盘（在线状态 / 会话倒计时 / 指标 / 最近消息）、会话与上下文（历史摘要、消息气泡、单独清空）、消息流、向量记忆（语义检索 / 写入 / 编辑 / 整理）、规则启停、工具（13 个 Tool 的启停与脱敏配置概览）、设置分组（LLM / 在线作息 / 拟人回复 / 积压读取与日志，白名单热更新并写回 config.json）、日志（等级 / 会话 / 内容过滤，自动刷新）
+- **Web 面板**：分组导航 + 响应式布局。仪表盘（在线状态 / 会话倒计时 / 指标 / 最近消息）、会话与上下文（历史摘要、消息气泡、单独清空）、消息流、向量记忆（语义检索 / 写入 / 编辑 / 整理）、规则启停、工具（12 个 Tool 的启停与脱敏配置概览）、设置分组（LLM / 在线作息 / 拟人回复 / 积压读取与日志，白名单热更新并写回 config.json）、日志（等级 / 会话 / 内容过滤，自动刷新）
 - **运维 CLI**：`python tools/manage.py stats|sessions|context|clear|reset-chat|memory ...`，可直接查看统计、导出会话上下文、清空单个会话、检索/增改/整理记忆（`--yes` 跳过确认）
 - **API**：登录 `POST /api/login`（HttpOnly Cookie，失败限流 8 次/60s）、`GET /api/auth`、`POST /api/logout`；业务 `GET /api/stats|sessions|messages|memories|rules|tools|config|logs`，`POST /api/config`（`[{"path": "a.b.c", "value": x}]` 批量，白名单 + 类型校验，越权拒绝）、`POST /api/tools/{name}/toggle`（共享配置的 Tool 返回 400）；`GET /api/config|tools` 密钥脱敏；`GET /media/{exp}/{sig}/{rel}` 为 QQ 提供签名媒体，不参与 Cookie 鉴权
 - **安全**：Cookie 鉴权（常量时间比较）、`/ws` 同源 + Cookie 校验、跨站写请求拦截、CSP / X-Frame-Options DENY / nosniff / no-store，FastAPI 文档端点关闭；公网部署建议再加 HTTPS 反向代理并设 `web.cookie_secure=true`
@@ -215,20 +209,19 @@ stateDiagram-v2
 
 ### 分类与发现
 
-`ggbot/tool/base.py` 是插件基座；插件按**能力域**分包在 `ggbot/tool/<分类>/` 下，启动时由 `ToolRegistry` 自动发现——每个模块暴露 `get_tools(rt)`，返回若干 `Tool` 实例，注册表按所在子包自动打上 `category`。新增能力 = 在某个分类下新增一个模块，无需改动注册表或提示词模板；新增分类 = 新建一个含插件模块的子包。
+`tool/base.py` 是插件基座；每个 **toolset 自包含**在项目根的 `tool/<分类>/` 下——代码、`config.json`、持久化数据（索引 / 素材 / 参考音频）同目录，整个文件夹可原样复制到另一台机器。启动时由 `ToolRegistry` 自动发现 `tool/` 的子包——每个模块暴露 `get_tools(rt)`，返回若干 `Tool` 实例，注册表按所在子包自动打上 `category`。新增能力 = 在某个分类下新增一个模块，无需改动注册表或提示词模板；新增分类 = 新建一个含插件模块的子包。
 
-| 分类 | Tool | 作用 | 配置/数据（`db/tool/<key>/`） |
+| 分类 | Tool | 作用 | 配置/数据（`tool/<分类>/`） |
 |---|---|---|---|
 | core | `send_text` | 发送一条聊天消息（回合的主要出口） | 无（首次停用才生成 config） |
 | core | `seed_message` | 先埋一句再继续，用于分段/接话 | 无 |
 | core | `end_call` | 结束本回合 | 无 |
 | memory | `memory_search` / `memory_write` | 向量记忆检索 / 沉淀 | 无 |
-| emoji | `send_sticker` | 按情绪/场景从素材库挑图发送 | `emoji/config.json`、`index.json`、`stickers/`、`user/` |
+| emoji | `send_sticker` | 按情绪/场景从素材库挑图发送 | `config.json`、`index.json`、`stickers/`、`user/` |
 | emoji | `sticker_list` / `sticker_save` | 查看可用素材 / 收藏用户投喂的图 | 与 `send_sticker` 同组（不单独启停） |
-| audio | `send_voice` | 转发音频或 edge-tts 合成 | 产物在 `temp/tool/audio/` |
-| audio | `send_voice_clone` | MiMo 声音克隆 TTS（参考音频克隆音色） | `audio/config.json`、`voice_ref.wav` |
+| audio | `send_voice_clone` | MiMo 声音克隆 TTS（参考音频克隆音色） | `config.json`、`voice_ref.wav` |
 | media | `send_image` / `send_video` | 发送图片 / 视频（URL 或本地文件） | 无 |
-| mail | `send_email` | SMTP 发邮件（文本/HTML + 附件） | `mail/config.json` |
+| mail | `send_email` | SMTP 发邮件（文本/HTML + 附件） | `config.json` |
 
 ### 一个 Tool 由什么组成
 
@@ -239,37 +232,37 @@ stateDiagram-v2
 
 ### 配置与数据
 
-- 每个 Tool 的配置在 `db/tool/<key>/config.json`：读取时与默认值合并、保留未知字段、自动补齐新增默认项；`enabled=false` 即从 schema 与提示词中消失
+- 每个 Tool 的配置在 `tool/<分类>/config.json`：读取时与默认值合并、保留未知字段、自动补齐新增默认项；`enabled=false` 即从 schema 与提示词中消失
 - **无默认配置的工具**（`send_text` 等）在首次被停用时才落盘 `{"enabled": false}`，不产生空配置/空目录
-- **共享配置组**：表情三件套同一份 `emoji/config.json`，`sticker_list`/`sticker_save` 标记 `config_owner=false, toggleable=false`，面板显示"同组"
-- 持久化数据（索引、素材、参考音频）在 `db/tool/<key>/`；运行产物（TTS/下载/生成）在 `temp/tool/<key>/`，随 temp TTL 清理
+- **共享配置组**：表情三件套同一份 `tool/emoji/config.json`，`sticker_list`/`sticker_save` 标记 `config_owner=false, toggleable=false`，面板显示"同组"
+- 持久化数据（索引、素材、参考音频）与代码同目录，在 `tool/<分类>/`；运行产物（TTS/下载/生成）在 `temp/tool/<key>/`，随 temp TTL 清理
+- **迁移**：复制 `tool/<分类>/` 整个目录即可带走该 toolset 的代码 + 配置 + 数据，无需同步数据库或其他目录
 - **Web 开关**：面板「工具」页按分类排序列出全部 Tool、描述与脱敏配置，可即时启停（`POST /api/tools/{name}/toggle`，密钥字段返回 `***`）
 - **动态挂载**：`ToolRegistry.schemas()` 只返回已启用的 Tool；agent 循环每回合按当前启用集合请求 LLM
 
 ### 表情包（emoji）
 
-- 索引 `index.json`：`{file, meaning, scenes[], source}`，66 条内置素材（`stickers/`，gitignored）；`user/` 存用户投喂
+- 索引 `tool/emoji/index.json`：`{file, meaning, scenes[], source}`，66 条内置素材（`stickers/`，gitignored）；`user/` 存用户投喂
 - 匹配：按 `mood` 与 meaning/scenes 关键词打分，top-3 随机，避开该会话最近 12 张，避免复读
 - 节制：`max_per_turn`（默认 1，按回合计数）/ `min_interval_sec`（默认 30s，按会话）双重限流；prompt 提示"对方说正事时不要用表情"
-- 入库：`sticker_save` 只接受 `temp/` 下的图片，复制到 `user/` 后原子更新索引；`max_user_stickers` 默认 200；仅限用户明确同意收藏的图
+- 入库：`sticker_save` 只接受 `temp/` 下的图片，复制到 `tool/emoji/user/` 后原子更新索引；`max_user_stickers` 默认 200；仅限用户明确同意收藏的图
 
 ### 语音（audio）
 
-- `db/tool/audio/config.json`：`api_key` / `base_url` / `model`（默认 `mimo-v2.5-tts-voiceclone`）/ `reference_voice_path` / `timeout` / `max_retries` / `max_chars`（默认 60）
+- `tool/audio/config.json`：`api_key` / `base_url` / `model`（默认 `mimo-v2.5-tts-voiceclone`）/ `reference_voice_path` / `timeout` / `max_retries` / `max_chars`（默认 60）
 - `voice_ref.wav` 为参考音频；`send_voice_clone` 把文本合成 wav 到 `temp/tool/audio/`，再以 file_type=3 发送；`api_key` 或参考音频缺失时工具自动视为未启用
-- `send_voice` 走 edge-tts（无需配置），或直接转发上下文里的语音 URL
 - 语气约束走 prompt 提示：短句、口语化、情绪随内容变化
 
 ### 邮件（mail）
 
-- 配置 `db/tool/mail/config.json`：SMTP 服务器/端口/SSL、发件邮箱、授权码、`default_to`、`allowed_recipients`、附件数量/大小上限
+- 配置 `tool/mail/config.json`：SMTP 服务器/端口/SSL、发件邮箱、授权码、`default_to`、`allowed_recipients`、附件数量/大小上限
 - **收件人白名单**：LLM 只能发给 `allowed_recipients`；未配置白名单时只能发 `default_to`；越界直接拒绝
 - **附件白名单**：只允许 `temp/` 下的运行时文件，拒绝 `logs/`、`config.json`、`.env`、数据库、脚本等；默认最多 3 个、单个 ≤10MB
 - 仅当用户明确要求发邮件时由模型调用（prompt 提示约束），避免被当作外发通道
 
-> **本地媒体如何变成公网 URL**：QQ 富媒体上传只接受公网 URL。`ggbot/util/media.py` 为 `temp/` 与 `db/tool/` 下的媒体文件生成带 HMAC 签名与有效期的链接 `/media/<exp>/<sig>/<rel>`，由 Web 面板的签名路由提供（无需 Cookie，仅限媒体扩展名，禁止目录穿越与日志）。`storage.public_base_url` 应配置为 **Web 面板的公网地址**（如 `https://bot.example.com`，不带结尾 `/`）；为空时本地生成的图片/语音/表情无法实发，工具会返回明确错误。签名密钥取自 `web.token`（或 `appsecret`），有效期默认 1 小时。
+> **本地媒体如何变成公网 URL**：QQ 富媒体上传只接受公网 URL。`ggbot/util/media.py` 为 `temp/` 与 `tool/` 下的媒体文件生成带 HMAC 签名与有效期的链接 `/media/<exp>/<sig>/<rel>`，由 Web 面板的签名路由提供（无需 Cookie，仅限媒体扩展名，禁止目录穿越与日志）。`storage.public_base_url` 应配置为 **Web 面板的公网地址**（如 `https://bot.example.com`，不带结尾 `/`）；为空时本地生成的图片/语音/表情无法实发，工具会返回明确错误。签名密钥取自 `web.token`（或 `appsecret`），有效期默认 1 小时。
 
-> **版本库边界**：`db/tool/*/config.json` 含 MiMo key / SMTP 授权码，由全局 `config.json` 规则忽略；`db/tool/emoji/{stickers,user}/` 与 `db/tool/audio/*.wav` 体积大或含个人音频同样忽略；`index.json` 入库（仅含义索引，不含素材本体）。换机重建时把素材放回 `db/tool/emoji/stickers/`、参考音频放回 `db/tool/audio/voice_ref.wav` 即可，索引与配置会自动补齐缺失字段。
+> **版本库边界**：`tool/*/config.json` 含 MiMo key / SMTP 授权码，由全局 `config.json` 规则忽略；`tool/emoji/{stickers,user}/` 与 `tool/audio/*.wav` 体积大或含个人音频同样忽略；`tool/emoji/index.json` 入库（仅含义索引，不含素材本体）。换机重建时把素材放回 `tool/emoji/stickers/`、参考音频放回 `tool/audio/voice_ref.wav` 即可，索引与配置会自动补齐缺失字段。
 
 ## 记忆管理
 
@@ -303,10 +296,10 @@ stateDiagram-v2
 [PASS] storage_crud      # SQLite 会话/消息/记忆/规则 CRUD + 积压查询
 [PASS] memory_vector     # SiliconFlow embedding 真实调用 + 语义检索 + 去重/ tidy 合并
 [PASS] llm_chat          # DeepSeek deepseek-flash 真实调用（thinking=disabled 生效）
-[PASS] tools_schema      # 13 个 Tool 插件自动发现 + schema 校验 + 启用状态过滤
-[PASS] tool_layout       # 按分类包自动发现（core/memory/emoji/audio/media/mail）+ emoji/audio/mail 数据目录 + config-less 工具 toggle 生效
+[PASS] tools_schema      # 12 个 Tool 插件自动发现 + schema 校验 + 启用状态过滤
+[PASS] tool_layout       # 根目录 tool/ 按分类包自动发现（core/memory/emoji/audio/media/mail）+ 自包含数据目录 + config-less 工具 toggle 生效
 [PASS] assistant_persist # 发送成功后 assistant 消息入库；pending 不进历史；本轮消息独立标注（防逐条重答旧消息）
-[PASS] tool_plugin       # 插件配置隔离（send_email→db/tool/mail）、共享配置同组不可单独启停、/api/tools 密钥脱敏
+[PASS] tool_plugin       # 插件配置隔离（send_email→tool/mail）、共享配置同组不可单独启停、/api/tools 密钥脱敏
 [PASS] media_signed      # 签名媒体 URL：有效链接可读、篡改/过期/目录穿越/config.json 均拒绝
 [PASS] sticker_tool      # 66 条索引加载 + 情绪匹配 + 单回合/间隔限流 + temp 投喂入库与索引原子更新
 [PASS] voice_clone       # MiMo 真实合成（mimo-v2.5-tts-voiceclone）产出 wav
@@ -345,7 +338,7 @@ stateDiagram-v2
 ## 已知限制
 
 - qq-botpy 1.2.1（2024-03 停更）但内置新鉴权（appId+clientSecret → access_token 自动缓存刷新），实测可用
-- 语音 TTS（`send_voice`）产出 mp3，QQ 语音富媒体为 silk 格式，平台不接收时该工具返回错误；`send_voice_clone` 产出 wav，同样取决于平台转码支持（转发收到的语音不受影响）
+- `send_voice_clone` 产出 wav，QQ 语音富媒体为 silk 格式，能否直发取决于平台转码支持（转发收到的语音不受影响）
 - 表情包以图片富媒体发送（非 QQ 商城表情）；本地素材需 `storage.public_base_url` 公网可达
-- 工具数据目录 `db/tool/*/config.json` 含第三方密钥/授权码，已在 `.gitignore` 中排除，部署时需自行创建或从备份恢复
+- 工具目录 `tool/*/config.json` 含第三方密钥/授权码，已在 `.gitignore` 中排除，部署时需自行创建或从备份恢复
 - Web 面板为单令牌 + HttpOnly Cookie 鉴权，适合本机/内网；公网暴露请加 HTTPS 反向代理并设 `web.cookie_secure=true`

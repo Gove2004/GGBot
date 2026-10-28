@@ -18,7 +18,7 @@ import re
 import threading
 import time
 
-from ggbot.tool import agent_loop
+from tool import agent_loop
 from ggbot.util.human import jitter, read_delay_sec, sample_duration, typing_delay_sec
 from ggbot.util.session import oid8, session_label
 

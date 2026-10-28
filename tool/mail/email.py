@@ -5,7 +5,7 @@
 - 附件只能引用 temp/ 下的运行时文件，禁止配置、数据库、日志与密钥文件；
 - 数量/大小受限，避免被当作外发通道滥用。
 
-配置：db/tool/mail/config.json（含授权码，gitignored）
+配置：tool/mail/config.json（含授权码，gitignored，与代码同目录）
 """
 
 from __future__ import annotations

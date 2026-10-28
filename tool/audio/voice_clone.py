@@ -1,6 +1,6 @@
 """MiMo 语音克隆 Tool：用参考音色把文本合成为语音并发送。
 
-配置/数据：db/tool/audio/config.json + voice_ref.wav
+配置/数据：tool/audio/config.json + voice_ref.wav（与代码同目录）
 运行产物：temp/tool/audio/*.wav（随 temp TTL 清理）
 """
 

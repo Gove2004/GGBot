@@ -1,6 +1,6 @@
 """表情包 Tool：按情绪/场景从素材库挑图发送，支持用户授权投喂入库。
 
-素材与索引持久化在 db/tool/emoji/：
+素材与索引持久化在 tool/emoji/（与代码同目录）：
 - stickers/  内置素材（clean_*.gif/jpg/png）
 - user/      用户明确投喂并同意收藏的素材
 - index.json 含义索引（文件名 -> 含义 -> 场景）
@@ -124,7 +124,7 @@ class SendSticker(_StickerBase):
     async def run(self, args: dict, ctx: dict) -> dict:
         items = self._available()
         if not items:
-            return {"ok": False, "error": "表情库为空（db/tool/emoji/stickers 未放入素材）"}
+            return {"ok": False, "error": "表情库为空（tool/emoji/stickers 未放入素材）"}
         sid = str(ctx.get("session_id") or "")
         now = time.monotonic()
         limit = max(1, int(self.config.get("max_per_turn", 1) or 1))

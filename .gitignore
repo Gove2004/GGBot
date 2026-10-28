@@ -28,9 +28,9 @@ db/ggbot.db.bak-*
 temp/
 
 # Tool 本地素材/用户数据（体积大或含个人音频，仅本地保留；索引与配置结构见 README）
-db/tool/emoji/stickers/
-db/tool/emoji/user/
-db/tool/audio/*.wav
+tool/emoji/stickers/
+tool/emoji/user/
+tool/audio/*.wav
 
 # 编辑器
 .idea/

@@ -16,7 +16,7 @@ if [ ! -x "$PY" ]; then
 fi
 
 echo "[GGBot] checking dependencies ..."
-if ! "$PY" -c "import botpy, openai, edge_tts, fastapi, uvicorn, numpy" >/dev/null 2>&1; then
+if ! "$PY" -c "import botpy, openai, fastapi, uvicorn, numpy" >/dev/null 2>&1; then
   echo "[GGBot] installing requirements.txt ..."
   "$PY" -m pip install -r requirements.txt
 fi

@@ -104,6 +104,13 @@ class Config:
         return p
 
     @property
+    def tool_dir(self) -> Path:
+        """Tool 自包含目录（项目根 tool/）：代码、config.json 与持久化数据同目录。"""
+        d = BASE_DIR / "tool"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    @property
     def logs_dir(self) -> Path:
         """日志目录：随 storage.temp_dir 走（temp/logs），目录自动创建。"""
         d = self.temp_dir / "logs"

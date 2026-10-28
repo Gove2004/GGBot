@@ -2,12 +2,13 @@
 
 - Tool：一个可被 LLM 调用的能力（schema + 执行逻辑 + 自己的配置/数据目录）
 - ToolRuntime：给 Tool 提供配置、持久化目录、发送能力等公共依赖
-- ToolRegistry：自动发现 ggbot/tool/<分类>/ 下的插件，按配置开关动态挂载 schema
+- ToolRegistry：自动发现 tool/<分类>/ 下的插件，按配置开关动态挂载 schema
 
 分类即能力域：core（对话）/ memory（记忆）/ emoji（表情）/ audio（语音）/
 media（图文视频）/ mail（邮件）。新增分类 = 新建一个含插件模块的子包。
 
-每个 Tool 的持久化数据在 db/tool/<name>/，运行产物在 temp/tool/<name>/。
+tool/ 位于项目根目录且**自包含**：每个 toolset 目录同时存放代码、config.json
+与持久化数据（索引、素材、参考音频），整目录复制即可迁移；运行产物在 temp/tool/<name>/。
 含密钥的 config.json 由 .gitignore 排除，绝不入版本库。
 """
 
@@ -46,9 +47,15 @@ class ToolRuntime:
 
     # ---------- 目录 ----------
 
+    @property
+    def tool_root(self) -> Path:
+        """Tool 自包含根目录（项目根 tool/），测试可注入 cfg.tool_dir。"""
+        root = getattr(self.cfg, "tool_dir", None)
+        return Path(root) if root else Path(__file__).resolve().parent
+
     def data_dir(self, name: str) -> Path:
-        """Tool 持久化目录：db/tool/<name>/（配置、索引、参考音频、素材）。"""
-        d = Path(self.cfg.db_path).parent / "tool" / name
+        """Tool 持久化目录：tool/<name>/（与代码同目录：配置、索引、参考音频、素材）。"""
+        d = self.tool_root / name
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -60,12 +67,12 @@ class ToolRuntime:
 
     def config_path(self, name: str) -> Path:
         """配置文件路径（不建目录；无配置的工具不应留下空目录）。"""
-        return Path(self.cfg.db_path).parent / "tool" / name / "config.json"
+        return self.tool_root / name / "config.json"
 
     # ---------- 配置 ----------
 
     def load_config(self, name: str, defaults: dict | None = None) -> dict:
-        """读取 db/tool/<name>/config.json；缺失时按 defaults 创建并补齐新字段。
+        """读取 tool/<name>/config.json；缺失时按 defaults 创建并补齐新字段。
 
         无默认配置的工具只在文件已存在时读取（首次 toggle 才落盘），
         避免启动时给每个工具都写一份空配置。
@@ -205,20 +212,20 @@ class ToolRegistry:
         self._discover()
 
     def _discover(self) -> None:
-        """扫描 ggbot/tool/<分类>/ 下的插件模块（每个模块导出 get_tools(rt)）。"""
-        root = importlib.import_module("ggbot.tool")
+        """扫描 tool/<分类>/ 下的插件模块（每个模块导出 get_tools(rt)）。"""
+        root = importlib.import_module("tool")
         for info in pkgutil.iter_modules(root.__path__):
             if info.name.startswith("_") or info.name == "base" or not info.ispkg:
                 continue
             try:
-                pkg = importlib.import_module(f"ggbot.tool.{info.name}")
+                pkg = importlib.import_module(f"tool.{info.name}")
             except Exception as e:  # noqa: BLE001
                 logger.warning("工具分类 %s 加载失败: %s", info.name, e, exc_info=True)
                 continue
             for mod in pkgutil.iter_modules(pkg.__path__):
                 if mod.name.startswith("_"):
                     continue
-                self._load_module(f"ggbot.tool.{info.name}.{mod.name}", info.name)
+                self._load_module(f"tool.{info.name}.{mod.name}", info.name)
 
     def _load_module(self, dotted: str, category: str) -> None:
         try:
