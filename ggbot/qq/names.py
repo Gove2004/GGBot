@@ -24,7 +24,8 @@ import aiohttp
 logger = logging.getLogger("ggbot.names")
 
 TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
-API_BASE = "https://api.sgroup.qq.com/v2"
+# 官方统一地址 api.bot.qq.com（botpy 内部发消息走 api.sgroup.qq.com；群信息等接口文档指向 api.bot.qq.com）
+API_BASE = "https://api.bot.qq.com/v2"
 
 
 class NameResolver:
@@ -75,7 +76,8 @@ class NameResolver:
             return None
         try:
             async with aiohttp.ClientSession() as s:
-                async with s.get(f"{API_BASE}{path}", headers={"Authorization": f"Bearer {token}"},
+                # 鉴权格式必须为 "QQBot {access_token}"（Bearer 会返回 11241 格式错误）
+                async with s.get(f"{API_BASE}{path}", headers={"Authorization": f"QQBot {token}"},
                                  timeout=aiohttp.ClientTimeout(total=10)) as r:
                     if r.status != 200:
                         if key not in self._diag_done:
