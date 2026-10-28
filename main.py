@@ -1,13 +1,15 @@
 """GGBot 入口：组装并启动 QQ 网关、Presence 状态机、Web 面板。
 
 直接运行：
-    .venv\\Scripts\\python main.py
+    .venv\\Scripts\\python main.py            # 正常启动
+    .venv\\Scripts\\python main.py --reset-chat   # 清理聊天数据（旧污染/翻旧账来源），再正常启动
 
-全部行为由 db/config.json 驱动（web.enable 控制 Web 面板开关），无命令行参数。
+全部行为由 db/config.json 驱动（web.enable 控制 Web 面板开关）。
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 import os
@@ -70,6 +72,10 @@ async def main() -> None:
     storage = Storage(cfg.db_path)
     log.info("存储就绪: %s", cfg.db_path)
 
+    if getattr(cfg, "_reset_chat", False):
+        n = storage.reset_chat_data()
+        log.info("聊天数据已清理: messages=%d sessions=%d（人设/记忆保留）", n["messages"], n["sessions"])
+
     log.info("初始化向量记忆（SiliconFlow Embedding）…")
     memory = MemoryStore(cfg, storage)
     log.info("向量记忆就绪: %s", memory.model)
@@ -118,4 +124,14 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="GGBot")
+    parser.add_argument("--reset-chat", action="store_true",
+                        help="清理 messages/sessions 聊天数据（保留人设与记忆）后启动")
+    args = parser.parse_args()
+
+    async def _run() -> None:
+        cfg = Config()
+        cfg._reset_chat = args.reset_chat
+        await main()
+
+    asyncio.run(_run())

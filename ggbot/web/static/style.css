@@ -161,6 +161,14 @@ body { background: var(--bg); color: var(--text); font: 14px/1.55 -apple-system,
 .role-user { color: var(--accent2); }
 .role-assistant { color: var(--green); }
 
+/* 日志表格 */
+.log-table .col-ts { width: 150px; white-space: nowrap; }
+.log-table th:nth-child(2) { width: 64px; }
+.log-table th:nth-child(3) { width: 120px; }
+.log-table th:nth-child(4) { width: 110px; }
+.log-table td.msg { max-width: 420px; }
+.log-table .lv { font-family: var(--mono); font-weight: 700; }
+
 /* 日志 */
 .log-view {
   background: var(--bg); border: 1px solid var(--border); border-radius: 10px;

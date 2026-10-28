@@ -307,11 +307,23 @@ async function loadLogs() {
   try {
     const level = document.getElementById("log-level").value;
     const d = await api("/api/logs?lines=300&level=" + level);
-    const lines = d.lines || [];
-    const view = document.getElementById("log-view");
-    const stick = view.scrollTop + view.clientHeight >= view.scrollHeight - 24;
-    view.textContent = lines.length ? lines.join("\n") : "（无日志）";
-    if (stick) view.scrollTop = view.scrollHeight;
+    const logs = d.logs || [];
+    const body = document.getElementById("log-body");
+    if (!logs.length) {
+      body.innerHTML = '<tr><td colspan="5" class="empty">（无日志）</td></tr>';
+      return;
+    }
+    const esc = (s) => (s == null ? "" : String(s)).replace(/[&<>"']/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    const lvColor = { DEBUG: "#8b949e", INFO: "#3fb950", WARNING: "#d29922", ERROR: "#f85149" };
+    body.innerHTML = logs.map((l) =>
+      `<tr>
+        <td class="col-ts muted small">${esc(l.ts)}</td>
+        <td><span class="lv" style="color:${lvColor[l.level] || "#8b949e"}">${esc(l.level)}</span></td>
+        <td class="muted small">${esc(l.module)}</td>
+        <td class="small">${esc(l.session)}</td>
+        <td class="msg small">${esc(l.content)}</td>
+      </tr>`).join("");
   } catch (e) {}
 }
 

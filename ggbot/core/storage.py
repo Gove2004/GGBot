@@ -154,17 +154,19 @@ class Storage:
     # ---------- 会话 ----------
 
     def get_or_create_session(self, key: str, scene: str = "group") -> str:
+        """按 key（如 group:{gid} / c2c:{openid}）取或建会话；**session id 直接等于 key**，
+        保留场景前缀（group:/c2c:），供展示层区分群聊/私聊，且天然按会话隔离。
+        旧库（uuid 哈希 id）数据视为已污染：清空 messages/sessions 后重建（见 reset_chat_data）。"""
         with self._lock, self._conn() as c:
             row = c.execute("SELECT id FROM sessions WHERE key=?", (key,)).fetchone()
             if row:
                 c.execute("UPDATE sessions SET updated_at=? WHERE id=?", (_now(), row["id"]))
                 return row["id"]
-            sid = uuid.uuid4().hex[:16]
             c.execute(
                 "INSERT INTO sessions(id, key, scene, summary, created_at, updated_at) VALUES(?,?,?,?,?,?)",
-                (sid, key, scene, "", _now(), _now()),
+                (key, key, scene, "", _now(), _now()),
             )
-            return sid
+            return key
 
     def session_target(self, session_id: str) -> tuple[str, str] | None:
         """反查会话的发送目标与场景。
@@ -264,8 +266,18 @@ class Storage:
         with self._lock, self._conn() as c:
             c.executemany("UPDATE messages SET status=? WHERE msg_id=?", [(status, m) for m in msg_ids])
 
-    def count_pending(self, session_id: str | None = None) -> int:
+    def reset_chat_data(self) -> dict:
+        """清理会话聊天数据（旧数据污染/翻旧账来源）：清空 messages + sessions。
+        保留：persona（人设）、memory（长期记忆）、config（配置）。
+        返回清理统计。"""
         with self._lock, self._conn() as c:
+            m = c.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            s = c.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+            c.execute("DELETE FROM messages")
+            c.execute("DELETE FROM sessions")
+            return {"messages": m, "sessions": s}
+
+    def count_pending(self, session_id: str | None = None) -> int:
             if session_id:
                 return c.execute(
                     "SELECT COUNT(*) FROM messages WHERE status='pending' AND session_id=?",

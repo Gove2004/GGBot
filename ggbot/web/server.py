@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Query, WebSocket
@@ -194,6 +195,26 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
 
     # ---------- 日志查看 ----------
 
+    LOG_LINE_RE = re.compile(
+        r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) \| (\w+) \| ([\w.]+) \| (.*)$"
+    )
+
+    def _log_session(content: str) -> str:
+        """从日志内容里提取会话标识（群名/用户/目标），提取不到归 System。"""
+        m = re.search(r"会话([^\s，,：:]+)", content)
+        if m:
+            return m.group(1)
+        m = re.search(r"群=([^\s,]+)", content)
+        if m:
+            return "群" + m.group(1)
+        m = re.search(r"user=([^\s,]+)", content)
+        if m:
+            return "用户" + m.group(1)
+        m = re.search(r"target=([^\s,]+)", content)
+        if m:
+            return m.group(1)
+        return "System"
+
     @app.get("/api/logs")
     async def get_logs(
         lines: int = 200, level: str = "INFO",
@@ -203,7 +224,18 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         from ggbot.util.logging_setup import tail_log
 
         n = min(max(lines, 1), 2000)
-        return {"level": level, "lines": tail_log(cfg.log_file, n, level)}
+        raw = tail_log(cfg.log_file, n, level)
+        logs = []
+        for line in raw:
+            m = LOG_LINE_RE.match(line)
+            if not m:
+                logs.append({"ts": "", "level": "-", "module": "-",
+                             "session": "System", "content": line})
+                continue
+            ts, lv, mod, content = m.groups()
+            logs.append({"ts": ts[:23], "level": lv, "module": mod,
+                         "session": _log_session(content), "content": content})
+        return {"level": level, "logs": logs}
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket):

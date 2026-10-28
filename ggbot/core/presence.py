@@ -44,6 +44,7 @@ SYSTEM_TEMPLATE = """你是群聊里的一个真实的人，昵称“{name}”�
 4. 群友发来的图片/语音/视频，其下载地址会标注在消息里，你可以转发（send_image 等工具）或点评。
 5. 想不起的事用 memory_search 回忆；值得长期记住的用 memory_write。
 6. 说话风格、人设随相处自然进化，必要时用 persona_update 微调自己。
+7. 历史消息只是背景，别主动翻旧账：不重提已过去的旧话题，积压消息没必要回就 end_call。
 """
 
 
@@ -248,7 +249,10 @@ class PresenceManager:
 
     def _session_label(self, sid: str) -> str:
         prefix, _, rest = (sid or "").partition(":")
-        return ("群" if prefix == "group" else "私聊") + (rest or sid)[:12]
+        if prefix in ("group", "c2c"):
+            return ("群" if prefix == "group" else "私聊") + (rest or "")[:12]
+        # 旧格式/未知：退化为短 id
+        return (sid or "")[:12]
 
     async def _process_batch(self, msgs: list[dict], st: "_SessionState" | None = None) -> None:
         """在线批次：聚合多条消息一次决策。

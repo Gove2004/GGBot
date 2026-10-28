@@ -241,7 +241,12 @@
               <button id="btn-log-refresh" class="btn ghost small">刷新</button>
             </div>
           </div>
-          <pre id="log-view" class="log-view tall">（等待日志…）</pre>
+          <div class="table-wrap tall">
+            <table class="table log-table">
+              <thead><tr><th class="col-ts">时间</th><th>等级</th><th>位置</th><th>会话</th><th>内容</th></tr></thead>
+              <tbody id="log-body"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
+            </table>
+          </div>
         </div>
       </section>
 
