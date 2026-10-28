@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "smtp_server": "smtp.qq.com",
+  "smtp_port": 465,
+  "use_ssl": true,
+  "sender_email": "发件邮箱",
+  "auth_code": "SMTP 授权码",
+  "default_to": [],
+  "allowed_recipients": [],
+  "max_attachments": 3,
+  "max_attachment_mb": 10
+}

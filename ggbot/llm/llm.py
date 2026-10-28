@@ -1,7 +1,7 @@
-"""AI 请求装置：DeepSeek Chat Completions（openai SDK）。
+"""AI 请求装置：OpenAI 兼容的 Chat Completions（openai SDK）。
 
-- base_url / model / api_key 取自 config.json
-- request 子对象仅保留 DeepSeek 官方支持的参数（thinking 走 extra_body）
+- base_url / model / api_key 全部取自 config.json 的 llm 段，不绑定具体厂商
+- request 子对象按服务商支持取舍（thinking 属于 DeepSeek 扩展，配置了才会透传）
 - 内置重试（网络抖动退避）
 """
 
@@ -17,15 +17,21 @@ class LLMError(RuntimeError):
     pass
 
 
-class DeepSeekClient:
+class LLMClient:
     def __init__(self, cfg):
         self.cfg = cfg
         self.model = cfg.model
+        api_key = str(cfg.llm.get("api_key") or "").strip()
+        base_url = str(cfg.llm.get("base_url") or "").strip()
+        if not (api_key and base_url and self.model):
+            raise RuntimeError(
+                "llm 配置不完整：请在 db/config.json 填写 llm.api_key / llm.base_url / llm.model"
+            )
         from openai import OpenAI
 
         self.client = OpenAI(
-            api_key=cfg.llm.get("api_key"),
-            base_url=cfg.llm.get("base_url", "https://api.deepseek.com"),
+            api_key=api_key,
+            base_url=base_url,
             timeout=120,
             max_retries=0,  # 重试由本层控制，便于日志
         )

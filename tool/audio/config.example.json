@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "api_key": "声音克隆服务 API Key",
+  "base_url": "https://api.xiaomimimo.com/v1",
+  "model": "mimo-v2.5-tts-voiceclone",
+  "output_format": "wav",
+  "reference_voice_path": "voice_ref.wav",
+  "timeout": 60,
+  "max_retries": 2,
+  "max_chars": 60
+}

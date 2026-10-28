@@ -1,0 +1,20 @@
+# 统一换行：代码/配置按 LF 入库，Windows 脚本按 CRLF 检出，避免跨平台 diff 抖动
+* text=auto
+.gitattributes text eol=lf
+.gitignore text eol=lf
+*.py text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.wav binary
+*.mp3 binary
+*.silk binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary

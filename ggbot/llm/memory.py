@@ -1,9 +1,10 @@
-"""向量化记忆：SiliconFlow Embedding API（Qwen/Qwen3-Embedding-4B）嵌入。
+"""向量化记忆：OpenAI 兼容 Embedding 接口（服务商与模型由 config.json 决定）。
 
 - 嵌入走云端 OpenAI 兼容接口（POST /embeddings），无本地模型依赖
 - 向量存 SQLite（float32 BLOB），检索用余弦相似度（个人机器人记忆量级，暴力检索足够）
 - 写入去重：同会话内余弦 ≥0.95 视为同一条，更新原条目而非新增
 - 整理：合并余弦相似度超过阈值的近似重复记忆
+- 未配置 embedding 时自动降级为关键词检索，不影响机器人启动
 """
 
 from __future__ import annotations
@@ -18,6 +19,13 @@ logger = logging.getLogger("ggbot.memory")
 DEDUP_SCORE = 0.95
 
 
+def _bigrams(text: str) -> set[str]:
+    s = "".join(ch for ch in text if not ch.isspace())
+    if len(s) < 2:
+        return {s} if s else set()
+    return {s[i : i + 2] for i in range(len(s) - 1)}
+
+
 class MemoryStore:
     def __init__(self, cfg, storage):
         self.cfg = cfg
@@ -25,13 +33,17 @@ class MemoryStore:
         emb = cfg.embedding
         self.model = emb["model"]
         self.base_url = emb["base_url"]
-        api_key = emb["api_key"]
-        if not api_key:
-            raise RuntimeError("缺少 embedding.api_key：请在 db/config.json 的 embedding.api_key 配置")
-        from openai import OpenAI
-
-        self.client = OpenAI(api_key=api_key, base_url=self.base_url, timeout=60, max_retries=0)
         self.batch_size = emb["batch_size"]
+        self.enabled = emb["enabled"]
+        self.client = None
+        if self.enabled:
+            from openai import OpenAI
+
+            self.client = OpenAI(
+                api_key=emb["api_key"], base_url=self.base_url, timeout=60, max_retries=0
+            )
+        else:
+            logger.info("embedding 未启用，长期记忆使用关键词检索")
 
     def embed(self, text: str) -> np.ndarray:
         """单条文本 → 向量。"""
@@ -88,7 +100,9 @@ class MemoryStore:
         importance: int = 1,
         session_id: str | None = None,
     ) -> str:
-        """写入一条记忆（自动向量化）；同会话近似重复则更新原条目。"""
+        """写入一条记忆（启用 embedding 时自动向量化；同会话近似重复则更新原条目）。"""
+        if not self.enabled:
+            return self.storage.add_memory(session_id, content, type_, importance, None)
         vec = self.embed(content).astype(np.float32)
         dup = self._nearest(vec, session_id, DEDUP_SCORE)
         if dup is not None:
@@ -116,15 +130,57 @@ class MemoryStore:
             content = content.strip()
             if not content:
                 raise ValueError("记忆内容不能为空")
-            vec = self.embed(content).astype(np.float32)
+            # 未启用 embedding 时清空旧向量，避免内容与向量不一致
+            vec = self.embed(content).astype(np.float32) if self.enabled else b""
         self.storage.update_memory(
             memory_id,
             content=content,
             importance=importance,
-            embedding=vec.tobytes() if vec is not None else None,
+            embedding=vec.tobytes() if isinstance(vec, np.ndarray) else vec,
         )
-        logger.info("记忆已更新 id=%s（重新向量化=%s）", memory_id, vec is not None)
+        logger.info("记忆已更新 id=%s（重新向量化=%s）", memory_id,
+                    isinstance(vec, np.ndarray))
         return True
+
+    def _keyword_search(self, query: str, k: int, session_id: str | None) -> list[dict]:
+        """无 embedding 时的降级检索：按字符/二元组重合度排序。"""
+        q = (query or "").strip().lower()
+        if not q:
+            return []
+        qgrams = _bigrams(q)
+        qchars = {ch for ch in q if not ch.isspace()}
+        scored: list[tuple[float, dict]] = []
+        for m in self.storage.get_all_memories():
+            if session_id is not None:
+                scope = m.get("session_id") or None
+                if scope is not None and scope != session_id:
+                    continue
+            text = (m.get("content") or "").lower()
+            if not text:
+                continue
+            overlap = len(qgrams & _bigrams(text))
+            hits = len(qchars & set(text))
+            if not overlap and hits < 2:
+                continue
+            score = max(
+                overlap / max(1, len(qgrams)),
+                hits / max(1, len(qchars)) * 0.6,
+            )
+            scored.append((score, m))
+        scored.sort(key=lambda x: (-x[0], -int(x[1].get("importance") or 0)))
+        return [self._result(m, s) for s, m in scored[:k]]
+
+    @staticmethod
+    def _result(m: dict, score: float) -> dict:
+        return {
+            "id": m["id"],
+            "content": m["content"],
+            "type": m["type"],
+            "importance": m["importance"],
+            "session_id": m["session_id"],
+            "score": round(score, 4),
+            "ts": m["ts"],
+        }
 
     def search(
         self,
@@ -133,11 +189,13 @@ class MemoryStore:
         session_id: str | None = None,
         min_score: float | None = None,
     ) -> list[dict]:
-        """向量检索：余弦相似度 top-k。
+        """检索记忆：启用 embedding 时按余弦相似度，否则按关键词重合度。
 
         session_id 给定时只取「全局记忆 + 本会话记忆」；为 None 时检索全部（面板/调试）。
-        min_score 过滤低相关结果（None 表示不过滤）。
+        min_score 只对向量检索生效。
         """
+        if not self.enabled:
+            return self._keyword_search(query, k, session_id)
         candidates = []
         for m in self.storage.get_all_memories():
             if session_id is not None:
@@ -147,7 +205,7 @@ class MemoryStore:
             if m.get("embedding"):
                 candidates.append(m)
         if not candidates:
-            return []  # 作用域内没有记忆：省掉一次 embedding 请求
+            return self._keyword_search(query, k, session_id)
         q = self.embed(query).astype(np.float32)
         qn = float(np.linalg.norm(q))
         scored = []
@@ -157,21 +215,12 @@ class MemoryStore:
                 continue
             scored.append((score, m))
         scored.sort(key=lambda x: -x[0])
-        return [
-            {
-                "id": m["id"],
-                "content": m["content"],
-                "type": m["type"],
-                "importance": m["importance"],
-                "session_id": m["session_id"],
-                "score": round(s, 4),
-                "ts": m["ts"],
-            }
-            for s, m in scored[:k]
-        ]
+        return [self._result(m, s) for s, m in scored[:k]]
 
     def tidy(self, threshold: float = 0.95) -> int:
         """整理记忆：合并余弦相似度超过阈值的近似重复，保留更重要（importance 高/更新）的一条。"""
+        if not self.enabled:
+            return 0
         memories = self.storage.get_all_memories()
         vecs: dict[int, np.ndarray] = {}
         for i, m in enumerate(memories):
@@ -206,7 +255,8 @@ class MemoryStore:
 
     def embed_status(self) -> dict:
         return {
-            "provider": "siliconflow",
+            "enabled": self.enabled,
+            "provider": self.cfg.embedding.get("provider", ""),
             "model": self.model,
             "total": len(self.storage.get_all_memories()),
         }

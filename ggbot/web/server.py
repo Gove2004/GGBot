@@ -97,11 +97,10 @@ class ToolToggleIn(BaseModel):
 
 # 允许通过 Web 热更新的配置路径（其余只读，避免误改关键结构）
 ALLOWED_SETTINGS = [
-    "deepseek.request.temperature",
-    "deepseek.request.top_p",
-    "deepseek.request.max_tokens",
-    "deepseek.request.thinking",
-    "deepseek.request.stream",
+    "llm.request.temperature",
+    "llm.request.top_p",
+    "llm.request.max_tokens",
+    "llm.request.thinking",
     "behavior.presence.online_duration_sec",
     "behavior.presence.offline_interval_sec",
     "behavior.presence.online_duration_jitter",
@@ -117,8 +116,8 @@ ALLOWED_SETTINGS = [
     "behavior.reply.debounce_max_sec",
     "behavior.backlog.max_scan_messages",
     "behavior.backlog.online_max_messages",
-    "deepseek.context.max_history_messages",
-    "deepseek.context.summary_threshold_tokens",
+    "llm.context.max_history_messages",
+    "llm.context.summary_threshold_tokens",
     "web.log_level",
 ]
 

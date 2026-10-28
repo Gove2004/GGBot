@@ -22,7 +22,7 @@ from ggbot.core.config import Config
 from ggbot.core.presence import PresenceManager
 from ggbot.core.storage import Storage
 from tool import ToolExecutor
-from ggbot.llm.llm import DeepSeekClient
+from ggbot.llm.llm import LLMClient
 from ggbot.llm.memory import MemoryStore
 from ggbot.qq.bot import QQBot
 from ggbot.util.logging_setup import setup_logging
@@ -100,6 +100,8 @@ def _wipe_db(db_path: Path) -> None:
 
 async def main(cfg: Config | None = None) -> None:
     cfg = cfg or Config()
+    if not (cfg.qq["appid"] and cfg.qq["secret"]):
+        raise RuntimeError("缺少 QQ 凭据：请在 db/config.json 填写 appid / appsecret")
     lock_path = Path(cfg.db_path).parent / ".bot.lock"
     _acquire_singleton(lock_path)
     log_level = getattr(cfg, "_log_level", None) or (cfg.web_cfg or {}).get("log_level", "INFO")
@@ -121,9 +123,12 @@ async def main(cfg: Config | None = None) -> None:
         log.info("聊天数据已清理: messages=%d sessions=%d（记忆/规则保留）", n["messages"], n["sessions"])
 
     memory = MemoryStore(cfg, storage)
-    log.info("记忆就绪: %s @ %s", memory.model, memory.base_url)
+    if memory.enabled:
+        log.info("记忆就绪: %s @ %s", memory.model, memory.base_url)
+    else:
+        log.info("记忆就绪: 关键词模式（未配置 embedding，可用 embedding.enabled 开启向量检索）")
 
-    llm = DeepSeekClient(cfg)
+    llm = LLMClient(cfg)
     log.info("LLM 就绪: %s @ %s", cfg.model, cfg.llm.get("base_url"))
 
     intents = botpy.Intents(public_messages=True, public_guild_messages=True, message_audit=True)
@@ -182,4 +187,8 @@ if __name__ == "__main__":
         cfg._log_level = args.log_level
         await main(cfg)
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    except RuntimeError as exc:
+        print(f"[GGBot] 启动失败: {exc}")
+        sys.exit(1)

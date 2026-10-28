@@ -2,17 +2,22 @@
 
 config.json 实际结构（与文件保持一致）：
 - 顶层 appid / appsecret：QQ 机器人凭据
-- deepseek：LLM 配置（base_url / api_key / model / request / context）
-- embedding：向量化配置（SiliconFlow API）
+- llm：OpenAI 兼容的对话服务（base_url / api_key / model / request / context）
+- embedding：OpenAI 兼容的向量服务（可选；不配置则记忆退回关键词检索）
 - behavior / storage / web
+
+LLM 与 embedding 都不绑定厂商：只要兼容 OpenAI 接口，换 base_url / model / api_key 即可。
+旧版的 deepseek 段会在加载时自动迁移为 llm。
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
+EXAMPLE_NAME = "config.example.json"
 
 
 class Config:
@@ -20,8 +25,19 @@ class Config:
 
     def __init__(self, path: Path | str | None = None):
         self.path = Path(path) if path else BASE_DIR / "db" / "config.json"
+        if not self.path.exists():
+            example = self.path.with_name(EXAMPLE_NAME)
+            if example.exists():
+                shutil.copyfile(example, self.path)
+                raise RuntimeError(
+                    f"已根据模板生成 {self.path}，请填写 appid / appsecret、"
+                    "llm.api_key / llm.base_url / llm.model（embedding 可留空）后重新启动"
+                )
+            raise RuntimeError(f"缺少配置文件 {self.path}，请从 {EXAMPLE_NAME} 复制后填写")
         with open(self.path, encoding="utf-8") as f:
             self.data = json.load(f)
+        if self._migrate():
+            self.save()
 
         # QQ 凭据：config 顶层 appid / appsecret / bot_openid
         self.qq = {
@@ -29,31 +45,48 @@ class Config:
             "secret": self.data.get("appsecret", ""),
             "bot_openid": self.data.get("bot_openid", ""),
         }
-        # LLM：deepseek 子对象
-        self.llm = self.data.get("deepseek", {})
+        self.llm = self.data.get("llm", {})
         self.behavior = self.data.get("behavior", {})
         self.storage_cfg = self.data.get("storage", {})
         self.web_cfg = self.data.get("web", {})
 
+    def _migrate(self) -> bool:
+        """旧版 deepseek 段 → 通用 llm 段；返回是否有改动。"""
+        legacy = self.data.pop("deepseek", None)
+        if legacy is None:
+            return False
+        llm = self.data.setdefault("llm", {})
+        for key, value in legacy.items():
+            llm.setdefault(key, value)
+        return True
+
     @property
     def model(self) -> str:
-        return self.llm.get("model", "deepseek-flash")
+        return self.llm.get("model", "")
 
     @property
     def request(self) -> dict:
-        """DeepSeek 请求参数（thinking/temperature/top_p/max_tokens/stop/stream）。"""
+        """对话请求参数（temperature/top_p/max_tokens/stop/stream 等，按服务商支持取舍）。"""
         return self.llm.get("request", {})
 
     @property
     def embedding(self) -> dict:
-        """向量化配置（仅读 config.json，项目靠配置文件驱动，无环境变量覆盖）。"""
-        emb = self.data.get("embedding", {})
+        """向量化配置（仅读 config.json，项目靠配置文件驱动，无环境变量覆盖）。
+
+        api_key / base_url / model 任一缺失或 enabled=false 时视为未启用，
+        记忆改用关键词检索，不影响启动。
+        """
+        emb = self.data.get("embedding", {}) or {}
+        base_url = str(emb.get("base_url", "") or "").strip()
+        model = str(emb.get("model", "") or "").strip()
+        api_key = str(emb.get("api_key", "") or "").strip()
         return {
-            "provider": emb.get("provider", "siliconflow"),
-            "base_url": emb.get("base_url", "https://api.siliconflow.cn/v1"),
-            "model": emb.get("model", "Qwen/Qwen3-Embedding-4B"),
-            "api_key": emb.get("api_key", ""),
+            "provider": str(emb.get("provider", "") or "").strip(),
+            "base_url": base_url,
+            "model": model,
+            "api_key": api_key,
             "batch_size": max(1, int(emb.get("batch_size", 32))),
+            "enabled": bool(emb.get("enabled", True)) and bool(base_url and model and api_key),
         }
 
     @property

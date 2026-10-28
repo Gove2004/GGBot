@@ -10,7 +10,7 @@ from ..base import Tool, to_str
 class MemorySearch(Tool):
     name = "memory_search"
     description = (
-        "在长期记忆中按语义检索，返回与 query 相关的记忆条目。"
+        "在长期记忆中检索，返回与 query 相关的记忆条目（默认语义检索，未配置向量服务时按关键词匹配）。"
         "想不起某个群友、某件事、某个话题的细节时先用它查，不要凭空猜"
     )
     parameters = {

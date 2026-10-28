@@ -14,7 +14,7 @@
     .venv\\Scripts\\python tools\\manage.py memory tidy --yes
 
 会话引用支持：完整 id（group:... / c2c:...）、8 位标签（群1A2B3C4D / 私聊1A2B3C4D）、
-openid 前缀（1A2B3C4D）。记忆检索/写入/编辑需要 Embedding API（网络）。
+openid 前缀（1A2B3C4D）。配置了 embedding 时记忆检索为语义检索，否则按关键词匹配。
 """
 
 from __future__ import annotations

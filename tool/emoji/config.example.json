@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "max_per_turn": 1,
+  "min_interval_sec": 10,
+  "max_user_stickers": 200
+}

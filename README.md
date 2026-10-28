@@ -1,10 +1,10 @@
 # GGBot — QQ 群聊机器人
 
-基于官方 QQ 开放平台 api-v2（qq-botpy 1.2.1）+ DeepSeek（deepseek-flash）+ SiliconFlow 向量记忆的群聊机器人。
+基于官方 QQ 开放平台 api-v2（qq-botpy 1.2.1）+ 任意 OpenAI 兼容的 LLM 服务（function calling）+ 可选的 OpenAI 兼容向量服务（不配置时记忆自动降级为关键词检索）的群聊机器人。项目不绑定具体厂商：换 `base_url` / `model` / `api_key` 即可切换。
 
 **五大模块：**
 1. **消息收发网关**（`ggbot/qq/bot.py`）— 群@/单聊事件接收、归一化、去重，富媒体附件落地 `temp/`
-2. **AI 请求装置**（`ggbot/llm/llm.py`）— DeepSeek Chat Completions，function calling 原生工具
+2. **AI 请求装置**（`ggbot/llm/llm.py`）— OpenAI 兼容 Chat Completions，function calling 原生工具（服务商与模型由配置决定）
 3. **Tool 插件系统**（`tool/base.py` + `tool/<分类>/`）— 一切皆 Tool：按能力域分包的 toolset 自包含代码/配置/数据，启动时自动发现并动态挂载进上下文
 4. **上下文组织 / 持久化记忆**（`ggbot/core/storage.py` + `ggbot/llm/memory.py` + `ggbot/core/presence.py`）
 5. **Web 控制面板**（`ggbot/web/server.py`）— FastAPI，分组导航（概览 / 对话 / 知识 / 工具 / 系统）：仪表盘、会话与上下文、消息流、向量记忆、规则、工具开关、设置、运行日志
@@ -14,15 +14,16 @@
 ```
 GGBot/
 ├── db/
-│   ├── config.json      # 全局配置（QQ 凭据 / DeepSeek / Embedding / 行为 / 存储 / Web；含密钥，gitignored）
+│   ├── config.example.json  # 部署模板（入库；复制为 config.json 后填写）
+│   ├── config.json      # 全局配置（QQ 凭据 / LLM / Embedding / 行为 / 存储 / Web；含密钥，gitignored）
 │   └── ggbot.db         # SQLite 持久化：会话/消息/记忆/规则（运行时生成，gitignored）
 ├── tool/                # Tool 自包含目录：每个 toolset = 代码 + config.json + 持久化数据（整目录可复制迁移）
 │   ├── core/            #   send_text
 │   ├── memory/          #   memory_search / memory_write
-│   ├── emoji/           #   sticker.py + config.json + index.json + stickers/（内置素材）+ user/（用户投喂）
-│   ├── audio/           #   voice_clone.py + config.json（MiMo key）+ voice_ref.wav（参考音频）
+│   ├── emoji/           #   sticker.py + config.example.json + index.json + stickers/（内置素材）+ user/（用户投喂）
+│   ├── audio/           #   voice_clone.py + config.example.json（MiMo key）+ voice_ref.wav（参考音频）
 │   ├── media/           #   send_image / send_video
-│   └── mail/            #   email.py + config.json（SMTP 账号 / 收件人白名单）
+│   └── mail/            #   email.py + config.example.json（SMTP 账号 / 收件人白名单）
 ├── temp/                # 富媒体附件临时落地 + 日志 + Tool 运行产物（temp/tool/<name>/；默认 24h 清理，gitignored）
 ├── requirements.txt
 ├── main.py              # 入口
@@ -36,8 +37,8 @@ GGBot/
 │   │   ├── storage.py    #   SQLite（会话/消息/记忆/规则）
 │   │   └── presence.py   #   在线/离线状态机（会话级唤醒/积压只读/抖动/分段发送）
 │   ├── llm/
-│   │   ├── llm.py        #   DeepSeek 请求装置
-│   │   └── memory.py     #   向量记忆（SiliconFlow Embedding + 余弦检索 + 去重/整理）
+│   │   ├── llm.py        #   OpenAI 兼容请求装置（厂商无关）
+│   │   └── memory.py     #   记忆（可选向量检索 + 关键词降级 + 去重/整理）
 │   ├── qq/
 │   │   └── bot.py        #   QQ 网关（botpy 连接 / 事件解析 / 富媒体落地）
 │   ├── util/
@@ -62,7 +63,7 @@ flowchart LR
     end
     subgraph GGBot
         GW["① 消息收发网关<br/>qq-botpy 事件驱动"]
-        AI["② AI 请求装置<br/>openai SDK + DeepSeek"]
+        AI["② AI 请求装置<br/>openai SDK（厂商无关）"]
         CTX["③ 上下文与记忆<br/>组织 / 持久化"]
         WEB["④ Web 控制面板<br/>FastAPI + WebSocket"]
         DB[("SQLite db/ggbot.db")]
@@ -70,43 +71,73 @@ flowchart LR
     QQ <-->|"WebSocket 事件 / OpenAPI"| GW
     GW <--> CTX
     CTX <--> AI
-    AI <-->|"HTTP /v1"| DS["DeepSeek API<br/>deepseek-flash"]
+    AI <-->|"HTTP /v1"| DS["任意 OpenAI 兼容 LLM<br/>base_url / model 可配"]
     GW <--> WEB
     CTX <--> DB
     WEB <--> DB
     GW -->|"消息流/响应"| WEB
 ```
 
-数据流：QQ 事件 → 网关归一化 → 上下文装置组织会话 → AI 装置请求 DeepSeek → 回复回传网关 → QQ；全链路事件同步推送到 Web 面板。
+数据流：QQ 事件 → 网关归一化 → 上下文装置组织会话 → AI 装置请求 LLM → 回复回传网关 → QQ；全链路事件同步推送到 Web 面板。
 
-**核心循环**：`Tool 插件（按配置动态挂载）+ 上下文（最近 64 条 / 16k tokens，超限摘要压缩）+ 相关记忆 → Tool 行动`。Tool 层通过 DeepSeek function calling 实现，插件在项目根 `tool/<分类>/` 下自动发现；**回合语义：一切皆工具——send_text 发送消息，未调用任何 Tool 即本轮不回复；若模型无视协议直接回文本且本轮尚未发送，自动按 send_text 兜底发出，避免整轮静默**；认知状态只有记忆：AI 通过 `memory_write` 沉淀、`memory_search` 回忆，system prompt 注入「感觉」型人设、规则、各 Tool 自己挂载的提示与当前话题相关的 top-3 记忆（不写死具体身份/经历，避免上下文膨胀）。
+**核心循环**：`Tool 插件（按配置动态挂载）+ 上下文（最近 64 条 / 16k tokens，超限摘要压缩）+ 相关记忆 → Tool 行动`。Tool 层通过 LLM 的 function calling 实现，插件在项目根 `tool/<分类>/` 下自动发现；**回合语义：一切皆工具——send_text 发送消息，未调用任何 Tool 即本轮不回复；若模型无视协议直接回文本且本轮尚未发送，自动按 send_text 兜底发出，避免整轮静默**；认知状态只有记忆：AI 通过 `memory_write` 沉淀、`memory_search` 回忆，system prompt 注入「感觉」型人设、规则、各 Tool 自己挂载的提示与当前话题相关的 top-3 记忆（不写死具体身份/经历，避免上下文膨胀）。
 
-## 快速开始
+## 快速部署
+
+### 1. 准备
+
+- Python 3.11+
+- QQ 开放平台机器人：拿到 `AppID` / `AppSecret`，并订阅群@、单聊等事件（见文末「QQ 平台侧配置要求」）
+
+### 2. 安装依赖
 
 ```powershell
-# 1. 虚拟环境（已建 .venv）
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
 
-# 2. 配置 db/config.json（密钥已写入）：
-#    appid / appsecret          → QQ 机器人凭据（qq 开放平台后台）
-#    deepseek.api_key           → DeepSeek key
-#    embedding.api_key          → SiliconFlow key（Qwen3-Embedding-4B）
+Linux 用 `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`。
 
-# 3. 启动（脚本自动创建 .venv + 安装依赖，无需手动准备；脚本默认 --log-level DEBUG）
+### 3. 全局配置
+
+首次启动时若 `db/config.json` 不存在，会自动从 `db/config.example.json` 生成并提示填写；也可以手动复制：
+
+```powershell
+Copy-Item db\config.example.json db\config.json
+```
+
+| 配置 | 必填 | 说明 |
+| --- | --- | --- |
+| `appid` / `appsecret` | 是 | QQ 机器人凭据 |
+| `llm.base_url` / `llm.api_key` / `llm.model` | 是 | 任意 OpenAI 兼容服务；模型需支持 function calling |
+| `embedding.base_url` / `api_key` / `model` | 否 | 任意 OpenAI 兼容 `/embeddings`；缺任一项或 `enabled=false` 时记忆自动改用关键词检索，不影响启动 |
+| `web.token` | 建议 | 面板登录令牌；公网部署请改成强随机字符串 |
+| `storage.public_base_url` | 否 | 仅超过 10MB 的本地媒体回退签名链接时需要 |
+
+LLM 与 embedding 都不绑定厂商：DeepSeek、OpenAI、通义、SiliconFlow、自建网关等只要兼容 OpenAI 接口，改这三项即可。`llm.request.thinking` 是 DeepSeek 扩展，不支持的厂商留空（不发该字段）。
+
+### 4. Tool 配置与素材
+
+- 各工具的 `tool/<分类>/config.json` 在首次运行时按代码里的 `default_config` 自动生成，新增字段自动补齐；模板见同目录 `config.example.json`。
+- 含密钥的工具配置（MiMo key、SMTP 授权码）不入库；邮件收件人白名单、语音克隆、表情限流等可在 Web「工具」页或直接改配置文件。
+- 可选素材不入库，缺失时对应工具自动视为未启用：表情素材放 `tool/emoji/stickers/`（索引 `index.json` 已有 66 条）、用户投喂在 `tool/emoji/user/`、语音参考音频放 `tool/audio/voice_ref.wav`。
+
+### 5. 启动
+
+```powershell
 start.bat                    # Windows 前台（Ctrl+C 停止）
-# 或直接运行（无参数时全部行为由 db/config.json 驱动，日志等级取 web.log_level）：
+# 或直接运行（日志等级取配置 web.log_level）：
 .\.venv\Scripts\python.exe main.py
 # Linux 后台：
 ./start.sh
 ```
 
-启动后：QQ gateway 连接成功 → 群@消息触发 → Presence 状态机（离线积压 / @唤醒 / 在线抖动聚合 / 选择性回复）。Web 面板：`http://127.0.0.1:11028`（首次访问在页面输入 `db/config.json → web.token`；登录后写入 HttpOnly + SameSite=Strict Cookie，令牌不落 localStorage/URL）。
+启动后：QQ gateway 连接成功 → 群@消息触发 → Presence 状态机（离线积压 / @唤醒 / 在线抖动聚合 / 选择性回复）。Web 面板：`http://127.0.0.1:11028`（首次访问输入 `db/config.json → web.token`；登录后写入 HttpOnly + SameSite=Strict Cookie，令牌不落 localStorage/URL）。
 
 ## 日志与 Web 运维
 
 - **日志文件**：只写 `temp/logs/ggbot.log`（RotatingFileHandler，5MB × 5 轮转；**每次启动以 `mode="w"` 清空重写**，不保留上次进程的日志；目录随 `storage.temp_dir` 自动创建；stderr 同时输出）。项目根目录不再产生 `botpy.log` / `logs/`——botpy 的文件 handler 已关闭（`bot_log=None, ext_handlers=False`）。格式 `时间 | 等级 | 会话 | 内容`——会话列统一为 `群聊xxxxxxxx` / `私聊xxxxxxxx` / `系统00000000`（8 位 openid），控制台、文件、Web 面板三处一致；DEBUG 只输出业务状态（入站 / 上下文 / LLM 请求 / 工具 / 发送 / 上下线），第三方库（botpy / openai / httpx / httpcore2 / uvicorn 等）固定 WARNING，不打印连接与报文细节
-- **启动日志**：仅六条就绪信息——`日志就绪`（相对路径 + 等级）/ `存储就绪`（相对路径）/ `记忆就绪`（模型 + 地址）/ `LLM 就绪`（模型 + 地址）/ `Web 就绪`（地址）/ `Bot 就绪`（gateway）；收发消息只保留一条入站日志（`私聊[昵称/54019C24] 内容` / `群@[昵称/54019C24] 内容`；无昵称时只显示 8 位 id，引用消息显示为 `[引用 被引内容] 正文`；纯富媒体消息（图片/语音/视频/文件）没有文本时显示 `[图片 cat.gif]` / `[语音]` / `[视频]` / `[文件 报告.pdf]` 等标记，不会出现空内容）和一条发送内容；上下文与 token 统计为 `agent 上下文: history = 40 / 64 tokens ≈ 9000 / 16000`、`LLM 请求 tokens ≈ 9000`、`LLM 响应 tokens ≈ 52`（上下文日志与请求日志使用同一估算口径，不再重复计算 system 提示词）；上下线只打 `自然上线 预计在线 53s, 积压消息 0 / 128 条` / `强制上线 …` / `下线 预计离线 438s`
+- **启动日志**：仅六条就绪信息——`日志就绪`（相对路径 + 等级）/ `存储就绪`（相对路径）/ `记忆就绪`（模型 + 地址；未配置 embedding 时为 `关键词模式`）/ `LLM 就绪`（模型 + 地址）/ `Web 就绪`（地址）/ `Bot 就绪`（gateway）；收发消息只保留一条入站日志（`私聊[昵称/54019C24] 内容` / `群@[昵称/54019C24] 内容`；无昵称时只显示 8 位 id，引用消息显示为 `[引用 被引内容] 正文`；纯富媒体消息（图片/语音/视频/文件）没有文本时显示 `[图片 cat.gif]` / `[语音]` / `[视频]` / `[文件 报告.pdf]` 等标记，不会出现空内容）和一条发送内容；上下文与 token 统计为 `agent 上下文: history = 40 / 64 tokens ≈ 9000 / 16000`、`LLM 请求 tokens ≈ 9000`、`LLM 响应 tokens ≈ 52`（上下文日志与请求日志使用同一估算口径，不再重复计算 system 提示词）；上下线只打 `自然上线 预计在线 53s, 积压消息 0 / 128 条` / `强制上线 …` / `下线 预计离线 438s`
 - **等级控制**：`db/config.json → web.log_level`（默认 INFO）；面板保存设置即时热切换。`start.bat` / `start.sh` 默认带 `--log-level DEBUG`，直接 `python main.py` 则用配置值；项目不使用环境变量（Web 面板开关：`web.enable`）
 - **Web 面板**：深色玻璃拟态 + 响应式。桌面端侧栏可折叠为图标栏（78px，状态记忆在 localStorage；≤900px 改为抽屉）；仪表盘为 bento 布局——主卡显示运行状态 / 在线会话 / 待处理，右侧 6 个指标两列排布，下方图表与最近消息；会话与上下文改为左右分栏（左列表支持筛选与待处理角标、滚动位置保持，右侧详情含摘要、统计、消息气泡与单独清空）；消息流为时间线卡片（角色色点 / 会话标签 / 状态徽标）；日志改为等宽控制台（时间去色、等级 / 会话 / 内容四列，警告与错误行带底色，≤620px 隐藏会话列）；向量记忆（语义检索 / 写入 / 编辑 / 整理）、规则启停、工具（10 个 Tool 的启停与脱敏配置概览）、设置分组（LLM / 在线作息 / 回复节奏 / 上下文与积压 / 日志，白名单热更新并写回 config.json）
 - **运维 CLI**：`python tools/manage.py stats|sessions|context|clear|reset-chat|memory ...`，可直接查看统计、导出会话上下文、清空单个会话、检索/增改/整理记忆（`--yes` 跳过确认）
@@ -173,14 +204,14 @@ stateDiagram-v2
 {
   "appid": "...", "appsecret": "...",
   "bot_openid": "",                    // 机器人 openid，自动学习（群消息 <@id> / @事件 mentions），也可手动填
-  "deepseek": {
-    "base_url": "https://api.deepseek.com", "api_key": "...", "model": "deepseek-flash",
-    "request": { "thinking": "disabled", "reasoning_effort": "high", "temperature": 1.0,
-                 "top_p": 1.0, "max_tokens": 2048, "stop": [], "stream": false },
+  "llm": {
+    "base_url": "https://你的服务商/v1", "api_key": "...", "model": "模型名",
+    "request": { "thinking": "", "temperature": 1.0, "top_p": 1.0,
+                 "max_tokens": 2048, "stop": [] },
     "context": { "max_history_messages": 64, "summary_threshold_tokens": 16000 }
   },
-  "embedding": { "provider": "siliconflow", "base_url": "https://api.siliconflow.cn/v1",
-                 "model": "Qwen/Qwen3-Embedding-4B", "api_key": "...", "batch_size": 32 },
+  "embedding": { "enabled": true, "provider": "", "base_url": "https://你的服务商/v1",
+                 "model": "embedding 模型名", "api_key": "...", "batch_size": 32 },
   "behavior": {
     "presence": { "online_duration_sec": 300, "offline_interval_sec": 900,
                   "online_duration_jitter": 0.3, "offline_interval_jitter": 0.4,
@@ -199,7 +230,9 @@ stateDiagram-v2
 }
 ```
 
-参数口径（按 DeepSeek 官方文档核实）：`thinking` 仅 `enabled`/`disabled`（disabled 经 `extra_body` 生效）；`temperature` 仅非思考模式生效、`top_p` 仅思考模式生效；`reasoning_effort` 仅思考模式；`top_k` 官方不支持、`presence/frequency_penalty` 已废弃，均不入配置；base_url 不带 `/v1`。
+请求参数按所用服务商的支持情况填写：`temperature` / `top_p` / `max_tokens` / `stop` 原样透传；`thinking` 是 DeepSeek 扩展（`enabled` / `disabled`，经 `extra_body` 发送），不支持的厂商留空即可。`reasoning_effort`、`top_k`、`presence_penalty`、`frequency_penalty` 当前不透传；请求固定非流式。`base_url` 是否带 `/v1` 取决于服务商。
+
+`embedding` 的 `api_key` / `base_url` / `model` 任一为空，或 `enabled=false` 时，不启用向量检索：`memory_write` 照常入库，`memory_search` 退化为字符/二元组关键词匹配，不再请求外部服务。旧版配置里的 `deepseek` 段会在启动时自动改写为 `llm`。
 
 `storage.public_base_url` 是**签名媒体的公网入口**——填 Web 面板对外地址（如 `https://bot.example.com`）。本地图片/表情/语音默认走 QQ 的 base64 `file_data` 直传（不需要公网地址）；只有超过 10MB 的本地文件才退回签名链接，此时未配置 `public_base_url` 会明确报错。Tool 私有配置不在 `db/config.json` 里，见下一节。
 
@@ -223,7 +256,7 @@ stateDiagram-v2
 
 ### 一个 Tool 由什么组成
 
-- **schema**：`name` / `description` / `parameters`，直接进入 DeepSeek function calling 的 tools 列表
+- **schema**：`name` / `description` / `parameters`，直接进入 LLM function calling 的 tools 列表
 - **执行器**：`run(args, ctx)`，通过 `ToolRuntime` 获得配置、数据目录与发送能力
 - **自我描述**：`prompt_hint` 自动汇总进 system prompt 的 `【工具提示】`，只在启用时出现
 - **启停与归属**：`enabled_by_default` / `toggleable` / `config_owner` / `data_name`（目录名，如 `send_email → mail`）
@@ -260,7 +293,7 @@ stateDiagram-v2
 
 > **本地媒体上传**：本地文件（`temp/`、`tool/` 下的图片/表情/语音/视频）直接以 base64 `file_data` 调 `POST /v2/groups/{group_openid}/files`（或 `/v2/users/{openid}/files`）上传，再用返回的 `file_info` 发 `msg_type=7`，不依赖公网地址；超过 10MB 的本地文件改用 `ggbot/util/media.py` 生成的 HMAC 签名链接 `/media/<exp>/<sig>/<rel>`（由 Web 面板提供，无需 Cookie，仅限媒体扩展名，禁止目录穿越与日志），此时需配置 `storage.public_base_url`。签名密钥取自 `web.token`（或 `appsecret`），有效期默认 1 小时。
 
-> **版本库边界**：`tool/*/config.json` 含 MiMo key / SMTP 授权码，由全局 `config.json` 规则忽略；`tool/emoji/{stickers,user}/` 与 `tool/audio/*.wav` 体积大或含个人音频同样忽略；`tool/emoji/index.json` 入库（仅含义索引，不含素材本体）。换机重建时把素材放回 `tool/emoji/stickers/`、参考音频放回 `tool/audio/voice_ref.wav` 即可，索引与配置会自动补齐缺失字段。
+> **版本库边界**：真正的 `tool/*/config.json` 含 MiMo key / SMTP 授权码，由全局 `config.json` 规则忽略；同目录的 `config.example.json` 是入库模板（无密钥）。`tool/emoji/{stickers,user}/` 与 `tool/audio/*.wav` 体积大或含个人音频同样忽略；`tool/emoji/index.json` 入库（仅含义索引，不含素材本体）。换机重建时把素材放回 `tool/emoji/stickers/`、参考音频放回 `tool/audio/voice_ref.wav` 即可，运行时会自动生成缺失的配置并补齐字段。
 
 ## 记忆管理
 
@@ -270,7 +303,7 @@ stateDiagram-v2
 2. **会话摘要** — `sessions.summary`。请求估算超过 `summary_threshold_tokens`（默认 16k）时，从最旧的历史开始移出并调用 LLM 增量压缩进摘要（≤600 字），旧消息仍在库里；摘要随会话保存并在之后每轮注入，避免重复摘要全部历史。
 3. **长期记忆（向量）** — `memories` 表，`content + embedding + importance + session_id`。AI 通过 `memory_write` 主动沉淀，`memory_search` 按语义回忆；system prompt 只注入与当前消息相关度 ≥0.35 的 top-3，作用域为「全局 + 本会话」。
 
-- **写入**：SiliconFlow `Qwen/Qwen3-Embedding-4B` 生成向量；同会话余弦 ≥0.95 视为重复，更新原条目而非新增；importance 1-5
+- **写入**：启用 embedding 时由配置的服务/模型生成向量；同会话余弦 ≥0.95 视为重复，更新原条目而非新增；importance 1-5。未配置 embedding 时只入库文本，检索走关键词匹配
 - **检索**：`memory_search` 余弦 top-k；面板「整理」合并近似重复（阈值 0.95）
 - **高可用**：embedding 调用失败重试 3 次；检索失败仅跳过注入（按无记忆继续回复），不阻塞消息处理
 - **边界**：不设固定人设、不做人设进化；规则（`rules` 表）单独注入 system prompt，与记忆分开。`--reset-chat` 清 messages + sessions（含摘要）但**保留 memories**；`--reset-db` 先用 SQLite 在线备份 API 生成快照（`db/ggbot.db.bak-<时间戳>`，含 WAL 内最新数据），再删除整个数据库文件（messages / sessions / memories / rules 全部清空），启动后重建空库；单会话清空只删该会话消息；记忆可单独增删改
@@ -294,8 +327,8 @@ stateDiagram-v2
 ```
 [PASS] import_all        # 全部模块导入
 [PASS] storage_crud      # SQLite 会话/消息/记忆/规则 CRUD + 积压查询
-[PASS] memory_vector     # SiliconFlow embedding 真实调用 + 语义检索 + 去重/ tidy 合并
-[PASS] llm_chat          # DeepSeek deepseek-flash 真实调用（thinking=disabled 生效）
+[PASS] memory_vector     # embedding 真实调用（实测 SiliconFlow）+ 语义检索 + 去重/ tidy 合并
+[PASS] llm_chat          # LLM 真实调用（实测 DeepSeek deepseek-flash，thinking=disabled 生效）
 [PASS] tools_schema      # 10 个 Tool 插件自动发现 + schema 校验 + 启用状态过滤
 [PASS] tool_layout       # 根目录 tool/ 按分类包自动发现（core/memory/emoji/audio/media/mail）+ 自包含数据目录 + config-less 工具 toggle 生效
 [PASS] assistant_persist # 发送成功后 assistant 消息入库；pending 不进历史；本轮消息独立标注（防逐条重答旧消息）
@@ -311,6 +344,7 @@ stateDiagram-v2
 [PASS] tool_loop         # function calling 端到端：AI 调用 memory_write 真实入库
 [PASS] tool_choice       # 真实 LLM 触发率：笑→send_sticker、晚安/求安慰→send_voice_clone、自我介绍→memory_write、回忆→memory_search
 [PASS] config_read       # 纯配置文件驱动（无环境变量）+ temp/db 路径
+[PASS] config_generic    # deepseek→llm 自动迁移、缺失配置按模板生成、embedding 可选（关键词降级）、LLM 厂商无关且缺项明确报错、22 个 Web 设置路径均存在且在白名单
 [PASS] logging_system    # 多等级写文件 + tail 等级过滤 + set_level 热切换；根目录不产生 botpy.log
 [PASS] presence_backlog  # 上线积压只读：pending→seen、零 LLM 调用/零发送；唤醒先读旧积压再回本条；读入上限 128、在线批次上限 16
 [PASS] context_limits    # 历史窗口 64、16k 预算下从最旧压缩进摘要并持久注入；上下文与请求 token 口径一致
@@ -347,5 +381,5 @@ stateDiagram-v2
 - qq-botpy 1.2.1（2024-03 停更）但内置新鉴权（appId+clientSecret → access_token 自动缓存刷新），实测可用
 - `send_voice_clone` 产出 wav 后由 `pysilk` 转成 24kHz silk 再发送；QQ 语音富媒体只接受 silk
 - 表情包以图片富媒体发送（非 QQ 商城表情）；本地素材走 base64 直传，不需要公网地址
-- 工具目录 `tool/*/config.json` 含第三方密钥/授权码，已在 `.gitignore` 中排除，部署时需自行创建或从备份恢复
+- 工具目录 `tool/*/config.json` 含第三方密钥/授权码，已在 `.gitignore` 中排除；首次运行会按 `config.example.json`/代码默认值自动生成，无需手工创建
 - Web 面板为单令牌 + HttpOnly Cookie 鉴权，适合本机/内网；公网暴露请加 HTTPS 反向代理并设 `web.cookie_secure=true`

@@ -1,0 +1,66 @@
+{
+  "appid": "QQ 机器人 AppID",
+  "appsecret": "QQ 机器人 AppSecret",
+  "bot_openid": "",
+  "llm": {
+    "base_url": "https://你的服务商/v1",
+    "api_key": "LLM API Key",
+    "model": "模型名",
+    "request": {
+      "temperature": 1.0,
+      "top_p": 1.0,
+      "max_tokens": 2048,
+      "stop": [],
+      "thinking": ""
+    },
+    "context": {
+      "max_history_messages": 64,
+      "summary_threshold_tokens": 16000
+    }
+  },
+  "embedding": {
+    "enabled": true,
+    "provider": "",
+    "base_url": "",
+    "api_key": "",
+    "model": "",
+    "batch_size": 32
+  },
+  "behavior": {
+    "presence": {
+      "online_duration_sec": 60,
+      "offline_interval_sec": 600,
+      "wake_on_at_message": true,
+      "wake_on_c2c": true,
+      "renew_on_reply": true,
+      "renew_per_reply_sec": 30,
+      "online_duration_jitter": 0.3,
+      "offline_interval_jitter": 0.4,
+      "renew_jitter": 0.3,
+      "renew_max_sec": 600
+    },
+    "backlog": {
+      "max_scan_messages": 128,
+      "online_max_messages": 16
+    },
+    "reply": {
+      "segment_gap_sec": 2,
+      "debounce_sec": 5,
+      "debounce_max_sec": 10
+    }
+  },
+  "storage": {
+    "temp_dir": "temp",
+    "db_path": "db/ggbot.db",
+    "public_base_url": "",
+    "temp_ttl_hours": 24,
+    "download_video": false
+  },
+  "web": {
+    "enable": true,
+    "host": "127.0.0.1",
+    "port": 11028,
+    "token": "换成随机长字符串",
+    "log_level": "INFO"
+  }
+}
