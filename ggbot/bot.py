@@ -34,13 +34,15 @@ class QQBot(botpy.Client):
         logger.info("QQBot 已连接 WebSocket gateway")
 
     async def on_group_at_message_create(self, message: GroupMessage) -> None:
-        # GROUP_AT_MESSAGE_CREATE：只有真正被@本机器人时触发
-        logger.info("群@消息事件（@本机器人）: id=%s group=%s", message.id, message.group_openid)
-        await self._route(message, is_at=True)
+        # GROUP_AT_MESSAGE_CREATE：只有真正被@本机器人时触发（事件通道）
+        self._learn_bot_openid(message)
+        logger.info("群@消息 group=%s", self._short(message.group_openid))
+        await self._route(message, is_at=True, passive_ok=True)
 
     async def on_c2c_message_create(self, message: C2CMessage) -> None:
-        # 私聊 = 直接找机器人对话，等价于 @
-        await self._route(message, is_at=True)
+        # 私聊 = 直接找机器人对话，等价于 @；C2C 事件可被动回复
+        logger.info("私聊消息 user=%s", self._short(getattr(message, "author", None) and getattr(message.author, "user_openid", None)))
+        await self._route(message, is_at=True, passive_ok=True)
 
     async def on_group_add_robot(self, message) -> None:
         logger.info("机器人加入群聊: %s", getattr(message, "group_openid", None))
@@ -85,10 +87,12 @@ class QQBot(botpy.Client):
         is_at 仅由 GROUP_AT_MESSAGE_CREATE 事件判定为 True——
         全量消息里 mentions 可能包含被@的其他成员/机器人，不能据此误判为自己。
         """
-        logger.info("群全量消息事件: id=%s group=%s", message.id, message.group_openid)
-        await self._route(message, is_at=False)
+        me = self._mentioned_self(message)
+        logger.info("群消息 group=%s%s", self._short(message.group_openid), " AT_ME" if me else "")
+        # passive_ok 固定 False：全量事件的 event_id 不能用于被动回复（40034027），只能主动发送
+        await self._route(message, is_at=me, passive_ok=False)
 
-    async def _route(self, message, is_at: bool = False) -> None:
+    async def _route(self, message, is_at: bool = False, passive_ok: bool = False) -> None:
         msg_id = getattr(message, "id", None)
         if not msg_id or msg_id in self._seen:
             logger.debug("重复/空消息忽略: id=%s", msg_id)
@@ -96,14 +100,14 @@ class QQBot(botpy.Client):
         self._seen.add(msg_id)
         if len(self._seen) > self._max_seen:
             self._seen = set(list(self._seen)[-self._max_seen // 2 :])
-        inbound = await self._normalize(message, is_at=is_at)
+        inbound = await self._normalize(message, is_at=is_at, passive_ok=passive_ok)
         if inbound is None:
             logger.warning("消息归一化失败，跳过: id=%s", msg_id)
             return
         logger.debug(
-            "收到消息 scene=%s target=%s sender=%s at=%s content=%.60r attachments=%d",
+            "收到消息 scene=%s target=%s sender=%s at=%s passive_ok=%s content=%.60r attachments=%d",
             inbound["scene"], inbound["target"], inbound["sender"],
-            inbound["is_at"], inbound["content"], len(inbound["attachments"] or []),
+            inbound["is_at"], inbound["passive_ok"], inbound["content"], len(inbound["attachments"] or []),
         )
         if self.presence:
             await self.presence.handle_message(inbound)
@@ -112,7 +116,7 @@ class QQBot(botpy.Client):
 
     # ---------- 归一化 ----------
 
-    async def _normalize(self, message, is_at: bool = False) -> dict | None:
+    async def _normalize(self, message, is_at: bool = False, passive_ok: bool | None = None) -> dict | None:
         is_group = isinstance(message, GroupMessage)
         if is_group:
             key = f"group:{message.group_openid}"
@@ -129,8 +133,12 @@ class QQBot(botpy.Client):
             scene = "c2c"
         content = (message.content or "").strip()
         attachments = await self._download_attachments(message.attachments or [])
-        # is_at 由事件类型决定：GROUP_AT_MESSAGE_CREATE 才为 True。
-        # 不能看 mentions/文本里的 @（全量消息可能@其他成员/机器人）。
+        # is_at：事件来源（group_at/c2c=True）优先；全量消息用 mentions 兜底匹配 bot_openid
+        # passive_ok：只有 @事件/C2C 事件的消息可用 msg_id+event_id 被动回复；
+        #   全量事件（GROUP_MESSAGE_CREATE）的 event_id 平台拒绝用于被动回复（40034027），只能主动
+        is_at = bool(is_at or self._mentioned_self(message))
+        if passive_ok is None:
+            passive_ok = is_at
         return {
             "msg_id": message.id,
             "msg_seq": getattr(message, "msg_seq", None),
@@ -142,8 +150,41 @@ class QQBot(botpy.Client):
             "content": content,
             "attachments": attachments,
             "is_at": is_at,
+            "passive_ok": bool(passive_ok),
             "timestamp": message.timestamp,
         }
+
+    # ---------- 辅助 ----------
+
+    def _short(self, s: str | None, n: int = 12) -> str:
+        return (s or "")[:n]
+
+    def _mentioned_self(self, message) -> bool:
+        """全量消息兜底：mentions 中是否包含本机器人 openid（config bot_openid）。
+        平台未推送 GROUP_AT_MESSAGE_CREATE 事件时，凭此仍能识别"被@本机器人"。"""
+        own = str((self.cfg.qq or {}).get("bot_openid") or "").strip().lower()
+        if not own:
+            return False
+        for m in getattr(message, "mentions", None) or []:
+            mid = str(getattr(m, "id", "") or "").strip().lower()
+            if mid and mid == own:
+                return True
+        return False
+
+    def _learn_bot_openid(self, message) -> None:
+        """从第一条 GROUP_AT_MESSAGE_CREATE 事件学习本机器人 openid（mentions[0]=自己），
+        写入 config.json，作为全量消息@识别的兜底。"""
+        if (self.cfg.qq or {}).get("bot_openid"):
+            return
+        try:
+            mid = str(getattr((getattr(message, "mentions", None) or [None])[0], "id", "") or "").strip()
+            if not mid or not mid.lower().startswith("robot"):
+                return
+            self.cfg.set_by_path("bot_openid", mid)
+            self.cfg.save()
+            logger.info("已学习本机器人 openid=%s（写入 config bot_openid）", mid)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("学习 bot_openid 失败: %s", e)
 
     async def _download_attachments(self, attachments) -> list[dict]:
         """富媒体落地：下载到 temp/（视频默认不下载），保留公网 URL（可转发）。

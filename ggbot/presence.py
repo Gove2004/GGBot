@@ -178,7 +178,8 @@ class PresenceManager:
         self.storage.add_message(
             sid, "user", inbound["sender"], inbound["content"],
             inbound.get("attachments"), inbound["msg_id"], inbound.get("msg_seq"),
-            inbound.get("event_id"), inbound.get("is_at", False), status="pending",
+            inbound.get("event_id"), inbound.get("is_at", False), inbound.get("passive_ok", False),
+            status="pending",
         )
         if self.state == "offline":
             if inbound.get("is_at") and self.p.get("wake_on_at_message", True):
@@ -242,16 +243,21 @@ class PresenceManager:
         """生成并发送回复；任何失败只标记状态，不向上抛（避免单条失效群打崩整轮积压）。
 
         状态：成功 replied / 生成失败或发送失败 failed / 无需回复 skipped。
+        发送通道：batch 中存在可被动消息（@/C2C 事件）时，绑定其中最后一条走被动回复
+        （msg_id+event_id，不耗主动额度）；纯普通消息才走主动合并（额度每月 4 条/群）。
         """
-        inbound = msgs[-1]
-        sid = inbound["session_id"]
+        ctx_msg = msgs[-1]
+        sid = ctx_msg["session_id"]
         ids = [m["msg_id"] for m in msgs if m.get("msg_id")]
+        pv = [m for m in msgs if m.get("passive_ok")]
+        send_msg = pv[-1] if (passive and pv) else ctx_msg
+        can_passive = bool(passive and pv)
 
         def _mark(status: str) -> None:
             self.storage.mark_pending_processed(ids, status)
 
         try:
-            reply = await self._agent_loop(sid, msgs, inbound)
+            reply = await self._agent_loop(sid, msgs, ctx_msg)
         except Exception as e:  # noqa: BLE001
             logger.warning("回复生成失败 n=%d sid=%s: %s", len(msgs), sid, e)
             _mark("failed")
@@ -260,7 +266,7 @@ class PresenceManager:
             _mark("skipped")
             return False
         try:
-            sent = await self._send_chunked(inbound, reply, passive=passive)
+            sent = await self._send_chunked(send_msg, reply, passive=can_passive)
             if not sent:
                 # 回复文本切分后为空（如全空白）：视为无需发送
                 _mark("skipped")
@@ -268,8 +274,8 @@ class PresenceManager:
             _mark("replied")
             return True
         except Exception as e:  # noqa: BLE001
-            target = inbound.get("target") or self._target_of(sid)[0]
-            scene = inbound.get("scene") or self._target_of(sid)[1]
+            target = send_msg.get("target") or self._target_of(sid)[0]
+            scene = send_msg.get("scene") or self._target_of(sid)[1]
             logger.warning("回复发送失败 n=%d target=%s scene=%s: %s", len(msgs), target, scene, e)
             _mark("failed")
             return False
@@ -280,16 +286,25 @@ class PresenceManager:
             self._renew_online()
 
     async def _process_batch(self, msgs: list[dict]) -> None:
-        """在线批次：聚合多条消息一次决策。"""
+        """在线批次：聚合多条消息一次决策。
+
+        平台硬限制：全量消息不能被动回复，主动消息每月仅 4 条/群——
+        在线聚合的普通消息只进上下文/记忆，不实际发送（真人"看到没回"也符合人设）；
+        含被动事件（@/C2C）的批次才走回复。
+        """
         last = msgs[-1]
+        if not any(m.get("passive_ok") for m in msgs):
+            logger.debug("在线普通消息批次跳过回复（主动额度限制）: %d 条", len(msgs))
+            return
         if await self._safe_reply(msgs, passive=True):
             self._renew_online()
 
     async def _process_backlog(self) -> None:
-        """上线积压处理：优先级单独回 + 其余按 batch_size 合并。
+        """上线积压处理：被动事件（@/C2C）且窗口内的单独被动回复，其余合并主动。
 
-        @/问句若仍在被动回复窗口（5 分钟内）走被动通道（带 msg_id+event_id，
-        不耗主动消息额度）；过窗的与其余消息合并为主动回复（每月 4 条/群额度）。
+        平台硬限制：仅 @本机器人事件 / C2C 事件消息可用被动回复（带 msg_id+event_id）；
+        全量消息（含问句、普通消息）的 event_id 不能用于被动回复（40034027），
+        一律主动发送。主动消息额度：每月 4 条/群，故其余消息按 batch_size 合并省额度。
         """
         sessions = {}
         for sid in self._iter_pending_sessions():
@@ -297,9 +312,11 @@ class PresenceManager:
         for sid, pend in sessions.items():
             if not pend:
                 continue
-            priority, rest = self._split_priority(pend)
+            # 仅可被动事件（@/C2C）消息可被动；窗口内单独回，过窗并入主动合并
+            at_msgs = [m for m in pend if m.get("passive_ok")]
+            rest = [m for m in pend if not m.get("passive_ok")]
             fresh, stale = [], []
-            for m in priority:
+            for m in at_msgs:
                 (fresh if self._is_fresh(m) else stale).append(m)
             for m in fresh:
                 await self._safe_reply([m], passive=True)
@@ -331,17 +348,6 @@ class PresenceManager:
 
     def _pending_of(self, sid: str) -> list[dict]:
         return self.storage.get_pending_messages(sid, int(self.b.get("max_scan_messages", 1000)))
-
-    def _split_priority(self, pend: list[dict]) -> tuple[list[dict], list[dict]]:
-        """分流：被@（必回）单独回；其余合并。priority_rule=at 时仅@单独回。"""
-        rule = self.b.get("priority_rule", "llm")
-        priority = [m for m in pend if m.get("is_at")]
-        if rule == "llm":
-            # 除@外，含明确问句的消息也单独回（简单规则：结尾是？/吗/呢/嘛/么）
-            question_re = re.compile(r"[？?]$|[吗呢嘛么]")
-            priority += [m for m in pend if not m.get("is_at") and question_re.search((m.get("content") or "").strip())]
-        rest = [m for m in pend if m not in priority]
-        return priority, rest
 
     # ---------- 上下文组装 ----------
 
@@ -417,34 +423,44 @@ class PresenceManager:
         return nxt
 
     async def _send_chunked(self, inbound: dict, reply: str, passive: bool = True) -> bool:
-        """分段发送。返回是否实际发送了内容（空回复返回 False）。"""
+        """分段发送。返回是否实际发送了内容（空回复返回 False）。
+
+        平台规则：只有 @本机器人事件（GROUP_AT_MESSAGE_CREATE / C2C_MSG_RECEIVE）
+        的消息能用 msg_id+event_id 被动回复；全量消息事件的 event_id 不能用于
+        被动回复（40034027），必须主动发送（不带 msg_id/event_id）。
+        """
         segments = split_reply(reply, self.r.get("max_chars_per_segment", 80), self.r.get("max_segments", 5))
         if not segments:
             logger.debug("回复为空，不发送")
             return False
         target = inbound.get("target") or self._target_of(inbound.get("session_id") or "")[0]
         scene = inbound.get("scene") or self._target_of(inbound.get("session_id") or "")[1]
-        logger.info("回复发送 target=%s scene=%s 段数=%d passive=%s", target, scene, len(segments), passive)
+        can_passive = bool(passive and inbound.get("passive_ok"))
         gap = float(self.r.get("segment_gap_sec", 2))
-        msg_id = inbound.get("msg_id") if passive else None
+        msg_id = inbound.get("msg_id") if can_passive else None
+        event_id = inbound.get("event_id") if can_passive else None
         sid = inbound.get("session_id") or ""
         base_seq = inbound.get("msg_seq")
         for i, seg in enumerate(segments):
             seq = self._next_seq(sid, base_seq)
             logger.info("回复发送 target=%s scene=%s 段数=%d passive=%s 段%d: %.60r",
-                        target, scene, len(segments), passive, i + 1, seg)
+                        target, scene, len(segments), can_passive, i + 1, seg)
             try:
-                resp = await self.bot.send_text(target, seg, scene, msg_id, seq, inbound.get("event_id"))
+                resp = await self.bot.send_text(target, seg, scene, msg_id, seq, event_id)
                 if resp is not None:
                     # botpy 解析 QQ 返回（含新消息 id）；有 id 说明平台已受理并生成消息
                     rid, ts = (resp.get("id"), resp.get("timestamp")) if isinstance(resp, dict) \
                         else (getattr(resp, "id", None), getattr(resp, "timestamp", None))
                     logger.info("QQ 已受理 seq=%d resp_id=%s ts=%s", seq, rid, ts)
             except Exception as e:  # noqa: BLE001
-                if passive and msg_id:
-                    # 被动回复失败（msg_id 过期 / 参数校验等）→ 降级主动发送，确保送达
+                if can_passive and msg_id:
+                    # 被动回复失败（msg_id 过期 / 事件不可回复等）→ 降级主动发送，确保送达
                     logger.warning("被动回复失败，降级主动发送 %s: %s", target, e)
-                    await self.bot.send_text(target, seg, scene, None, self._next_seq(sid, None))
+                    resp = await self.bot.send_text(target, seg, scene, None, self._next_seq(sid, None))
+                    if resp is not None:
+                        rid, ts = (resp.get("id"), resp.get("timestamp")) if isinstance(resp, dict) \
+                            else (getattr(resp, "id", None), getattr(resp, "timestamp", None))
+                        logger.info("QQ 已受理(降级主动) seq=%d resp_id=%s ts=%s", seq, rid, ts)
                 else:
                     raise
             if i < len(segments) - 1:

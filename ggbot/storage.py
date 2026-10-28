@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS messages(
     msg_seq INTEGER,
     event_id TEXT,
     is_at INTEGER DEFAULT 0,
+    passive_ok INTEGER DEFAULT 0,
     status TEXT,
     ts TEXT
 );
@@ -79,6 +80,8 @@ def _row_to_dict(row) -> dict:
             d["attachments"] = []
     if "is_at" in d:
         d["is_at"] = bool(d["is_at"])
+    if "passive_ok" in d:
+        d["passive_ok"] = bool(d["passive_ok"])
     return d
 
 
@@ -101,6 +104,8 @@ class Storage:
             c.execute("ALTER TABLE messages ADD COLUMN event_id TEXT")
         if "is_at" not in cols:
             c.execute("ALTER TABLE messages ADD COLUMN is_at INTEGER DEFAULT 0")
+        if "passive_ok" not in cols:
+            c.execute("ALTER TABLE messages ADD COLUMN passive_ok INTEGER DEFAULT 0")
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30)
@@ -199,12 +204,15 @@ class Storage:
         msg_seq: int | None = None,
         event_id: str | None = None,
         is_at: bool = False,
+        passive_ok: bool | None = None,
         status: str = "received",
     ) -> int:
+        if passive_ok is None:
+            passive_ok = is_at
         with self._lock, self._conn() as c:
             cur = c.execute(
                 "INSERT INTO messages(session_id, role, sender, content, attachments, msg_id, msg_seq, "
-                "event_id, is_at, status, ts) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "event_id, is_at, passive_ok, status, ts) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     session_id,
                     role,
@@ -215,6 +223,7 @@ class Storage:
                     msg_seq,
                     event_id,
                     1 if is_at else 0,
+                    1 if passive_ok else 0,
                     status,
                     _now(),
                 ),

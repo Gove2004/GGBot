@@ -23,10 +23,11 @@ class Config:
         with open(self.path, encoding="utf-8") as f:
             self.data = json.load(f)
 
-        # QQ 凭据：config 顶层 appid / appsecret
+        # QQ 凭据：config 顶层 appid / appsecret / bot_openid
         self.qq = {
             "appid": self.data.get("appid", ""),
             "secret": self.data.get("appsecret", ""),
+            "bot_openid": self.data.get("bot_openid", ""),
         }
         # LLM：deepseek 子对象
         self.llm = self.data.get("deepseek", {})
