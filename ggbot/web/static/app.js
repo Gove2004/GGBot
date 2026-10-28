@@ -15,7 +15,7 @@ const PAGE_META = {
   rules: ["规则", "实时注入系统提示词的行为约束"],
   settings: ["设置", "配置热更新，写回 config.json"],
   tools: ["工具", "一切皆 Tool · 独立配置 / 持久化数据 / 动态挂载"],
-  logs: ["运行日志", "时间 | 等级 | 位置 | 会话 | 内容"],
+  logs: ["运行日志", "时间 | 等级 | 会话 | 内容"],
 };
 
 const REASON = {
@@ -704,11 +704,10 @@ async function refreshLogs() {
   const rows = (d.logs || []).map((l) => `<tr>
     <td class="muted">${esc(fmtLogTs(l.ts))}</td>
     <td><span class="lv ${lvClass[l.level] || ""}">${esc(l.level)}</span></td>
-    <td class="muted col-sm-hide">${esc(l.module)}</td>
     <td class="col-sm-hide">${esc(l.session)}</td>
     <td class="msg">${esc(l.content)}</td>
   </tr>`).join("");
-  qs("#log-body").innerHTML = rows || '<tr><td colspan="5" class="empty">（无日志）</td></tr>';
+  qs("#log-body").innerHTML = rows || '<tr><td colspan="4" class="empty">（无日志）</td></tr>';
 }
 
 /* ================= 刷新 ================= */

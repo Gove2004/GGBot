@@ -314,7 +314,6 @@ code { font-family: var(--mono); font-size: 12px; color: var(--accent-2); }
 .col-actions { width: 120px; text-align: right; }
 .col-ts { width: 158px; white-space: nowrap; }
 .col-lv { width: 78px; }
-.col-mod { width: 132px; }
 .col-sess { width: 106px; }
 
 .badge {

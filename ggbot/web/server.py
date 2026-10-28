@@ -33,12 +33,15 @@ logger = logging.getLogger("ggbot.web")
 
 WEB_DIR = Path(__file__).resolve().parent / "static"
 
-# 五列日志：时间 | 等级 | 位置 | 会话 | 内容（等级/位置/会话按宽度右填充空格）
+# 四列日志：时间 | 等级 | 会话 | 内容（等级/会话按宽度右填充空格）
 LOG_LINE_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) \| (\w+)\s*\| ((?:群聊|私聊|系统)[0-9A-Za-z]{8})\s*\| (.*)$"
+)
+# 旧版五列（时间 | 等级 | 位置 | 会话 | 内容）与三列（时间 | 等级 | 位置 | 内容）兜底解析
+OLD5_LOG_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) \| (\w+)\s*\| ([\w.]+)\s*\| (.*?)\s*\| (.*)$"
 )
-# 旧版三列日志（时间 | 等级 | 位置 | 内容）兜底解析，会话记系统
-LEGACY_LOG_RE = re.compile(
+OLD3_LOG_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) \| (\w+)\s*\| ([\w.]+)\s*\| (.*)$"
 )
 
@@ -580,19 +583,23 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         for line in raw:
             m = LOG_LINE_RE.match(line)
             if m:
-                ts, lv, mod, sess, content = m.groups()
+                ts, lv, sess, content = m.groups()
             else:
-                m = LEGACY_LOG_RE.match(line)
-                if not m:
-                    logs.append({"ts": "", "level": "-", "module": "-", "session": SYSTEM_LABEL, "content": line})
-                    continue
-                ts, lv, mod, content = m.groups()
-                sess = SYSTEM_LABEL
+                m = OLD5_LOG_RE.match(line)
+                if m:
+                    ts, lv, _mod, sess, content = m.groups()
+                else:
+                    m = OLD3_LOG_RE.match(line)
+                    if not m:
+                        logs.append({"ts": "", "level": "-", "session": SYSTEM_LABEL, "content": line})
+                        continue
+                    ts, lv, _mod, content = m.groups()
+                    sess = SYSTEM_LABEL
             if session and session not in sess:
                 continue
             if q and q not in content:
                 continue
-            logs.append({"ts": ts[:23], "level": lv, "module": mod, "session": sess, "content": content})
+            logs.append({"ts": ts[:23], "level": lv, "session": sess, "content": content})
         try:
             log_name = cfg.log_file.relative_to(cfg.log_file.parent.parent.parent).as_posix()
         except ValueError:
