@@ -203,20 +203,22 @@ class PresenceManager:
             status="pending",
         )
         st = self._state_of(sid)
+        # 会话显示名：优先群名/用户昵称（bot 归一化时解析），回退短 id
+        disp = inbound.get("group_name") or inbound.get("user_name") or st.label
         if st.state == "offline":
             if inbound.get("is_at") and self.p.get("wake_on_at_message", True):
-                logger.info("会话%s 收到@，唤醒并立即回复: %.40r", st.label, inbound["content"])
+                logger.info("会话%s 收到@，唤醒并立即回复: %.40r", disp, inbound["content"])
                 # 先即时被动回复该条（5 分钟窗口内有效、不耗主动消息额度），
                 # 成功后状态标记 replied，之后处理积压不会再重复回复它
                 await self._reply_now(inbound)
                 await st.go_online("wake-on-at")
                 return True
             pending = self.storage.count_pending(sid)
-            logger.info("会话%s 离线积压 +1（pending=%d）: %.40r", st.label, pending, inbound["content"])
+            logger.info("会话%s 离线积压 +1（pending=%d）: %.40r", disp, pending, inbound["content"])
             return True
         # 在线：进入本会话 debounce 窗口聚合
         st.debounce.append(inbound)
-        logger.debug("会话%s 在线：进入抖动窗口 %s（当前 %d 条）", st.label, inbound["msg_id"], len(st.debounce))
+        logger.debug("会话%s 在线：进入抖动窗口 %s（当前 %d 条）", disp, inbound["msg_id"], len(st.debounce))
         if st._debounce_task is None or st._debounce_task.done():
             st._debounce_task = asyncio.create_task(self._flush_debounce(st))
         return True
@@ -466,8 +468,9 @@ class PresenceManager:
         base_seq = inbound.get("msg_seq")
         for i, seg in enumerate(segments):
             seq = self._next_seq(sid, base_seq)
+            disp = inbound.get("group_name") or inbound.get("user_name") or target
             logger.info("回复 %s target=%s seg=%d/%d passive=%s: %.60r",
-                        scene, target, i + 1, len(segments), can_passive, seg)
+                        scene, disp, i + 1, len(segments), can_passive, seg)
             try:
                 resp = await self.bot.send_text(target, seg, scene, msg_id, seq, event_id)
                 if resp is not None:
