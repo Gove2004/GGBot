@@ -34,6 +34,9 @@ SYSTEM_TEMPLATE = """你是 QQ 群/私聊里的聊天伙伴，昵称“{name}”
 【相关记忆】（过往片段，可能与当前话题无关，自行判断是否采用）
 {memory_digest}
 
+【工具提示】（由各 Tool 自己挂载）
+{tool_hints}
+
 【行动准则】
 1. 口语化短句，一条不超过 40 字；要多说几句就多次调用 send_text。
 2. 纯文本输出不会发送给任何人，必须调用工具。不想说话就别调用工具，直接结束本轮。
@@ -443,6 +446,7 @@ class PresenceManager:
                 logger.debug("记忆检索失败/超时，跳过注入: %s", e)
         return SYSTEM_TEMPLATE.format(
             name=self._name, memory_digest=digest, rules=rules_text,
+            tool_hints=self.executor.hints(),
         )
 
     # ---------- 发送 ----------

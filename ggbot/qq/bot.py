@@ -322,18 +322,27 @@ class QQBot(botpy.Client):
     ) -> tuple[bool, str]:
         """富媒体上传并发送。file_type: 1 图片 / 2 视频 / 3 语音 / 4 文件。
 
-        source 支持公网 URL（直接上传）或本地路径（需配置 storage.public_base_url）。
-        返回 (ok, detail)。
+        source 支持公网 URL，或 temp/db-tool 下的本地文件（需配置
+        storage.public_base_url 指向 Web 面板公网地址，本地文件经签名 /media URL 暴露）。
+        返回 (ok, detail)，detail 只含安全的展示名，不含签名 URL。
         """
+        from ggbot.util.media import public_media_url
+
         url = source
+        display = "公网素材"
         if not url.startswith(("http://", "https://")):
-            base = (self.cfg.storage_cfg or {}).get("public_base_url") or ""
-            if not base:
+            p = Path(source)
+            if not p.is_absolute():
+                p = self.cfg.temp_dir / p
+            if not p.is_file():
+                return False, f"本地文件不存在: {Path(source).name}"
+            url = public_media_url(self.cfg, p) or ""
+            display = p.name
+            if not url:
                 return False, (
-                    "本地文件无法直接上传：需要公网 URL。请传群友消息里附带的 URL，"
-                    "或配置 storage.public_base_url 指向该文件所在公网目录。"
+                    "本地文件无法上传：需要公网 URL。请配置 storage.public_base_url "
+                    "指向本 Web 面板的公网地址（本地文件会生成带签名的 /media 临时链接）。"
                 )
-            url = base.rstrip("/") + "/" + Path(source).name
         try:
             if scene == "group":
                 media = await self.api.post_group_file(
@@ -354,9 +363,9 @@ class QQBot(botpy.Client):
                 await self.api.post_c2c_message(
                     openid=target, msg_type=7, media=media, msg_id=msg_id, msg_seq=msg_seq
                 )
-            logger.debug("富媒体发送成功 file_type=%d url=%.80s", file_type, url,
+            logger.debug("富媒体发送成功 file_type=%d %s", file_type, display,
                          extra={"session": session_label(f"{scene}:{target}")})
-            return True, url
+            return True, display
         except Exception as e:  # noqa: BLE001
             logger.exception("富媒体发送失败", extra={"session": session_label(f"{scene}:{target}")})
             return False, f"富媒体发送失败: {e}"

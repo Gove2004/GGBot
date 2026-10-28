@@ -14,6 +14,7 @@ const PAGE_META = {
   memory: ["向量记忆", "长期记忆的语义检索与维护"],
   rules: ["规则", "实时注入系统提示词的行为约束"],
   settings: ["设置", "配置热更新，写回 config.json"],
+  tools: ["工具", "一切皆 Tool · 独立配置 / 持久化数据 / 动态挂载"],
   logs: ["运行日志", "时间 | 等级 | 位置 | 会话 | 内容"],
 };
 
@@ -261,6 +262,8 @@ function switchPage(name) {
     guarded("rules", refreshRules);
   } else if (name === "settings") {
     guarded("config", loadConfig);
+  } else if (name === "tools") {
+    guarded("tools", refreshTools);
   } else if (name === "logs") {
     guarded("logs", refreshLogs);
   }
@@ -651,6 +654,30 @@ async function saveConfig() {
   } catch (err) { toast(err.message, "error"); }
 }
 
+/* ================= 工具 ================= */
+async function refreshTools() {
+  const d = await api("/api/tools");
+  const rows = (d.tools || []).map((t) => {
+    const cfg = Object.entries(t.config || {})
+      .filter(([k]) => k !== "enabled")
+      .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(",") : v}`)
+      .join(" · ");
+    return `<div class="tool-card ${t.enabled ? "" : "off"}">
+      <div class="tool-head">
+        <div><div class="tool-name">${esc(t.name)}</div>
+        <div class="tool-desc muted small">${esc(t.description)}</div></div>
+        <button class="btn ${t.enabled ? "ghost" : "primary"} small"
+          data-action="tool-toggle" data-tool="${esc(t.name)}" data-enabled="${t.enabled ? 1 : 0}"
+          ${t.toggleable === false ? "disabled title=\"随同组工具启停\"" : ""}>
+          ${t.toggleable === false ? "同组" : t.enabled ? "停用" : "启用"}
+        </button>
+      </div>
+      ${cfg ? `<div class="tool-meta">${esc(cfg)}</div>` : ""}
+    </div>`;
+  }).join("");
+  qs("#tool-list").innerHTML = rows || '<p class="empty">（无工具）</p>';
+}
+
 /* ================= 日志 ================= */
 async function refreshLogs() {
   const params = new URLSearchParams({ lines: "400", level: qs("#log-level").value });
@@ -682,12 +709,13 @@ async function refreshAll() {
     guarded("memories", refreshMemories),
     guarded("rules", refreshRules),
     guarded("config", loadConfig),
+    guarded("tools", refreshTools),
     guarded("logs", refreshLogs),
   ]);
 }
 
 /* ================= 事件 ================= */
-document.addEventListener("click", (event) => {
+document.addEventListener("click", async (event) => {
   const pageBtn = event.target.closest("[data-page]");
   if (pageBtn) { switchPage(pageBtn.dataset.page); return; }
 
@@ -721,6 +749,21 @@ document.addEventListener("click", (event) => {
     case "refresh-logs":
       guarded("logs", refreshLogs);
       break;
+    case "refresh-tools":
+      guarded("tools", refreshTools);
+      break;
+    case "tool-toggle": {
+      const name = el.dataset.tool;
+      const enabled = el.dataset.enabled === "1";
+      try {
+        await api(`/api/tools/${encodeURIComponent(name)}/toggle`, {
+          method: "POST", body: { enabled: !enabled },
+        });
+        toast(`已${enabled ? "停用" : "启用"} ${name}`, "success");
+        refreshTools();
+      } catch (err) { toast(err.message, "error"); }
+      break;
+    }
     case "session-view":
       openSessionDetail(sid);
       break;

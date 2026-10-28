@@ -88,6 +88,10 @@ class SettingIn(BaseModel):
     value: object
 
 
+class ToolToggleIn(BaseModel):
+    enabled: bool
+
+
 # 允许通过 Web 热更新的配置路径（其余只读，避免误改关键结构）
 ALLOWED_SETTINGS = [
     "deepseek.request.temperature",
@@ -120,7 +124,7 @@ ALLOWED_SETTINGS = [
     "web.log_level",
 ]
 
-SECRET_KEYS = ("api_key", "secret", "appsecret", "token")
+SECRET_KEYS = ("api_key", "secret", "appsecret", "token", "auth_code", "password")
 
 
 def mask_secrets(node):
@@ -229,6 +233,20 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
     @app.get("/", response_class=FileResponse)
     async def index():
         return FileResponse(WEB_DIR / "index.html")
+
+    # ---------- 本地媒体（QQ 富媒体上传用的签名 URL，无需 Cookie） ----------
+
+    @app.get("/media/{exp}/{sig}/{rel:path}", response_class=FileResponse)
+    async def media(exp: int, sig: str, rel: str):
+        from ggbot.util.media import verify_path
+
+        p = verify_path(cfg, exp, sig, rel)
+        if not p:
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(
+            p,
+            headers={"Cache-Control": "private, max-age=300", "Content-Disposition": "inline"},
+        )
 
     # ---------- 登录 ----------
 
@@ -466,6 +484,39 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         _auth(request, x_token)
         storage.delete_rule(rule_id)
         return {"ok": True}
+
+    # ---------- 工具（插件清单 / 启停） ----------
+
+    @app.get("/api/tools")
+    async def list_tools(request: Request, x_token: str | None = Header(default=None)):
+        _auth(request, x_token)
+        ex = getattr(presence, "executor", None)
+        if ex is None:
+            return {"tools": []}
+        rows = ex.list_tools()
+        for row in rows:
+            row["config"] = mask_secrets(row.get("config") or {})
+        return {"tools": rows}
+
+    @app.post("/api/tools/{name}/toggle")
+    async def toggle_tool(
+        name: str,
+        body: ToolToggleIn,
+        request: Request,
+        x_token: str | None = Header(default=None),
+    ):
+        _auth(request, x_token)
+        ex = getattr(presence, "executor", None)
+        tool = ex.registry.tools.get(name) if ex is not None else None
+        if tool is None:
+            raise HTTPException(status_code=404, detail="tool not found")
+        if not tool.toggleable:
+            raise HTTPException(status_code=400, detail="该工具随同组工具启停")
+        data = ex.toggle(name, body.enabled)
+        if data is None:
+            raise HTTPException(status_code=404, detail="tool not found")
+        logger.info("Web 工具启停 %s=%s", name, body.enabled)
+        return {"ok": True, "config": mask_secrets(data)}
 
     # ---------- 配置（Web 热更新） ----------
 
