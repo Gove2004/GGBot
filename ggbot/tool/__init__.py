@@ -16,6 +16,7 @@ import json
 import logging
 import time
 
+from ggbot.util.human import typing_delay_sec
 from ggbot.util.session import session_label
 
 logger = logging.getLogger("ggbot.tools")
@@ -174,6 +175,10 @@ class ToolExecutor:
         content = _to_str(args.get("content", "")).strip()
         if not content:
             return {"ok": False, "error": "content 为空"}
+        # 拟人化：按字数模拟打字耗时（behavior.reply.typing_*，设为 0 可关闭）
+        think = typing_delay_sec(content, getattr(self.cfg, "reply", {}) or {})
+        if think > 0:
+            await asyncio.sleep(think)
         seq = ctx.get("msg_seq", 1)
         await self.bot.send_text(ctx["target"], content, ctx["scene"], ctx.get("msg_id"), seq,
                                  ctx.get("event_id"))

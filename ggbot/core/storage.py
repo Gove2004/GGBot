@@ -155,6 +155,47 @@ class Storage:
             row = c.execute("SELECT summary FROM sessions WHERE id=?", (session_id,)).fetchone()
             return row["summary"] if row else ""
 
+    def list_sessions(self, limit: int = 200) -> list[dict]:
+        """会话列表（面板/CLI）：带消息数、待处理数、最后一条消息。"""
+        with self._lock, self._conn() as c:
+            rows = c.execute(
+                """
+                SELECT s.id, s.key, s.scene, s.summary, s.created_at, s.updated_at,
+                       (SELECT COUNT(*) FROM messages m WHERE m.session_id=s.id) AS message_count,
+                       (SELECT COUNT(*) FROM messages m WHERE m.session_id=s.id AND m.status='pending') AS pending_count,
+                       (SELECT MAX(m.ts) FROM messages m WHERE m.session_id=s.id) AS last_ts,
+                       (SELECT m.content FROM messages m WHERE m.session_id=s.id ORDER BY m.id DESC LIMIT 1) AS last_message,
+                       (SELECT m.role FROM messages m WHERE m.session_id=s.id ORDER BY m.id DESC LIMIT 1) AS last_role
+                FROM sessions s
+                ORDER BY COALESCE((SELECT MAX(m.ts) FROM messages m WHERE m.session_id=s.id), s.updated_at) DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_session(self, session_id: str) -> dict | None:
+        with self._lock, self._conn() as c:
+            row = c.execute(
+                """
+                SELECT s.id, s.key, s.scene, s.summary, s.created_at, s.updated_at,
+                       (SELECT COUNT(*) FROM messages m WHERE m.session_id=s.id) AS message_count,
+                       (SELECT COUNT(*) FROM messages m WHERE m.session_id=s.id AND m.status='pending') AS pending_count,
+                       (SELECT MAX(m.ts) FROM messages m WHERE m.session_id=s.id) AS last_ts
+                FROM sessions s WHERE s.id=?
+                """,
+                (session_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def clear_session_context(self, session_id: str) -> dict:
+        """清空单个会话的上下文（消息 + 历史摘要），保留会话本身、记忆、规则。"""
+        with self._lock, self._conn() as c:
+            n = c.execute("SELECT COUNT(*) FROM messages WHERE session_id=?", (session_id,)).fetchone()[0]
+            c.execute("DELETE FROM messages WHERE session_id=?", (session_id,))
+            c.execute("UPDATE sessions SET summary='', updated_at=? WHERE id=?", (_now(), session_id))
+        return {"messages": n}
+
     # ---------- 消息 ----------
 
     def add_message(
@@ -281,13 +322,13 @@ class Storage:
             row = c.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
             return dict(row) if row else None
 
-    def list_memories(self, session_id: str | None = None, limit: int = 200) -> list[dict]:
+    def list_memories(self, session_id: str | None = None, limit: int = 200, offset: int = 0) -> list[dict]:
         if session_id:
-            sql = "SELECT * FROM memories WHERE session_id=? ORDER BY ts DESC LIMIT ?"
-            params = (session_id, limit)
+            sql = "SELECT * FROM memories WHERE session_id=? ORDER BY ts DESC LIMIT ? OFFSET ?"
+            params = (session_id, limit, offset)
         else:
-            sql = "SELECT * FROM memories ORDER BY ts DESC LIMIT ?"
-            params = (limit,)
+            sql = "SELECT * FROM memories ORDER BY ts DESC LIMIT ? OFFSET ?"
+            params = (limit, offset)
         with self._lock, self._conn() as c:
             rows = c.execute(sql, params).fetchall()
         out = []
@@ -296,6 +337,12 @@ class Storage:
             d.pop("embedding", None)
             out.append(d)
         return out
+
+    def count_memories(self, session_id: str | None = None) -> int:
+        with self._lock, self._conn() as c:
+            if session_id:
+                return c.execute("SELECT COUNT(*) FROM memories WHERE session_id=?", (session_id,)).fetchone()[0]
+            return c.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
 
     def get_all_memories(self) -> list[dict]:
         """全部记忆（含 embedding 字节），供向量检索。"""
@@ -357,11 +404,36 @@ class Storage:
 
     # ---------- 面板辅助 ----------
 
-    def recent_messages_global(self, limit: int = 100) -> list[dict]:
+    def recent_messages_global(
+        self, limit: int = 100, session_id: str | None = None, role: str | None = None
+    ) -> list[dict]:
+        where, params = [], []
+        if session_id:
+            where.append("m.session_id=?")
+            params.append(session_id)
+        if role:
+            where.append("m.role=?")
+            params.append(role)
+        sql = (
+            "SELECT m.*, s.key AS skey FROM messages m JOIN sessions s ON s.id=m.session_id "
+            + ("WHERE " + " AND ".join(where) + " " if where else "")
+            + "ORDER BY m.id DESC LIMIT ?"
+        )
+        params.append(limit)
         with self._lock, self._conn() as c:
-            rows = c.execute(
-                "SELECT m.*, s.key AS skey FROM messages m JOIN sessions s ON s.id=m.session_id "
-                "ORDER BY m.id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
+            rows = c.execute(sql, params).fetchall()
         return [_row_to_dict(r) for r in reversed(rows)]
+
+    def stats(self) -> dict:
+        """面板概览统计。"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        with self._lock, self._conn() as c:
+            one = lambda sql, p=(): c.execute(sql, p).fetchone()[0]  # noqa: E731
+            return {
+                "sessions": one("SELECT COUNT(*) FROM sessions"),
+                "messages": one("SELECT COUNT(*) FROM messages"),
+                "messages_today": one("SELECT COUNT(*) FROM messages WHERE ts LIKE ?", (today + "%",)),
+                "pending": one("SELECT COUNT(*) FROM messages WHERE status='pending'"),
+                "memories": one("SELECT COUNT(*) FROM memories"),
+                "rules": one("SELECT COUNT(*) FROM rules"),
+            }

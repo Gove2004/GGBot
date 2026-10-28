@@ -27,7 +27,9 @@ AT_RE = re.compile(r"<@([0-9A-Fa-f]{32})>")
 
 class QQBot(botpy.Client):
     def __init__(self, config, presence=None, intents=None):
-        super().__init__(intents=intents, timeout=30)
+        # bot_log=None 保留 botpy 日志向根 logger 传播；ext_handlers=False 关闭
+        # botpy 默认文件 handler（否则会在 cwd 生成 botpy.log）。
+        super().__init__(intents=intents, timeout=30, bot_log=None, ext_handlers=False)
         self.cfg = config
         self.presence = presence
         self.temp_dir: Path = config.temp_dir

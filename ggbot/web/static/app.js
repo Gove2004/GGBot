@@ -1,352 +1,818 @@
 "use strict";
 
-/* ============ 令牌管理 ============ */
-let TOKEN = localStorage.getItem("ggbot_token") || "";
-const tokenBar = document.getElementById("token-bar");
-const errBanner = document.getElementById("err-banner");
+/* ================= 工具 ================= */
+const qs = (sel, root) => (root || document).querySelector(sel);
+const qsa = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[c]));
 
-function showTokenBar(force) {
-  tokenBar.classList.toggle("hidden", !(force || !TOKEN));
-}
+const PAGE_META = {
+  dash: ["仪表盘", "运行概览与实时状态"],
+  sessions: ["会话与上下文", "每个群 / 私聊的历史摘要与消息"],
+  messages: ["消息流", "跨会话的最近消息记录"],
+  memory: ["向量记忆", "长期记忆的语义检索与维护"],
+  rules: ["规则", "实时注入系统提示词的行为约束"],
+  settings: ["设置", "配置热更新，写回 config.json"],
+  logs: ["运行日志", "时间 | 等级 | 位置 | 会话 | 内容"],
+};
 
-async function api(url, options) {
-  const opts = options || {};
+const REASON = {
+  initial: "刚启动",
+  scheduled: "自然上线",
+  "wake-on-at": "被@唤醒",
+  timeout: "自然下线",
+  "reply-renew": "聊天续期",
+  idle: "静默",
+};
+
+const state = {
+  page: "dash",
+  status: null,
+  stats: null,
+  sessions: [],
+  memItems: [],
+  memoryQuery: "",
+  memoryUseSearch: false,
+  loading: {},
+  timers: [],
+  confirmResolve: null,
+};
+
+/* ================= API ================= */
+async function api(path, options) {
+  const opts = Object.assign({ credentials: "same-origin" }, options || {});
   const headers = Object.assign({}, opts.headers || {});
-  if (TOKEN) headers["X-Token"] = TOKEN;
-  const resp = await fetch(url, Object.assign({}, opts, { headers }));
-  if (resp.status === 401) {
-    TOKEN = "";
-    localStorage.removeItem("ggbot_token");
-    showTokenBar(true);
-    showErr("令牌无效或缺失，请输入 config.json 中的 web.token");
-    throw new Error("unauthorized");
+  if (opts.body && !(opts.body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+    if (typeof opts.body !== "string") opts.body = JSON.stringify(opts.body);
   }
-  return resp.json();
+  opts.headers = headers;
+  const resp = await fetch(path, opts);
+  let data = null;
+  try { data = await resp.json(); } catch (_) { /* 非 JSON */ }
+  if (resp.status === 401 && path !== "/api/login") {
+    showLogin();
+    throw new Error("登录已失效");
+  }
+  if (!resp.ok) {
+    const detail = data && data.detail;
+    throw new Error(typeof detail === "string" ? detail : `请求失败（${resp.status}）`);
+  }
+  return data;
 }
 
-function showErr(msg) {
-  errBanner.textContent = msg;
-  errBanner.classList.remove("hidden");
-  setTimeout(() => errBanner.classList.add("hidden"), 4000);
+function guarded(name, fn) {
+  if (state.loading[name]) return Promise.resolve();
+  state.loading[name] = true;
+  return Promise.resolve()
+    .then(fn)
+    .catch((err) => { if (err && err.message !== "登录已失效") toast(err.message, "error"); })
+    .finally(() => { state.loading[name] = false; });
 }
 
-const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" })[c]);
-const fmtTs = ts => {
-  if (!ts) return "—";
-  const s = String(ts);
-  return s.length >= 16 ? s.slice(5, 16) : s;   // MM-DD HH:MM:SS
-};
-const statusBadge = st => {
-  if (st === "replied") return '<span class="badge ok">已回复</span>';
-  if (st === "skipped") return '<span class="badge gray">跳过</span>';
-  if (st === "failed") return '<span class="badge fail">失败</span>';
-  if (st === "pending") return '<span class="badge warn">待处理</span>';
-  return `<span class="badge gray">${esc(st || "—")}</span>`;
-};
+/* ================= 提示 / 弹窗 ================= */
+function toast(msg, type) {
+  const stack = qs("#toast-stack");
+  const el = document.createElement("div");
+  el.className = `toast ${type || "info"}`;
+  el.textContent = msg;
+  stack.appendChild(el);
+  setTimeout(() => el.remove(), 3600);
+}
 
-/* ============ 页面导航（后台分栏） ============ */
-const PAGE_TITLES = {
-  dash: "仪表盘", messages: "最近消息", memory: "向量记忆",
-  rules: "规则", settings: "设置", logs: "日志",
-};
+function openModal(title, body, foot) {
+  qs("#modal-title").textContent = title;
+  qs("#modal-body").innerHTML = body || "";
+  qs("#modal-foot").innerHTML = foot || "";
+  qs("#modal-root").classList.remove("hidden");
+}
 
+function closeModal(resolveValue) {
+  qs("#modal-root").classList.add("hidden");
+  const r = state.confirmResolve;
+  state.confirmResolve = null;
+  if (r && resolveValue !== undefined) r(resolveValue);
+}
+
+function confirmAction(title, text, okLabel) {
+  return new Promise((resolve) => {
+    state.confirmResolve = resolve;
+    openModal(
+      title,
+      `<p class="muted">${esc(text)}</p>`,
+      `<button class="btn ghost" data-action="confirm-no">取消</button>
+       <button class="btn danger" data-action="confirm-yes">${esc(okLabel || "确定")}</button>`
+    );
+  });
+}
+
+/* ================= 登录 ================= */
+function showLogin() {
+  stopPolling();
+  closeModal(false);
+  qs("#app").classList.add("hidden");
+  qs("#login").classList.remove("hidden");
+  const input = qs("#login-token");
+  input.value = "";
+  setTimeout(() => input.focus(), 50);
+}
+
+function showLoginError(msg) {
+  const el = qs("#login-error");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
+
+function showApp() {
+  qs("#login").classList.add("hidden");
+  qs("#login-error").classList.add("hidden");
+  qs("#app").classList.remove("hidden");
+  startPolling();
+  switchPage(state.page || "dash");
+  refreshAll();
+}
+
+async function boot() {
+  try {
+    const a = await api("/api/auth");
+    if (a.authenticated) showApp();
+    else showLogin();
+  } catch (_) {
+    showLogin();
+  }
+}
+
+async function doLogin(event) {
+  event.preventDefault();
+  const input = qs("#login-token");
+  const token = input.value.trim();
+  if (!token) return;
+  qs("#login-error").classList.add("hidden");
+  try {
+    await api("/api/login", { method: "POST", body: { token } });
+    input.value = "";
+    showApp();
+    toast("已登录", "success");
+  } catch (err) {
+    showLoginError(err.message);
+  }
+}
+
+async function doLogout() {
+  try { await api("/api/logout", { method: "POST" }); } catch (_) { /* ignore */ }
+  showLogin();
+  toast("已退出登录", "info");
+}
+
+/* ================= 轮询 ================= */
+function startPolling() {
+  stopPolling();
+  state.timers.push(setInterval(() => {
+    if (!document.hidden) guarded("status", refreshStatus);
+  }, 2000));
+  state.timers.push(setInterval(() => {
+    if (document.hidden) return;
+    guarded("stats", refreshStats);
+    guarded("sessions", refreshSessions);
+    if (state.page === "messages") guarded("messages", refreshMessages);
+    if (state.page === "dash") guarded("recent", refreshDashRecent);
+  }, 6000));
+  state.timers.push(setInterval(() => {
+    if (document.hidden || state.page !== "logs") return;
+    if (!qs("#log-auto").checked) return;
+    guarded("logs", refreshLogs);
+  }, 3000));
+}
+
+function stopPolling() {
+  state.timers.forEach((t) => clearInterval(t));
+  state.timers = [];
+}
+
+/* ================= 格式化 ================= */
+function fmtTs(ts) {
+  const s = String(ts || "");
+  if (!s) return "—";
+  return s.length >= 16 ? s.slice(5, 16) : s;
+}
+function fmtLogTs(ts) {
+  const s = String(ts || "");
+  return s.length >= 19 ? s.slice(5, 19) : (s || "—");
+}
+function fmtAgo(sec) {
+  if (sec == null) return "—";
+  const n = Number(sec);
+  if (!isFinite(n) || n < 0) return "—";
+  if (n < 60) return `${Math.round(n)}s`;
+  if (n < 3600) return `${Math.floor(n / 60)}m`;
+  return `${Math.floor(n / 3600)}h`;
+}
+function labelFromKey(key) {
+  const s = String(key || "");
+  const i = s.indexOf(":");
+  if (i < 0) return s.slice(0, 8);
+  const prefix = s.slice(0, i);
+  const rest = s.slice(i + 1);
+  if (prefix === "group") return `群${rest.slice(0, 8)}`;
+  if (prefix === "c2c") return `私聊${rest.slice(0, 8)}`;
+  return rest.slice(0, 8);
+}
+function reasonLabel(reason) { return REASON[reason] || reason || "—"; }
+function statusBadge(status) {
+  if (status === "replied") return '<span class="badge ok">已回复</span>';
+  if (status === "skipped") return '<span class="badge gray">跳过</span>';
+  if (status === "failed") return '<span class="badge fail">失败</span>';
+  if (status === "pending") return '<span class="badge warn">待处理</span>';
+  if (status === "received") return '<span class="badge gray">已接收</span>';
+  return `<span class="badge gray">${esc(status || "—")}</span>`;
+}
+function stateBadge(st) {
+  const on = st === "online";
+  return `<span class="badge ${on ? "on" : "off"}">${on ? "在线" : "离线"}</span>`;
+}
+
+/* ================= 页面切换 ================= */
 function switchPage(name) {
-  document.querySelectorAll(".page").forEach(p => p.classList.add("hidden"));
-  const page = document.getElementById("page-" + name);
+  if (!PAGE_META[name]) name = "dash";
+  state.page = name;
+  qsa(".page").forEach((p) => p.classList.add("hidden"));
+  const page = qs(`#page-${name}`);
   if (page) page.classList.remove("hidden");
-  document.querySelectorAll(".nav-item").forEach(n =>
-    n.classList.toggle("active", n.getAttribute("data-page") === name));
-  document.getElementById("page-title").textContent = PAGE_TITLES[name] || name;
-  document.getElementById("sidebar").classList.remove("open");
-  if (name === "logs") loadLogs();
-  if (name === "messages") refreshMessages();
+  qsa(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.page === name));
+  const meta = PAGE_META[name];
+  qs("#page-title").textContent = meta[0];
+  qs("#page-sub").textContent = meta[1];
+  closeSidebar();
+  if (name === "dash") {
+    guarded("status", refreshStatus);
+    guarded("stats", refreshStats);
+    guarded("sessions", refreshSessions);
+    guarded("recent", refreshDashRecent);
+  } else if (name === "sessions") {
+    guarded("sessions", refreshSessions);
+  } else if (name === "messages") {
+    guarded("sessions", refreshSessions);
+    guarded("messages", refreshMessages);
+  } else if (name === "memory") {
+    guarded("sessions", refreshSessions);
+    guarded("memories", refreshMemories);
+  } else if (name === "rules") {
+    guarded("rules", refreshRules);
+  } else if (name === "settings") {
+    guarded("config", loadConfig);
+  } else if (name === "logs") {
+    guarded("logs", refreshLogs);
+  }
 }
 
-/* ============ 运行状态 ============ */
+function closeSidebar() {
+  qs("#sidebar").classList.remove("open");
+  qs("#side-overlay").classList.add("hidden");
+}
+
+/* ================= 状态 / 统计 ================= */
 async function refreshStatus() {
-  try {
-    const s = await api("/api/status");
-    const online = s.state === "online";
-    const update = (id, txt, cls) => {
-      const el = document.getElementById(id);
-      if (el) { el.textContent = txt; if (cls) el.className = cls; }
-    };
-    update("st-state", online ? "在线" : "离线", "badge " + (online ? "on" : "off"));
-    update("st-state2", online ? "在线" : "离线");
-    update("st-pending-mini", (s.pending_count ?? "—") + " 待处理",
-      "badge " + ((s.pending_count || 0) > 0 ? "warn" : "gray"));
-    update("st-event", s.next_event || "—");
-    update("st-remain", (s.remaining_sec != null ? s.remaining_sec.toFixed(0) : "—") + " s");
-    update("st-pending", s.pending_count ?? "—");
-    update("st-debounce", s.debounce_count ?? "—");
-    update("st-dur",
-      (s.online_duration_sec != null ? s.online_duration_sec + "s" : "—") + " / " +
-      (s.offline_interval_sec != null ? s.offline_interval_sec + "s" : "—"));
-    update("st-renew", s.renew_on_reply ? "开启（每发一条+30s）" : "关闭");
-    update("st-backlog", (s.backlog_max_scan ?? "—") + " / " + (s.backlog_batch_size ?? "—"));
-    // 会话级状态列表（每群/每私聊独立状态机）
-    const slist = document.getElementById("st-sessions");
-    if (slist) {
-      const rows = (s.sessions || []).map(sess => {
-        const on = sess.state === "online";
-        return `<tr>
-          <td class="mono muted">${esc(sess.label || sess.sid || "")}</td>
-          <td><span class="badge ${on ? "on" : "off"}">${on ? "在线" : "离线"}</span></td>
-          <td>${esc(sess.next_event || "—")}</td>
-          <td>${sess.remaining_sec != null ? sess.remaining_sec.toFixed(0) + "s" : "—"}</td>
-          <td>${sess.debounce_count || 0}</td>
-        </tr>`;
-      }).join("");
-      slist.innerHTML = rows || `<tr><td colspan="5" class="muted">（暂无会话）</td></tr>`;
-    }
-    update("st-updated", new Date().toLocaleTimeString());
-  } catch (e) { /* 401 已处理 */ }
+  const s = await api("/api/status");
+  state.status = s;
+  const online = s.state === "online";
+  const conn = qs("#conn-pill");
+  conn.className = `pill ${online ? "on" : "off"}`;
+  conn.innerHTML = `<i></i>${online ? "在线" : "离线"}`;
+  const pending = s.pending_count || 0;
+  const pend = qs("#pending-pill");
+  pend.className = `pill ${pending > 0 ? "warn" : "ghost"}`;
+  pend.textContent = `${pending} 待处理`;
+
+  qs("#dash-dot").className = `state-dot ${online ? "on" : "off"}`;
+  qs("#dash-state").textContent = online ? "在线" : "离线";
+  qs("#dash-event").textContent = s.next_event || "等待下一次上线";
+  qs("#dash-remain").textContent = s.remaining_sec != null ? Math.max(0, Math.round(s.remaining_sec)) : "—";
+  qs("#dash-caption").textContent = `${reasonLabel(s.sessions && s.sessions[0] ? s.sessions[0].reason : "idle")} · ${s.online_sessions || 0} 个会话在线`;
+
+  qs("#m-online").textContent = s.online_sessions != null ? s.online_sessions : "—";
+  qs("#m-pending").textContent = s.pending_count != null ? s.pending_count : "—";
+  renderDashSessions();
 }
 
-/* ============ 最近消息 ============ */
-async function refreshMessages() {
+async function refreshStats() {
+  const d = await api("/api/stats");
+  state.stats = d;
+  qs("#m-online").textContent = d.online_sessions != null ? d.online_sessions : "—";
+  qs("#m-pending").textContent = d.pending != null ? d.pending : "—";
+  qs("#m-memories").textContent = d.memories != null ? d.memories : "—";
+  qs("#m-sessions").textContent = d.sessions != null ? d.sessions : "—";
+  qs("#m-today").textContent = d.messages_today != null ? d.messages_today : "—";
+  qs("#m-rules").textContent = d.rules != null ? d.rules : "—";
+}
+
+function renderDashSessions() {
+  const body = qs("#dash-sessions");
+  if (!body) return;
+  const live = {};
+  ((state.status && state.status.sessions) || []).forEach((x) => { live[x.sid] = x; });
+  let rows = state.sessions.slice(0, 8).map((s) => {
+    const l = (s.live && s.live.state) ? s.live : (live[s.id] || { state: "offline", reason: "idle", remaining_sec: 0, idle_sec: null });
+    return `<tr>
+      <td><span class="sess-label">${esc(s.label || labelFromKey(s.id))}</span></td>
+      <td>${stateBadge(l.state)}</td>
+      <td class="muted small">${esc(reasonLabel(l.reason))}</td>
+      <td class="mono">${l.remaining_sec != null ? Math.max(0, Math.round(l.remaining_sec)) + "s" : "—"}</td>
+      <td class="muted small">${fmtAgo(l.idle_sec)}</td>
+    </tr>`;
+  });
+  if (!rows.length) {
+    rows = ((state.status && state.status.sessions) || []).slice(0, 8).map((l) => `<tr>
+      <td><span class="sess-label">${esc(l.label || labelFromKey(l.sid))}</span></td>
+      <td>${stateBadge(l.state)}</td>
+      <td class="muted small">${esc(reasonLabel(l.reason))}</td>
+      <td class="mono">${l.remaining_sec != null ? Math.max(0, Math.round(l.remaining_sec)) + "s" : "—"}</td>
+      <td class="muted small">${fmtAgo(l.idle_sec)}</td>
+    </tr>`);
+  }
+  body.innerHTML = rows.join("") || '<tr><td colspan="5" class="empty">暂无会话</td></tr>';
+}
+
+/* ================= 会话 ================= */
+async function refreshSessions() {
+  const rows = await api("/api/sessions?limit=500");
+  state.sessions = Array.isArray(rows) ? rows : [];
+  renderSessions();
+  populateSessionSelects();
+  renderDashSessions();
+}
+
+function renderSessions() {
+  const q = (qs("#sess-q").value || "").trim().toLowerCase();
+  const rows = state.sessions.filter((s) => {
+    if (!q) return true;
+    return [s.label, s.id, s.summary, s.last_message].some((v) => String(v || "").toLowerCase().includes(q));
+  });
+  const body = qs("#sessions-body");
+  body.innerHTML = rows.map((s) => {
+    const l = s.live || { state: "offline", reason: "idle", remaining_sec: 0, idle_sec: null };
+    const preview = s.summary || s.last_message || "—";
+    return `<tr>
+      <td><div class="sess-label">${esc(s.label || labelFromKey(s.id))}</div><div class="small muted">${esc(s.id)}</div></td>
+      <td>${stateBadge(l.state)}<div class="small muted">${esc(reasonLabel(l.reason))}</div></td>
+      <td class="mono col-sm-hide">${s.message_count || 0}</td>
+      <td class="col-sm-hide">${s.pending_count ? `<span class="badge warn">${s.pending_count}</span>` : '<span class="muted">0</span>'}</td>
+      <td class="muted small col-sm-hide">${esc(fmtTs(s.last_ts || s.updated_at))}</td>
+      <td class="msg" title="${esc(preview)}">${esc(preview)}</td>
+      <td class="col-actions"><button class="btn ghost small" data-action="session-view" data-sid="${esc(s.id)}">查看</button></td>
+    </tr>`;
+  }).join("");
+  if (!rows.length) body.innerHTML = '<tr><td colspan="7" class="empty">暂无会话</td></tr>';
+}
+
+function populateSessionSelects() {
+  const opts = state.sessions.map((s) =>
+    `<option value="${esc(s.id)}">${esc(s.label || labelFromKey(s.id))} · ${esc(String(s.id).split(":")[1] || "").slice(0, 8)}</option>`
+  ).join("");
+  [["#msg-session", "全部会话"], ["#mem-session", "全部作用域"]].forEach(([sel, label]) => {
+    const el = qs(sel);
+    if (!el) return;
+    const cur = el.value;
+    el.innerHTML = `<option value="">${label}</option>${opts}`;
+    if (cur && Array.from(el.options).some((o) => o.value === cur)) el.value = cur;
+  });
+}
+
+async function openSessionDetail(sid) {
+  openModal("会话详情", '<div class="empty">加载中…</div>', "");
   try {
-    const limit = document.getElementById("msg-limit").value;
-    const d = await api("/api/messages?limit=" + limit);
-    const rows = (d || []).map(m => {
-      const roleCls = m.role === "assistant" ? "role-assistant" : "role-user";
-      const content = (m.content || "").replace(/\s+/g, " ").slice(0, 80);
-      return `<tr>
-        <td class="mono muted">${esc(fmtTs(m.ts))}</td>
-        <td class="skey" title="${esc(m.skey || "")}">${esc((m.skey || "").split(":")[0])}:${esc((m.skey || "").split(":")[1] || "").slice(0, 8)}</td>
-        <td class="${roleCls}">${esc(m.role === "assistant" ? "机器人" : "成员")}</td>
-        <td class="msg">${esc(content)}</td>
-        <td>${statusBadge(m.status)}</td>
-      </tr>`;
+    const d = await api(`/api/sessions/${encodeURIComponent(sid)}/messages?limit=100`);
+    const s = d.session || {};
+    const summary = d.summary
+      ? `<div class="modal-section"><h3>历史摘要</h3><div class="summary-box">${esc(d.summary)}</div></div>`
+      : "";
+    const chats = (d.messages || []).map((m) => {
+      const role = m.role === "assistant" ? "assistant" : "user";
+      const pending = m.status === "pending" ? " · 待处理" : "";
+      return `<div class="chat ${role}"><div class="chat-meta">${role === "assistant" ? "机器人" : "成员"} · ${esc(fmtTs(m.ts))}${pending}</div>${esc(m.content || "（无文本）")}</div>`;
     }).join("");
-    document.getElementById("msg-body").innerHTML =
-      rows || '<tr><td colspan="5" class="empty">暂无消息</td></tr>';
-  } catch (e) {}
+    openModal(
+      `会话 ${s.label || labelFromKey(s.id)}`,
+      `<div class="modal-section"><div class="summary-box">ID ${esc(s.id)} · 消息 ${s.message_count || 0} · 待处理 ${s.pending_count || 0} · 更新 ${esc(fmtTs(s.updated_at))}</div></div>
+       ${summary}
+       <div class="modal-section"><h3>最近消息</h3><div class="chat-list">${chats || '<div class="empty">暂无消息</div>'}</div></div>`,
+      `<button class="btn ghost" data-action="modal-close">关闭</button>
+       <button class="btn danger" data-action="session-clear" data-sid="${esc(s.id)}">清空上下文</button>`
+    );
+  } catch (err) {
+    openModal("会话详情", `<p class="muted">${esc(err.message)}</p>`, '<button class="btn ghost" data-action="modal-close">关闭</button>');
+  }
 }
 
-/* ============ 向量记忆 ============ */
-async function refreshMemories(q) {
+async function clearSession(sid) {
+  const ok = await confirmAction("清空上下文", `将删除该会话的全部消息与历史摘要，长期记忆不受影响。`, "清空");
+  if (!ok) return;
   try {
-    const url = q ? "/api/memories/search?q=" + encodeURIComponent(q) + "&k=8" : "/api/memories?limit=15";
-    const d = await api(url);
-    const rows = (d || []).map(m => `<tr>
-      <td class="mono muted">${m.score != null ? m.score.toFixed(3) : "—"}</td>
-      <td>${esc(m.content)}</td>
-      <td><button class="btn ghost small" onclick="delMem('${esc(m.id)}')">删</button></td>
-    </tr>`).join("");
-    document.getElementById("mem-body").innerHTML =
-      rows || '<tr><td colspan="3" class="empty">暂无记忆</td></tr>';
-  } catch (e) {}
+    const r = await api(`/api/sessions/${encodeURIComponent(sid)}/context`, { method: "DELETE" });
+    closeModal();
+    toast(`已清空 ${r.messages || 0} 条消息`, "success");
+    refreshSessions();
+    refreshStatus();
+  } catch (err) { toast(err.message, "error"); }
 }
 
-async function addMem() {
-  const v = document.getElementById("mem-add").value.trim();
-  if (!v) return;
+/* ================= 消息 ================= */
+async function refreshMessages() {
+  const params = new URLSearchParams();
+  params.set("limit", qs("#msg-limit").value || "30");
+  const sid = qs("#msg-session").value;
+  const role = qs("#msg-role").value;
+  if (sid) params.set("session_id", sid);
+  if (role) params.set("role", role);
+  const rows = await api(`/api/messages?${params}`);
+  const body = qs("#msg-body");
+  body.innerHTML = (rows || []).map((m) => `<tr>
+    <td class="mono muted">${esc(fmtTs(m.ts))}</td>
+    <td><span class="sess-label">${esc(labelFromKey(m.skey || m.session_id))}</span></td>
+    <td class="col-sm-hide ${m.role === "assistant" ? "role-assistant" : "role-user"}">${m.role === "assistant" ? "机器人" : "成员"}</td>
+    <td class="msg" title="${esc(m.content)}">${esc(m.content || "（无文本）")}</td>
+    <td class="col-sm-hide">${statusBadge(m.status)}</td>
+  </tr>`).join("");
+  if (!rows || !rows.length) body.innerHTML = '<tr><td colspan="5" class="empty">暂无消息</td></tr>';
+}
+
+async function refreshDashRecent() {
+  const rows = await api("/api/messages?limit=8");
+  const box = qs("#dash-recent");
+  box.innerHTML = (rows || []).map((m) => `<div class="mini-item">
+    <span class="mini-role ${m.role === "assistant" ? "assistant" : ""}"></span>
+    <div class="mini-main">
+      <div class="mini-meta"><span>${esc(labelFromKey(m.skey || m.session_id))}</span><span>${esc(fmtTs(m.ts))}</span></div>
+      <div class="mini-text" title="${esc(m.content)}">${esc(m.content || "（无文本）")}</div>
+    </div>
+  </div>`).join("") || '<div class="empty">暂无消息</div>';
+}
+
+/* ================= 记忆 ================= */
+async function refreshMemories() {
+  const sid = qs("#mem-session").value;
+  if (state.memoryUseSearch && state.memoryQuery) {
+    const params = new URLSearchParams({ q: state.memoryQuery, k: "20" });
+    if (sid) params.set("session_id", sid);
+    const items = await api(`/api/memories/search?${params}`);
+    renderMemories(items, null, true);
+  } else {
+    const params = new URLSearchParams({ limit: "100", offset: "0" });
+    if (sid) params.set("session_id", sid);
+    const d = await api(`/api/memories?${params}`);
+    renderMemories(d.items || [], d.total, false);
+  }
+}
+
+function renderMemories(items, total, isSearch) {
+  state.memItems = items || [];
+  qs("#mem-total").textContent = isSearch
+    ? `检索 “${state.memoryQuery}” · ${state.memItems.length} 条结果`
+    : `长期记忆 · 共 ${total == null ? state.memItems.length : total} 条`;
+  const body = qs("#mem-body");
+  body.innerHTML = state.memItems.map((m) => {
+    const scope = m.session_id ? labelFromKey(m.session_id) : "全局";
+    const score = m.score != null ? `<div class="score">${Number(m.score).toFixed(3)}</div>` : "";
+    return `<tr>
+      <td><span class="stars">${"★".repeat(Math.max(1, Math.min(5, Number(m.importance) || 1)))}</span>${score}</td>
+      <td>${esc(m.content)}</td>
+      <td class="col-sm-hide"><span class="badge gray">${esc(scope)}</span></td>
+      <td class="muted small col-sm-hide">${esc(fmtTs(m.ts))}</td>
+      <td class="col-actions"><div class="row-actions">
+        <button class="btn ghost small" data-action="memory-edit" data-id="${esc(m.id)}">编辑</button>
+        <button class="btn danger small" data-action="memory-delete" data-id="${esc(m.id)}">删</button>
+      </div></td>
+    </tr>`;
+  }).join("");
+  if (!state.memItems.length) body.innerHTML = '<tr><td colspan="5" class="empty">暂无记忆</td></tr>';
+}
+
+async function addMemory() {
+  const input = qs("#mem-add");
+  const content = input.value.trim();
+  if (!content) return;
+  const sid = qs("#mem-session").value || null;
   try {
     await api("/api/memories", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: v, importance: 1 }),
+      method: "POST",
+      body: { content, importance: Number(qs("#mem-importance").value), session_id: sid },
     });
-    document.getElementById("mem-add").value = "";
+    input.value = "";
+    toast("记忆已写入", "success");
     refreshMemories();
-  } catch (e) {}
+    refreshStats();
+  } catch (err) { toast(err.message, "error"); }
 }
 
-async function tidyMem() {
+async function searchMemories() {
+  state.memoryQuery = qs("#mem-q").value.trim();
+  state.memoryUseSearch = !!state.memoryQuery;
+  if (!state.memoryQuery) { refreshMemories(); return; }
+  await guarded("memories", refreshMemories);
+}
+
+function openMemoryEdit(id) {
+  const item = state.memItems.find((x) => x.id === id);
+  if (!item) return;
+  const imp = Math.max(1, Math.min(5, Number(item.importance) || 1));
+  openModal(
+    "编辑记忆",
+    `<label class="field"><span>内容</span><textarea id="mem-edit-content">${esc(item.content)}</textarea></label>
+     <label class="field"><span>重要度</span><select id="mem-edit-importance" class="sel">
+       <option value="1">★</option><option value="2">★★</option><option value="3">★★★</option>
+       <option value="4">★★★★</option><option value="5">★★★★★</option>
+     </select></label>`,
+    `<button class="btn ghost" data-action="modal-close">取消</button>
+     <button class="btn primary" data-action="memory-save" data-id="${esc(id)}">保存</button>`
+  );
+  qs("#mem-edit-importance").value = String(imp);
+}
+
+async function saveMemory(id) {
+  const content = qs("#mem-edit-content").value.trim();
+  if (!content) { toast("内容不能为空", "error"); return; }
+  try {
+    await api(`/api/memories/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: { content, importance: Number(qs("#mem-edit-importance").value) },
+    });
+    closeModal();
+    toast("记忆已更新", "success");
+    refreshMemories();
+  } catch (err) { toast(err.message, "error"); }
+}
+
+async function deleteMemory(id) {
+  const ok = await confirmAction("删除记忆", "删除后无法恢复，确定继续？", "删除");
+  if (!ok) return;
+  try {
+    await api(`/api/memories/${encodeURIComponent(id)}`, { method: "DELETE" });
+    toast("记忆已删除", "success");
+    refreshMemories();
+    refreshStats();
+  } catch (err) { toast(err.message, "error"); }
+}
+
+async function tidyMemory() {
+  const ok = await confirmAction("合并重复记忆", "将合并相似度 ≥ 0.95 的记忆条目，保留更重要的一条。", "开始整理");
+  if (!ok) return;
   try {
     const r = await api("/api/memories/tidy", { method: "POST" });
-    showTmp("整理完成，合并删除 " + (r.removed || 0) + " 条");
+    toast(`整理完成，合并删除 ${r.removed || 0} 条`, "success");
     refreshMemories();
-  } catch (e) {}
+    refreshStats();
+  } catch (err) { toast(err.message, "error"); }
 }
 
-async function delMem(id) {
-  try { await api("/api/memories/" + id, { method: "DELETE" }); refreshMemories(); } catch (e) {}
-}
-
-/* ============ 规则 ============ */
+/* ================= 规则 ================= */
 async function refreshRules() {
-  try {
-    const d = await api("/api/rules");
-    const rows = (d || []).map(r => `<tr>
-      <td>${esc(r.content)}</td>
-      <td>${r.active ? '<span class="badge ok">启用</span>' : '<span class="badge gray">停用</span>'}</td>
-      <td><button class="btn ghost small" onclick="toggleRule(${r.id})">切换</button></td>
-    </tr>`).join("");
-    document.getElementById("rule-body").innerHTML =
-      rows || '<tr><td colspan="3" class="empty">暂无规则</td></tr>';
-  } catch (e) {}
+  const rows = await api("/api/rules");
+  const body = qs("#rule-body");
+  body.innerHTML = (rows || []).map((r) => `<tr>
+    <td>${esc(r.content)}</td>
+    <td><button class="switch ${r.active ? "on" : ""}" data-action="rule-toggle" data-id="${r.id}" aria-label="切换规则"><span></span></button></td>
+    <td class="col-actions"><button class="btn danger small" data-action="rule-delete" data-id="${r.id}">删除</button></td>
+  </tr>`).join("");
+  if (!rows || !rows.length) body.innerHTML = '<tr><td colspan="3" class="empty">暂无规则</td></tr>';
 }
 
 async function addRule() {
-  const v = document.getElementById("rule-content").value.trim();
-  if (!v) return;
+  const input = qs("#rule-content");
+  const content = input.value.trim();
+  if (!content) return;
   try {
-    await api("/api/rules", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: v }),
-    });
-    document.getElementById("rule-content").value = "";
+    await api("/api/rules", { method: "POST", body: { content } });
+    input.value = "";
+    toast("规则已添加", "success");
     refreshRules();
-  } catch (e) {}
+    refreshStats();
+  } catch (err) { toast(err.message, "error"); }
 }
 
 async function toggleRule(id) {
-  try { await api("/api/rules/" + id + "/toggle", { method: "POST" }); refreshRules(); } catch (e) {}
+  try { await api(`/api/rules/${id}/toggle`, { method: "POST" }); refreshRules(); }
+  catch (err) { toast(err.message, "error"); }
 }
 
-/* ============ 设置 ============ */
-const CHK = ["s-stream", "s-wake_on_at_message", "s-wake_on_c2c", "s-renew_on_reply"];
-const NUM = ["s-temperature", "s-top_p", "s-max_tokens", "s-online_duration_sec", "s-offline_interval_sec",
-  "s-max_segments", "s-max_chars_per_segment", "s-segment_gap_sec", "s-debounce_sec",
-  "s-max_scan_messages", "s-batch_size"];
+async function deleteRule(id) {
+  const ok = await confirmAction("删除规则", "确定删除这条规则？", "删除");
+  if (!ok) return;
+  try {
+    await api(`/api/rules/${id}`, { method: "DELETE" });
+    toast("规则已删除", "success");
+    refreshRules();
+    refreshStats();
+  } catch (err) { toast(err.message, "error"); }
+}
+
+/* ================= 设置 ================= */
+function getPath(obj, path) {
+  return path.split(".").reduce((node, key) => (node && typeof node === "object" ? node[key] : undefined), obj);
+}
 
 async function loadConfig() {
-  try {
-    const d = await api("/api/config");
-    const c = d.config || {};
-    const req = (c.deepseek || {}).request || {};
-    const pr = (c.behavior || {}).presence || {};
-    const rp = (c.behavior || {}).reply || {};
-    const bk = (c.behavior || {}).backlog || {};
-    const wb = (c.web || {});
-    const vals = {
-      "s-temperature": req.temperature, "s-top_p": req.top_p, "s-max_tokens": req.max_tokens,
-      "s-thinking": req.thinking, "s-stream": req.stream,
-      "s-online_duration_sec": pr.online_duration_sec, "s-offline_interval_sec": pr.offline_interval_sec,
-      "s-wake_on_at_message": pr.wake_on_at_message, "s-wake_on_c2c": pr.wake_on_c2c,
-      "s-renew_on_reply": pr.renew_on_reply,
-      "s-max_segments": rp.max_segments, "s-max_chars_per_segment": rp.max_chars_per_segment,
-      "s-segment_gap_sec": rp.segment_gap_sec, "s-debounce_sec": rp.debounce_sec,
-      "s-max_scan_messages": bk.max_scan_messages, "s-batch_size": bk.batch_size,
-      "s-priority_rule": bk.priority_rule, "s-log_level": wb.log_level,
-    };
-    for (const [id, v] of Object.entries(vals)) {
-      const el = document.getElementById(id);
-      if (!el) continue;
-      if (CHK.includes(id)) el.checked = !!v;
-      else if (v != null) el.value = v;
-    }
-  } catch (e) {}
+  const d = await api("/api/config");
+  qsa("[data-path]").forEach((el) => {
+    const v = getPath(d.config, el.dataset.path);
+    if (el.type === "checkbox") el.checked = !!v;
+    else if (v !== undefined && v !== null) el.value = v;
+  });
 }
-
-const CFG_PATHS = {
-  "s-temperature": "deepseek.request.temperature",
-  "s-top_p": "deepseek.request.top_p",
-  "s-max_tokens": "deepseek.request.max_tokens",
-  "s-thinking": "deepseek.request.thinking",
-  "s-stream": "deepseek.request.stream",
-  "s-online_duration_sec": "behavior.presence.online_duration_sec",
-  "s-offline_interval_sec": "behavior.presence.offline_interval_sec",
-  "s-wake_on_at_message": "behavior.presence.wake_on_at_message",
-  "s-wake_on_c2c": "behavior.presence.wake_on_c2c",
-  "s-renew_on_reply": "behavior.presence.renew_on_reply",
-  "s-max_segments": "behavior.reply.max_segments",
-  "s-max_chars_per_segment": "behavior.reply.max_chars_per_segment",
-  "s-segment_gap_sec": "behavior.reply.segment_gap_sec",
-  "s-debounce_sec": "behavior.reply.debounce_sec",
-  "s-max_scan_messages": "behavior.backlog.max_scan_messages",
-  "s-batch_size": "behavior.backlog.batch_size",
-  "s-priority_rule": "behavior.backlog.priority_rule",
-  "s-log_level": "web.log_level",
-};
 
 async function saveConfig() {
-  const items = Object.entries(CFG_PATHS).map(([id, path]) => {
-    const el = document.getElementById(id);
+  const items = [];
+  let bad = null;
+  qsa("[data-path]").forEach((el) => {
     let value;
-    if (CHK.includes(id)) value = el.checked;
-    else if (NUM.includes(id)) value = parseFloat(el.value);
+    const numeric = el.dataset.kind === "int" || el.dataset.kind === "float";
+    if (el.type === "checkbox") value = el.checked;
+    else if (numeric && el.value.trim() === "") return; // 留空表示不修改
+    else if (el.dataset.kind === "int") value = parseInt(el.value, 10);
+    else if (el.dataset.kind === "float") value = parseFloat(el.value);
     else value = el.value;
-    return { path, value };
-  });
-  try {
-    const r = await api("/api/config", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(items),
-    });
-    const msg = document.getElementById("cfg-msg");
-    msg.textContent = "已更新: " + (r.updated || []).length + " 项";
-    setTimeout(() => { msg.textContent = ""; }, 4000);
-  } catch (e) {}
-}
-
-/* ============ 日志 ============ */
-async function loadLogs() {
-  try {
-    const level = document.getElementById("log-level").value;
-    const d = await api("/api/logs?lines=300&level=" + level);
-    const logs = d.logs || [];
-    const body = document.getElementById("log-body");
-    if (!logs.length) {
-      body.innerHTML = '<tr><td colspan="5" class="empty">（无日志）</td></tr>';
-      return;
+    if (numeric && !isFinite(value)) {
+      bad = el.closest(".field")?.querySelector("span")?.textContent || el.dataset.path;
     }
-    const esc = (s) => (s == null ? "" : String(s)).replace(/[&<>"']/g,
-      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-    const lvColor = { DEBUG: "#8b949e", INFO: "#3fb950", WARNING: "#d29922", ERROR: "#f85149" };
-    body.innerHTML = logs.map((l) =>
-      `<tr>
-        <td class="col-ts muted small">${esc(l.ts)}</td>
-        <td><span class="lv" style="color:${lvColor[l.level] || "#8b949e"}">${esc(l.level)}</span></td>
-        <td class="muted small">${esc(l.module)}</td>
-        <td class="small">${esc(l.session)}</td>
-        <td class="msg small">${esc(l.content)}</td>
-      </tr>`).join("");
-  } catch (e) {}
+    items.push({ path: el.dataset.path, value });
+  });
+  if (bad) { toast(`「${bad}」不是有效数字`, "error"); return; }
+  try {
+    const r = await api("/api/config", { method: "POST", body: items });
+    const rejected = (r.rejected || []).length;
+    qs("#cfg-msg").textContent = `已保存 ${(r.updated || []).length} 项${rejected ? `，拒绝 ${rejected} 项` : ""}`;
+    toast(`设置已保存${rejected ? `（${rejected} 项无效）` : ""}`, rejected ? "info" : "success");
+    if (r.config) {
+      qsa("[data-path]").forEach((el) => {
+        const v = getPath(r.config, el.dataset.path);
+        if (el.type === "checkbox") el.checked = !!v;
+        else if (v !== undefined && v !== null) el.value = v;
+      });
+    }
+  } catch (err) { toast(err.message, "error"); }
 }
 
-/* ============ 杂项 ============ */
-let _tmpTimer = null;
-function showTmp(msg) {
-  const el = document.getElementById("cfg-msg");
-  el.textContent = msg;
-  clearTimeout(_tmpTimer);
-  _tmpTimer = setTimeout(() => { el.textContent = ""; }, 4000);
+/* ================= 日志 ================= */
+async function refreshLogs() {
+  const params = new URLSearchParams({ lines: "400", level: qs("#log-level").value });
+  const sess = qs("#log-session").value.trim();
+  const q = qs("#log-q").value.trim();
+  if (sess) params.set("session", sess);
+  if (q) params.set("q", q);
+  const d = await api(`/api/logs?${params}`);
+  if (d.file) qs("#log-file").textContent = d.file;
+  const lvClass = { DEBUG: "lv-debug", INFO: "lv-info", WARNING: "lv-warning", ERROR: "lv-error", CRITICAL: "lv-critical" };
+  const rows = (d.logs || []).map((l) => `<tr>
+    <td class="muted">${esc(fmtLogTs(l.ts))}</td>
+    <td><span class="lv ${lvClass[l.level] || ""}">${esc(l.level)}</span></td>
+    <td class="muted col-sm-hide">${esc(l.module)}</td>
+    <td class="col-sm-hide">${esc(l.session)}</td>
+    <td class="msg">${esc(l.content)}</td>
+  </tr>`).join("");
+  qs("#log-body").innerHTML = rows || '<tr><td colspan="5" class="empty">（无日志）</td></tr>';
 }
 
-function bind() {
-  document.getElementById("token-save").onclick = () => {
-    const v = document.getElementById("token-input").value.trim();
-    if (!v) return;
-    TOKEN = v;
-    localStorage.setItem("ggbot_token", v);
-    tokenBar.classList.add("hidden");
-    fullRefresh();
-  };
-  document.getElementById("btn-token").onclick = () => showTokenBar(true);
-  document.getElementById("btn-refresh").onclick = fullRefresh;
-  document.getElementById("btn-menu").onclick = () =>
-    document.getElementById("sidebar").classList.toggle("open");
-  document.querySelectorAll(".nav-item").forEach(n =>
-    n.onclick = () => switchPage(n.getAttribute("data-page")));
-  document.getElementById("btn-msg-refresh").onclick = refreshMessages;
-  document.getElementById("msg-limit").onchange = refreshMessages;
-  document.getElementById("btn-log-refresh").onclick = loadLogs;
-  document.getElementById("log-level").onchange = loadLogs;
-  document.getElementById("btn-tidy").onclick = tidyMem;
-  document.getElementById("btn-mem-add").onclick = addMem;
-  document.getElementById("btn-mem-search").onclick = () => refreshMemories(document.getElementById("mem-q").value.trim());
-  document.getElementById("btn-mem-all").onclick = () => { document.getElementById("mem-q").value = ""; refreshMemories(); };
-  document.getElementById("mem-add").onkeydown = e => { if (e.key === "Enter") addMem(); };
-  document.getElementById("mem-q").onkeydown = e => { if (e.key === "Enter") refreshMemories(e.target.value.trim()); };
-  document.getElementById("btn-rule-add").onclick = addRule;
-  document.getElementById("rule-content").onkeydown = e => { if (e.key === "Enter") addRule(); };
-  document.getElementById("btn-save-cfg").onclick = saveConfig;
+/* ================= 刷新 ================= */
+async function refreshAll() {
+  await Promise.allSettled([
+    guarded("status", refreshStatus),
+    guarded("stats", refreshStats),
+    guarded("sessions", refreshSessions),
+    guarded("recent", refreshDashRecent),
+    guarded("messages", refreshMessages),
+    guarded("memories", refreshMemories),
+    guarded("rules", refreshRules),
+    guarded("config", loadConfig),
+    guarded("logs", refreshLogs),
+  ]);
 }
 
-function fullRefresh() {
-  refreshStatus(); refreshMessages(); refreshMemories(); refreshRules(); loadConfig(); loadLogs();
-}
+/* ================= 事件 ================= */
+document.addEventListener("click", (event) => {
+  const pageBtn = event.target.closest("[data-page]");
+  if (pageBtn) { switchPage(pageBtn.dataset.page); return; }
 
-/* 启动 */
-showTokenBar(false);
-bind();
-fullRefresh();
-switchPage("dash");
-setInterval(refreshStatus, 2000);
-setInterval(refreshMessages, 5000);
-setInterval(() => {
-  if (document.getElementById("log-auto").checked) loadLogs();
-}, 3000);
-setInterval(() => { refreshMemories(); refreshRules(); }, 15000);
+  const el = event.target.closest("[data-action]");
+  if (!el) return;
+  const action = el.dataset.action;
+  const id = el.dataset.id;
+  const sid = el.dataset.sid;
+
+  switch (action) {
+    case "toggle-sidebar":
+      qs("#sidebar").classList.toggle("open");
+      qs("#side-overlay").classList.toggle("hidden", !qs("#sidebar").classList.contains("open"));
+      break;
+    case "close-sidebar":
+      closeSidebar();
+      break;
+    case "refresh":
+      toast("正在刷新…", "info");
+      refreshAll();
+      break;
+    case "logout":
+      doLogout();
+      break;
+    case "refresh-sessions":
+      guarded("sessions", refreshSessions);
+      break;
+    case "refresh-messages":
+      guarded("messages", refreshMessages);
+      break;
+    case "refresh-logs":
+      guarded("logs", refreshLogs);
+      break;
+    case "session-view":
+      openSessionDetail(sid);
+      break;
+    case "session-clear":
+      clearSession(sid);
+      break;
+    case "memory-search":
+      searchMemories();
+      break;
+    case "memory-all":
+      qs("#mem-q").value = "";
+      state.memoryQuery = "";
+      state.memoryUseSearch = false;
+      guarded("memories", refreshMemories);
+      break;
+    case "memory-add":
+      addMemory();
+      break;
+    case "memory-edit":
+      openMemoryEdit(id);
+      break;
+    case "memory-save":
+      saveMemory(id);
+      break;
+    case "memory-delete":
+      deleteMemory(id);
+      break;
+    case "memory-tidy":
+      tidyMemory();
+      break;
+    case "rule-add":
+      addRule();
+      break;
+    case "rule-toggle":
+      toggleRule(id);
+      break;
+    case "rule-delete":
+      deleteRule(id);
+      break;
+    case "save-config":
+      saveConfig();
+      break;
+    case "modal-close":
+      closeModal();
+      break;
+    case "confirm-yes": {
+      const r = state.confirmResolve;
+      state.confirmResolve = null;
+      closeModal();
+      if (r) r(true);
+      break;
+    }
+    case "confirm-no":
+      closeModal(false);
+      break;
+    default:
+      break;
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    if (!qs("#modal-root").classList.contains("hidden")) closeModal(false);
+    else closeSidebar();
+  }
+});
+
+document.addEventListener("DOMContentLoaded", () => {
+  qs("#login-form").addEventListener("submit", doLogin);
+
+  qs("#sess-q").addEventListener("input", renderSessions);
+  qs("#msg-session").addEventListener("change", () => guarded("messages", refreshMessages));
+  qs("#msg-role").addEventListener("change", () => guarded("messages", refreshMessages));
+  qs("#msg-limit").addEventListener("change", () => guarded("messages", refreshMessages));
+  qs("#mem-session").addEventListener("change", () => guarded("memories", refreshMemories));
+
+  qs("#mem-q").addEventListener("keydown", (e) => { if (e.key === "Enter") searchMemories(); });
+  qs("#mem-add").addEventListener("keydown", (e) => { if (e.key === "Enter") addMemory(); });
+  qs("#rule-content").addEventListener("keydown", (e) => { if (e.key === "Enter") addRule(); });
+
+  qs("#log-level").addEventListener("change", () => guarded("logs", refreshLogs));
+  let logTimer = null;
+  ["#log-session", "#log-q"].forEach((sel) => {
+    qs(sel).addEventListener("input", () => {
+      clearTimeout(logTimer);
+      logTimer = setTimeout(() => guarded("logs", refreshLogs), 350);
+    });
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && !qs("#app").classList.contains("hidden")) guarded("status", refreshStatus);
+  });
+
+  boot();
+});

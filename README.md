@@ -6,7 +6,7 @@
 1. **消息收发网关**（`ggbot/qq/bot.py`）— 群@/单聊事件接收、归一化、去重，富媒体附件落地 `temp/`
 2. **AI 请求装置**（`ggbot/llm/llm.py`）— DeepSeek Chat Completions，function calling 原生工具
 3. **上下文组织 / 持久化记忆**（`ggbot/core/storage.py` + `ggbot/llm/memory.py` + `ggbot/tool/__init__.py`）
-4. **Web 控制面板**（`ggbot/web/server.py`）— FastAPI，在线状态 / 消息流 / 记忆检索 / 规则 / 日志
+4. **Web 控制面板**（`ggbot/web/server.py`）— FastAPI，分组导航（概览 / 对话 / 知识 / 系统）：仪表盘、会话与上下文、消息流、向量记忆、规则、设置、运行日志
 
 ## 目录结构
 
@@ -18,6 +18,8 @@ GGBot/
 ├── temp/                # 富媒体附件临时落地 + 日志（temp/logs/ggbot.log；附件按类型分 emoji/voice/video/other 子目录，默认保留 24h 自动清理，gitignored）
 ├── requirements.txt
 ├── main.py              # 入口
+├── tools/
+│   └── manage.py        # 运维 CLI（stats / sessions / context / memory / clear）
 ├── start.bat            # Windows 前台启动（Ctrl+C 停止）
 ├── start.sh             # Linux 后台启动（nohup，kill <PID> 停止）
 ├── ggbot/
@@ -34,6 +36,7 @@ GGBot/
 │   │   └── __init__.py   #   9 个 function calling 工具 + agent 循环（ggbot.tool）
 │   ├── util/
 │   │   ├── logging_setup.py  # 日志系统（五列格式 / 文件轮转 / 面板 tail）
+│   │   ├── human.py          # 拟人化时序（抖动 / 阅读停顿 / 打字速度）
 │   │   └── session.py        # 会话显示标签（场景 + 8 位 openid）
 │   └── web/              # 控制面板
 │       ├── server.py     #   FastAPI API + WebSocket + 静态托管（不内嵌前端）
@@ -91,14 +94,16 @@ start.bat                    # Windows 前台（Ctrl+C 停止）
 ./start.sh
 ```
 
-启动后：QQ gateway 连接成功 → 群@消息触发 → Presence 状态机（离线积压 / @唤醒 / 在线抖动聚合 / 选择性回复）。Web 面板：`http://127.0.0.1:8080`（首次访问在页面输入 `db/config.json → web.token` 的令牌，浏览器 localStorage 记忆，无需手动拼 URL）。
+启动后：QQ gateway 连接成功 → 群@消息触发 → Presence 状态机（离线积压 / @唤醒 / 在线抖动聚合 / 选择性回复）。Web 面板：`http://127.0.0.1:8080`（首次访问在页面输入 `db/config.json → web.token`；登录后写入 HttpOnly + SameSite=Strict Cookie，令牌不落 localStorage/URL）。
 
 ## 日志与 Web 运维
 
-- **日志文件**：`temp/logs/ggbot.log`（RotatingFileHandler，5MB × 5 轮转；目录随 `storage.temp_dir` 自动创建；stderr 同时输出）。格式 `时间 | 等级 | 位置 | 会话 | 内容`——会话列由业务代码显式传入（`群xxxxxxxx` / `私聊xxxxxxxx`，8 位 openid；系统日志为 `System`），控制台、文件、Web 面板三处一致；botpy/openai/httpx 等第三方库默认 WARNING 降噪
+- **日志文件**：只写 `temp/logs/ggbot.log`（RotatingFileHandler，5MB × 5 轮转；目录随 `storage.temp_dir` 自动创建；stderr 同时输出）。项目根目录不再产生 `botpy.log` / `logs/`——botpy 的文件 handler 已关闭（`bot_log=None, ext_handlers=False`）。格式 `时间 | 等级 | 位置 | 会话 | 内容`——会话列由业务代码显式传入（`群xxxxxxxx` / `私聊xxxxxxxx`，8 位 openid；系统日志为 `System`），控制台、文件、Web 面板三处一致；第三方库默认 WARNING 降噪
 - **等级控制**：`db/config.json → web.log_level`（默认 INFO）；面板保存设置即时热切换。项目**纯配置文件驱动**，不使用环境变量、不设启动参数（Web 面板开关：`web.enable`）
-- **Web 面板查看**：运行状态卡（作息/续期/积压）、最近消息流、向量记忆（检索/写入/整理）、规则、设置卡（LLM 参数 / Presence / 积压 / 日志等级，白名单热更新并写回 config.json）、日志卡（等级过滤，自动刷新）
-- **API**：`GET /api/config`（密钥脱敏）、`POST /api/config`（`[{"path": "a.b.c", "value": x}]` 批量，越权路径忽略）、`GET /api/logs?lines=&level=`
+- **Web 面板**：分组导航 + 响应式布局。仪表盘（在线状态 / 会话倒计时 / 指标 / 最近消息）、会话与上下文（历史摘要、消息气泡、单独清空）、消息流、向量记忆（语义检索 / 写入 / 编辑 / 整理）、规则启停、设置分组（LLM / 在线作息 / 拟人回复 / 积压与日志，白名单热更新并写回 config.json）、日志（等级 / 会话 / 内容过滤，自动刷新）
+- **运维 CLI**：`python tools/manage.py stats|sessions|context|clear|reset-chat|memory ...`，可直接查看统计、导出会话上下文、清空单个会话、检索/增改/整理记忆（`--yes` 跳过确认）
+- **API**：登录 `POST /api/login`（HttpOnly Cookie，失败限流 8 次/60s）、`GET /api/auth`、`POST /api/logout`；业务 `GET /api/stats|sessions|messages|memories|rules|config|logs`，`POST /api/config`（`[{"path": "a.b.c", "value": x}]` 批量，白名单 + 类型校验，越权拒绝）；`GET /api/config` 密钥脱敏
+- **安全**：Cookie 鉴权（常量时间比较）、`/ws` 同源 + Cookie 校验、跨站写请求拦截、CSP / X-Frame-Options DENY / nosniff / no-store，FastAPI 文档端点关闭；公网部署建议再加 HTTPS 反向代理并设 `web.cookie_secure=true`
 
 ## 关键行为（config.json `behavior`）
 
@@ -110,6 +115,9 @@ start.bat                    # Windows 前台（Ctrl+C 停止）
 | 抖动聚合 | `reply.debounce_sec`（默认 5） | 在线消息 5s 窗口聚合，LLM 选择性回复（非每条必回） |
 | 积压分流 | `backlog.*` | 上线扫描本会话 pending（≤1000）；@/C2C 事件窗口内单独被动回，其余每 100 条合并主动回 |
 | 分段发送 | `reply.max_segments` / `max_chars_per_segment` / `segment_gap_sec` | 回复拆短句逐条发送（msg_seq 递增，官方支持同一消息多次回复） |
+| 作息抖动 | `presence.online_duration_jitter` / `offline_interval_jitter` / `renew_jitter` | 上下线时长、续期时长按 ±比例随机，避免机械整点；每会话首次上线时间也随机错开 |
+| 阅读停顿 | `reply.read_delay_min_sec` / `read_delay_max_sec` | 被动回复前随机"看一眼"停顿（积压批量 ≤3 条时才加，避免拖过被动窗口；默认 0 关闭） |
+| 打字速度 | `reply.typing_chars_per_sec` / `typing_min_sec` / `typing_max_sec` / `typing_jitter` | 按文本长度估算打字耗时再发送（受最短/最长限制与随机抖动；默认 0 关闭） |
 
 > **会话隔离**：每个会话（每个群 / 每段私聊）是独立状态机——私聊被@只唤醒私聊会话，不会让群聊上线；A 群唤醒不影响 B 群；群聊积压只有本群被唤醒时才处理。离线倒计时/在线时长/抖动窗口均按会话独立计时。
 
@@ -167,14 +175,20 @@ stateDiagram-v2
                  "model": "Qwen/Qwen3-Embedding-4B", "api_key": "...", "batch_size": 32 },
   "behavior": {
     "presence": { "online_duration_sec": 300, "offline_interval_sec": 900,
-                  "wake_on_at_message": true, "wake_on_c2c": false, "renew_on_reply": true },
+                  "online_duration_jitter": 0.3, "offline_interval_jitter": 0.4,
+                  "renew_jitter": 0.3, "wake_on_at_message": true, "wake_on_c2c": false,
+                  "renew_on_reply": true, "renew_per_reply_sec": 30 },
     "backlog": { "max_scan_messages": 1000, "batch_size": 100, "priority_rule": "llm" },
     "reply": { "max_segments": 5, "max_chars_per_segment": 80,
-               "segment_gap_sec": 2, "debounce_sec": 10 }
+               "segment_gap_sec": 2, "debounce_sec": 10,
+               "read_delay_min_sec": 0.4, "read_delay_max_sec": 1.6,
+               "typing_chars_per_sec": 10, "typing_min_sec": 0.4,
+               "typing_max_sec": 4.0, "typing_jitter": 0.25 }
   },
   "storage": { "temp_dir": "temp", "db_path": "db/ggbot.db", "public_base_url": "",
                "temp_ttl_hours": 24, "download_video": false },
-  "web": { "enable": true, "host": "127.0.0.1", "port": 8080, "token": "ggbot-local", "log_level": "INFO" }
+  "web": { "enable": true, "host": "127.0.0.1", "port": 8080, "token": "<面板令牌>",
+           "cookie_secure": false, "log_level": "INFO" }
 }
 ```
 
@@ -194,6 +208,18 @@ stateDiagram-v2
 - 高可用：embedding 调用失败重试 3 次；检索失败仅跳过注入（按无记忆继续回复），不阻塞消息处理
 - 整理：面板「整理」按钮合并近似重复（阈值 0.95）
 
+## 运维 CLI
+
+```powershell
+.\.venv\Scripts\python.exe tools\manage.py stats            # 会话/消息/待处理/记忆/规则统计
+.\.venv\Scripts\python.exe tools\manage.py sessions         # 会话列表（标签 / 消息数 / 最后活动）
+.\.venv\Scripts\python.exe tools\manage.py context 群8825F8A7 --limit 50   # 导出某会话上下文
+.\.venv\Scripts\python.exe tools\manage.py clear 群8825F8A7 --yes           # 只清该会话消息
+.\.venv\Scripts\python.exe tools\manage.py memory list|search|add|edit|delete|tidy
+```
+
+会话参数支持完整 id（`group:xxx` / `c2c:xxx`）、8 位标签（`群8825F8A7` / `私聊abcdef12`）或 openid 前缀。
+
 ## 验证记录（已通过）
 
 ```
@@ -205,7 +231,7 @@ stateDiagram-v2
 [PASS] presence_split    # 分段逻辑（空行/按句/无标点硬切/限段）
 [PASS] tool_loop         # function calling 端到端：AI 调用 memory_write 真实入库
 [PASS] config_read       # 纯配置文件驱动（无环境变量）+ temp/db 路径
-[PASS] logging_system    # 多等级写文件 + tail 等级过滤 + set_level 热切换
+[PASS] logging_system    # 多等级写文件 + tail 等级过滤 + set_level 热切换；根目录不产生 botpy.log
 [PASS] presence_backlog  # 上线积压处理（wake-on-at 全链路：锁/会话分组/attachments 反序列化/目标派生）
 [PASS] presence_fail     # 发送失败隔离（失效会话标记 failed，不中断其余会话积压）
 [PASS] target_derive     # 发送目标反查（session_id 内部主键 ≠ openid，从 sessions.key 取完整 openid；c2c/group 双场景）
@@ -213,8 +239,9 @@ stateDiagram-v2
 [PASS] at_persist        # @标志/事件ID 持久化入库（积压读回恢复 is_at/event_id/msg_seq）+ 旧库自动迁移补列
 [PASS] audit            # 订阅 message_audit intent；审核通过/拦截事件均记日志（排查"平台受理但未展示"）
 [PASS] singleton_lock    # 单实例锁（僵尸锁清理 / 存活 pid 探测，防双进程双写 db）
-[PASS] web_api_settings_logs # /api/config 白名单热更新写回、密钥脱敏、越权忽略；/api/logs
-[PASS] web_static        # web/ 前端拆分托管（/ + /static）、无 token 401、日志目录 temp/logs
+[PASS] web_security_api  # Cookie 登录/401/限流、HttpOnly+SameSite、密钥脱敏、配置类型校验、会话/记忆/规则 API、跨站拦截、WS 鉴权、安全响应头
+[PASS] web_ui            # 浏览器实测：登录/错误提示、仪表盘、会话详情、消息流、记忆增改检索、设置保存、日志过滤、退出
+[PASS] web_static        # web/ 前端拆分托管（/ + /static）、无内联脚本/样式（CSP）、移动端列折叠
 [PASS] temp_video_policy # 视频附件不下载 + temp 过期文件清理
 ```
 
@@ -236,4 +263,4 @@ stateDiagram-v2
 - qq-botpy 1.2.1（2024-03 停更）但内置新鉴权（appId+clientSecret → access_token 自动缓存刷新），实测可用
 - 语音 TTS 产出 mp3，QQ 语音富媒体为 silk 格式，平台不接收时该工具返回错误（转发收到的语音不受影响）
 - 表情消息类型官方未单列，`send_emoji` 以文本形式发送
-- Web 面板为本地令牌鉴权（页面输入 token，localStorage 记忆）；公网暴露请自行加反向代理
+- Web 面板为单令牌 + HttpOnly Cookie 鉴权，适合本机/内网；公网暴露请加 HTTPS 反向代理并设 `web.cookie_secure=true`

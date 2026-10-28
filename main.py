@@ -60,8 +60,8 @@ def _acquire_singleton(lock_path: Path) -> None:
     lock_path.write_text(str(os.getpid()), encoding="utf-8")
 
 
-async def main() -> None:
-    cfg = Config()
+async def main(cfg: Config | None = None) -> None:
+    cfg = cfg or Config()
     lock_path = Path(cfg.db_path).parent / ".bot.lock"
     _acquire_singleton(lock_path)
     log_level = (cfg.web_cfg or {}).get("log_level", "INFO")
@@ -132,6 +132,6 @@ if __name__ == "__main__":
     async def _run() -> None:
         cfg = Config()
         cfg._reset_chat = args.reset_chat
-        await main()
+        await main(cfg)
 
     asyncio.run(_run())

@@ -1,8 +1,10 @@
 """Presence 状态机：每会话独立 在线/离线 作息、唤醒、积压分流、抖动聚合、选择性回复。
 
-离线（默认 10 分钟）：普通消息仅入库积压（≤1000）；收到@（本会话）或倒计时结束 → 本会话上线。
-在线（默认 1 分钟）：先处理本会话积压；消息进入 5s 抖动窗口聚合 → 选择性回复；
-  每发送一条消息 +0.5 分钟在线时长（renew_per_reply_sec=30）；倒计时结束 → 下线。
+离线（默认 10 分钟，带 ±40% 抖动）：普通消息仅入库积压（≤1000）；收到@（本会话）
+或倒计时结束 → 本会话上线。
+在线（默认 1 分钟，带 ±30% 抖动）：先处理本会话积压；消息进入 5s 抖动窗口聚合 →
+选择性回复；每发送一条消息按 renew_per_reply_sec（带抖动）续期；倒计时结束 → 下线。
+拟人化：回复前有阅读停顿，发送前按内容长度模拟打字耗时（可用 behavior.reply 关闭）。
 会话相互独立：私聊唤醒不会让群聊上线，A 群唤醒不影响 B 群。
 积压：上线后扫描本会话 pending（≤max_scan_messages），被动事件（@/C2C）窗口内单独回，
   其余每 ≤batch_size 条合并为一条主动回。
@@ -12,12 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
 import threading
 import time
 from datetime import datetime
 
 from ggbot.tool import agent_loop
+from ggbot.util.human import jitter, read_delay_sec, sample_duration, typing_delay_sec
 from ggbot.util.session import oid8, session_label
 
 logger = logging.getLogger("ggbot.presence")
@@ -171,6 +175,18 @@ class PresenceManager:
                 except (asyncio.CancelledError, Exception):
                     pass
 
+    async def forget_session(self, sid: str) -> None:
+        """丢弃会话运行态（清空上下文/重置后调用），不影响其他会话。"""
+        with self._lock:
+            st = self._states.pop(sid, None)
+            self._seq_by_sid.pop(sid, None)
+        if st and st._debounce_task:
+            st._debounce_task.cancel()
+            try:
+                await st._debounce_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
     async def _loop(self) -> None:
         """统一 tick：每 2 秒扫一遍全部会话状态机，触发到期上线/下线。"""
         while True:
@@ -199,6 +215,7 @@ class PresenceManager:
             status="pending",
         )
         st = self._state_of(sid)
+        st.touch()
         if st.state == "offline":
             if inbound.get("is_at") and self.p.get("wake_on_at_message", True):
                 logger.info("收到@，唤醒并立即回复: %.40r", inbound["content"],
@@ -283,6 +300,12 @@ class PresenceManager:
 
         def _mark(status: str) -> None:
             self.storage.mark_pending_processed(ids, status)
+
+        # 拟人化：先“看一眼”消息再处理（批量积压不额外等待，避免拖过被动窗口）
+        if passive and len(msgs) <= 3:
+            delay = read_delay_sec(self.r)
+            if delay > 0:
+                await asyncio.sleep(delay)
 
         ctx: dict = {}
         try:
@@ -462,6 +485,10 @@ class PresenceManager:
             logger.info("回复 seg=%d/%d passive=%s: %.60r",
                         i + 1, len(segments), can_passive, seg,
                         extra={"session": session_label(sid)})
+            # 模拟打字：按分段长度停顿，避免所有分段同一瞬间发出
+            think = typing_delay_sec(seg, self.r)
+            if think > 0:
+                await asyncio.sleep(think)
             try:
                 await self.bot.send_text(target, seg, scene, msg_id, seq, event_id)
             except Exception as e:  # noqa: BLE001
@@ -498,8 +525,10 @@ class PresenceManager:
                 "sid": sid,
                 "label": self._session_label(sid),
                 "state": st.state,
+                "reason": st.reason,
                 "next_event": next_event,
                 "remaining_sec": round(remaining, 1),
+                "idle_sec": round(max(0.0, now - st._last_active), 1),
                 "debounce_count": len(st.debounce),
             })
         sessions.sort(key=lambda s: (s["state"] != "online", s["sid"]))
@@ -516,8 +545,14 @@ class PresenceManager:
             "pending_count": self.storage.count_pending(),
             "online_duration_sec": self.p.get("online_duration_sec"),
             "offline_interval_sec": self.p.get("offline_interval_sec"),
+            "online_duration_jitter": self.p.get("online_duration_jitter", 0.3),
+            "offline_interval_jitter": self.p.get("offline_interval_jitter", 0.4),
             "renew_on_reply": self.p.get("renew_on_reply"),
             "renew_per_reply_sec": self.p.get("renew_per_reply_sec"),
+            "renew_jitter": self.p.get("renew_jitter", 0.3),
+            "read_delay_min_sec": self.r.get("read_delay_min_sec", 0),
+            "read_delay_max_sec": self.r.get("read_delay_max_sec", 0),
+            "typing_chars_per_sec": self.r.get("typing_chars_per_sec", 0),
             "debounce_sec": self.r.get("debounce_sec"),
             "backlog_max_scan": self.b.get("max_scan_messages"),
             "backlog_batch_size": self.b.get("batch_size"),
@@ -536,8 +571,11 @@ class _SessionState:
         self.sid = sid
         self.label = pm._session_label(sid)
         self.state = "offline"
+        self.reason = "initial"
         self._online_deadline = 0.0
-        self._next_online = time.monotonic() + float(pm.p.get("offline_interval_sec", 600))
+        self._last_active = time.monotonic()
+        # 首次上线在离线周期内随机错开，避免所有会话整点同时上线
+        self._next_online = time.monotonic() + self._offline_span() * random.uniform(0.4, 1.0)
         self.debounce: list[dict] = []
         self._debounce_task: asyncio.Task | None = None
 
@@ -545,13 +583,35 @@ class _SessionState:
     def _p(self) -> dict:
         return self.pm.p
 
+    def _online_span(self) -> float:
+        """本次在线时长：基准 ±online_duration_jitter。"""
+        return sample_duration(
+            float(self._p.get("online_duration_sec", 60)),
+            float(self._p.get("online_duration_jitter", 0.3)),
+            minimum=5.0,
+        )
+
+    def _offline_span(self) -> float:
+        """本次离线时长：基准 ±offline_interval_jitter。"""
+        return sample_duration(
+            float(self._p.get("offline_interval_sec", 600)),
+            float(self._p.get("offline_interval_jitter", 0.4)),
+            minimum=10.0,
+        )
+
+    def touch(self) -> None:
+        self._last_active = time.monotonic()
+
     async def go_online(self, reason: str) -> None:
         if self.state == "online":
             return
         self.state = "online"
-        self._online_deadline = time.monotonic() + float(self._p.get("online_duration_sec", 60))
-        logger.info("上线（%s），在线 %.0fs，先处理积压", reason,
-                    self._p.get("online_duration_sec", 60), extra={"session": self.label})
+        self.reason = reason
+        span = self._online_span()
+        self._online_deadline = time.monotonic() + span
+        self.touch()
+        logger.info("上线（%s），预计在线 %.0fs，先处理积压", reason, span,
+                    extra={"session": self.label})
         # 上线先处理本会话积压（唤醒即时回复的那条已标记 replied，不会重复）
         await self.pm._process_backlog_sid(self.sid)
 
@@ -559,7 +619,9 @@ class _SessionState:
         if self.state == "offline":
             return
         self.state = "offline"
-        self._next_online = time.monotonic() + float(self._p.get("offline_interval_sec", 600))
+        self.reason = reason
+        wait = self._offline_span()
+        self._next_online = time.monotonic() + wait
         # 清理本会话未发送的抖动批次（下线即停，避免残留任务/消息堆积）
         if self._debounce_task:
             self._debounce_task.cancel()
@@ -569,12 +631,17 @@ class _SessionState:
                 pass
             self._debounce_task = None
         self.debounce = []
-        logger.info("下线（%s），%.0fs 后再次上线", reason,
-                    self._p.get("offline_interval_sec", 600), extra={"session": self.label})
+        logger.info("下线（%s），%.0fs 后再次上线", reason, wait, extra={"session": self.label})
 
     def renew(self) -> None:
-        """每发送一条消息：在线时长 +renew_per_reply_sec（聊得火热）。"""
+        """每发送一条消息：在线时长 +renew_per_reply_sec（带抖动，聊得火热）。"""
         if not self._p.get("renew_on_reply", True):
             return
-        inc = float(self._p.get("renew_per_reply_sec", 30))
+        inc = jitter(
+            float(self._p.get("renew_per_reply_sec", 30)),
+            float(self._p.get("renew_jitter", 0.3)),
+            minimum=0.0,
+        )
         self._online_deadline = max(self._online_deadline, time.monotonic()) + inc
+        self.reason = "reply-renew"
+        self.touch()

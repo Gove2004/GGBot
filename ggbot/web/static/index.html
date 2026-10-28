@@ -3,98 +3,210 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GGBot 控制面板</title>
+<meta name="theme-color" content="#0b0f14">
+<title>GGBot 控制台</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<div class="layout">
 
-  <!-- 侧边栏 -->
+<!-- 登录 -->
+<div id="login" class="login-screen">
+  <div class="login-orb login-orb-a"></div>
+  <div class="login-orb login-orb-b"></div>
+  <div class="login-card">
+    <div class="brand-mark">G</div>
+    <h1>GGBot 控制台</h1>
+    <p class="login-sub">聊天机器人的在线状态、会话、记忆与运行日志</p>
+    <form id="login-form" autocomplete="off">
+      <label class="field">
+        <span>面板令牌</span>
+        <input id="login-token" type="password" placeholder="输入 web.token" autocomplete="current-password" required>
+      </label>
+      <p id="login-error" class="login-error hidden"></p>
+      <button class="btn primary block" type="submit">进入控制台</button>
+    </form>
+    <p class="login-hint">令牌位于 <code>db/config.json → web.token</code></p>
+  </div>
+</div>
+
+<!-- 应用 -->
+<div id="app" class="app hidden">
+  <div id="side-overlay" class="side-overlay hidden" data-action="close-sidebar"></div>
+
   <aside id="sidebar" class="sidebar">
     <div class="side-brand">
-      <span class="brand-dot"></span>
+      <span class="brand-mark small">G</span>
       <div>
         <div class="side-title">GGBot</div>
-        <div class="side-sub">控制面板</div>
+        <div class="side-sub">QQ Bot Console</div>
       </div>
     </div>
+
     <nav class="side-nav">
-      <a class="nav-item active" data-page="dash"><span class="nav-icon">◈</span>仪表盘</a>
-      <a class="nav-item" data-page="messages"><span class="nav-icon">☰</span>最近消息</a>
-      <a class="nav-item" data-page="memory"><span class="nav-icon">❖</span>向量记忆</a>
-      <a class="nav-item" data-page="rules"><span class="nav-icon">✓</span>规则</a>
-      <a class="nav-item" data-page="settings"><span class="nav-icon">⚙</span>设置</a>
-      <a class="nav-item" data-page="logs"><span class="nav-icon">▤</span>日志</a>
+      <div class="nav-group">
+        <div class="nav-label">概览</div>
+        <button class="nav-item active" data-page="dash">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h6V4H4v9Zm0 7h6v-5H4v5Zm10 0h6v-9h-6v9Zm0-16v5h6V4h-6Z"/></svg>
+          <span>仪表盘</span>
+        </button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-label">对话</div>
+        <button class="nav-item" data-page="sessions">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H8l-4 4V5Z"/></svg>
+          <span>会话与上下文</span>
+        </button>
+        <button class="nav-item" data-page="messages">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+          <span>消息流</span>
+        </button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-label">知识</div>
+        <button class="nav-item" data-page="memory">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0-3 11v4h6v-4a6 6 0 0 0-3-11Z"/><path d="M9 21h6"/></svg>
+          <span>向量记忆</span>
+        </button>
+        <button class="nav-item" data-page="rules">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+          <span>规则</span>
+        </button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-label">系统</div>
+        <button class="nav-item" data-page="settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H3v-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6V3h4v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
+          <span>设置</span>
+        </button>
+        <button class="nav-item" data-page="logs">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>
+          <span>运行日志</span>
+        </button>
+      </div>
     </nav>
-    <div class="side-foot muted small">v0.1 · 纯配置文件驱动</div>
+
+    <div class="side-foot">
+      <span class="dot"></span>
+      <span>v0.1 · 配置文件驱动</span>
+    </div>
   </aside>
 
-  <!-- 主区 -->
   <div class="main">
-    <!-- 顶栏 -->
     <header class="topbar">
-      <button id="btn-menu" class="btn ghost small menu-btn">☰</button>
-      <h1 id="page-title">仪表盘</h1>
-      <div class="topbar-right">
-        <span id="st-state" class="badge off">离线</span>
-        <span id="st-pending-mini" class="badge gray" title="积压待处理">—</span>
-        <button id="btn-token" class="btn ghost small" title="修改面板令牌">令牌</button>
-        <button id="btn-refresh" class="btn ghost small">刷新</button>
+      <button class="icon-btn menu-btn" data-action="toggle-sidebar" aria-label="打开导航">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <div class="page-heading">
+        <h1 id="page-title">仪表盘</h1>
+        <p id="page-sub" class="page-sub">运行概览与实时状态</p>
+      </div>
+      <div class="topbar-actions">
+        <span id="conn-pill" class="pill off"><i></i>离线</span>
+        <span id="pending-pill" class="pill ghost">0 待处理</span>
+        <button class="icon-btn" data-action="refresh" title="刷新">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg>
+        </button>
+        <button class="icon-btn" data-action="logout" title="退出登录">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4H5v16h5"/><path d="M14 8l4 4-4 4"/><path d="M18 12H9"/></svg>
+        </button>
       </div>
     </header>
 
-    <!-- 令牌条 -->
-    <div id="token-bar" class="token-bar hidden">
-      <span class="token-label">面板令牌</span>
-      <input id="token-input" type="password" placeholder="config.json → web.token" autocomplete="off">
-      <button id="token-save" class="btn primary">进入</button>
-      <span class="token-hint">令牌在 db/config.json 的 web.token 字段</span>
-    </div>
+    <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
 
-    <div id="err-banner" class="err-banner hidden"></div>
-
-    <!-- ===== 内容区 ===== -->
     <main class="content">
 
       <!-- 仪表盘 -->
       <section id="page-dash" class="page">
-        <div class="card">
-          <div class="card-head"><h2>运行状态</h2><span id="st-updated" class="muted small"></span></div>
-          <div class="stats">
-            <div class="stat"><span class="stat-label">当前状态</span><span id="st-state2" class="stat-value">—</span></div>
-            <div class="stat"><span class="stat-label">下一事件</span><span id="st-event" class="stat-value">—</span></div>
-            <div class="stat"><span class="stat-label">剩余时间</span><span id="st-remain" class="stat-value">—</span></div>
-            <div class="stat"><span class="stat-label">积压待处理</span><span id="st-pending" class="stat-value">—</span></div>
-            <div class="stat"><span class="stat-label">抖动窗口内</span><span id="st-debounce" class="stat-value">—</span></div>
-            <div class="stat"><span class="stat-label">在线时长 / 离线周期</span><span id="st-dur" class="stat-value">—</span></div>
-            <div class="stat"><span class="stat-label">聊得火热（续期）</span><span id="st-renew" class="stat-value">—</span></div>
-            <div class="stat"><span class="stat-label">积压扫描 / 合并</span><span id="st-backlog" class="stat-value">—</span></div>
+        <div class="hero card">
+          <div class="hero-main">
+            <div class="eyebrow">运行状态</div>
+            <div class="hero-title">
+              <span id="dash-dot" class="state-dot off"></span>
+              <span id="dash-state">离线</span>
+            </div>
+            <p id="dash-event" class="hero-sub">等待下一次上线</p>
           </div>
-          <div class="card-block">
-            <h3>会话级状态（每群 / 每私聊独立）</h3>
-            <table class="grid"><thead><tr><th>会话</th><th>状态</th><th>下一事件</th><th>剩余</th><th>抖动窗口</th></tr></thead>
-            <tbody id="st-sessions"><tr><td colspan="5" class="muted">（暂无）</td></tr></tbody></table>
+          <div class="hero-side">
+            <div class="countdown"><span id="dash-remain">—</span><small>s</small></div>
+            <div id="dash-caption" class="hero-caption">—</div>
+          </div>
+        </div>
+
+        <div class="metrics">
+          <div class="metric"><span class="metric-label">在线会话</span><strong id="m-online">—</strong><span class="metric-foot">当前活跃</span></div>
+          <div class="metric"><span class="metric-label">积压待处理</span><strong id="m-pending">—</strong><span class="metric-foot">离线消息</span></div>
+          <div class="metric"><span class="metric-label">记忆条目</span><strong id="m-memories">—</strong><span class="metric-foot">长期记忆</span></div>
+          <div class="metric"><span class="metric-label">会话总数</span><strong id="m-sessions">—</strong><span class="metric-foot">群聊 + 私聊</span></div>
+          <div class="metric"><span class="metric-label">今日消息</span><strong id="m-today">—</strong><span class="metric-foot">收到 + 发出</span></div>
+          <div class="metric"><span class="metric-label">规则</span><strong id="m-rules">—</strong><span class="metric-foot">注入提示词</span></div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-head">
+              <div><h2>会话状态</h2><p class="card-sub">每个群 / 私聊独立作息</p></div>
+              <button class="btn ghost small" data-page="sessions">全部会话</button>
+            </div>
+            <div class="table-wrap">
+              <table class="table">
+                <thead><tr><th>会话</th><th>状态</th><th>事件</th><th>剩余</th><th>空闲</th></tr></thead>
+                <tbody id="dash-sessions"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div><h2>最近消息</h2><p class="card-sub">最新 8 条对话</p></div>
+              <button class="btn ghost small" data-page="messages">查看全部</button>
+            </div>
+            <div id="dash-recent" class="mini-list"><div class="empty">加载中…</div></div>
           </div>
         </div>
       </section>
 
-      <!-- 最近消息 -->
-      <section id="page-messages" class="page hidden">
+      <!-- 会话与上下文 -->
+      <section id="page-sessions" class="page hidden">
         <div class="card">
           <div class="card-head">
-            <h2>最近消息</h2>
+            <div><h2>会话与上下文</h2><p class="card-sub">查看每个会话的历史摘要与消息，可单独清空上下文</p></div>
             <div class="head-ops">
-              <label class="muted small">条数
-                <select id="msg-limit" class="sel small">
-                  <option>30</option><option>50</option><option>100</option><option>200</option>
-                </select>
-              </label>
-              <button id="btn-msg-refresh" class="btn ghost small">刷新</button>
+              <input id="sess-q" class="input small-input" placeholder="筛选会话 / 摘要…">
+              <button class="btn ghost small" data-action="refresh-sessions">刷新</button>
             </div>
           </div>
           <div class="table-wrap tall">
             <table class="table">
-              <thead><tr><th>时间</th><th>会话</th><th>角色</th><th>内容</th><th>状态</th></tr></thead>
+              <thead><tr><th>会话</th><th>状态</th><th class="col-sm-hide">消息</th><th class="col-sm-hide">待处理</th><th class="col-sm-hide">最后活动</th><th>摘要 / 最后消息</th><th></th></tr></thead>
+              <tbody id="sessions-body"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 消息流 -->
+      <section id="page-messages" class="page hidden">
+        <div class="card">
+          <div class="card-head">
+            <div><h2>消息流</h2><p class="card-sub">跨会话的最近消息记录</p></div>
+            <div class="head-ops">
+              <select id="msg-session" class="sel small-input"><option value="">全部会话</option></select>
+              <select id="msg-role" class="sel small-input">
+                <option value="">全部角色</option><option value="user">成员</option><option value="assistant">机器人</option>
+              </select>
+              <select id="msg-limit" class="sel small-input">
+                <option>30</option><option>50</option><option>100</option><option>200</option>
+              </select>
+              <button class="btn ghost small" data-action="refresh-messages">刷新</button>
+            </div>
+          </div>
+          <div class="table-wrap tall">
+            <table class="table">
+              <thead><tr><th>时间</th><th>会话</th><th class="col-sm-hide">角色</th><th>内容</th><th class="col-sm-hide">状态</th></tr></thead>
               <tbody id="msg-body"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
             </table>
           </div>
@@ -104,20 +216,34 @@
       <!-- 向量记忆 -->
       <section id="page-memory" class="page hidden">
         <div class="card">
-          <div class="card-head"><h2>向量记忆</h2><button id="btn-tidy" class="btn ghost small">整理（合并重复）</button></div>
-          <div class="row">
-            <input id="mem-add" class="input grow" placeholder="写入一条记忆…">
-            <button id="btn-mem-add" class="btn primary">写入</button>
+          <div class="card-head">
+            <div><h2>向量记忆</h2><p class="card-sub" id="mem-total">长期记忆 · 语义检索与维护</p></div>
+            <div class="head-ops">
+              <button class="btn ghost small" data-action="memory-tidy">合并重复</button>
+            </div>
           </div>
-          <div class="row">
-            <input id="mem-q" class="input grow" placeholder="检索记忆…">
-            <button id="btn-mem-search" class="btn">检索</button>
-            <button id="btn-mem-all" class="btn ghost">全部</button>
+
+          <div class="memory-tools">
+            <div class="tool-row">
+              <input id="mem-q" class="input grow" placeholder="语义检索，例如：谁喜欢喝咖啡？">
+              <button class="btn" data-action="memory-search">检索</button>
+              <button class="btn ghost" data-action="memory-all">全部</button>
+            </div>
+            <div class="tool-row">
+              <select id="mem-session" class="sel"><option value="">全部作用域</option></select>
+              <input id="mem-add" class="input grow" placeholder="写入一条重要记忆…">
+              <select id="mem-importance" class="sel" title="重要度">
+                <option value="1">★</option><option value="2">★★</option><option value="3">★★★</option>
+                <option value="4">★★★★</option><option value="5">★★★★★</option>
+              </select>
+              <button class="btn primary" data-action="memory-add">写入</button>
+            </div>
           </div>
+
           <div class="table-wrap">
             <table class="table">
-              <thead><tr><th>相似度</th><th>内容</th><th></th></tr></thead>
-              <tbody id="mem-body"><tr><td colspan="3" class="empty">加载中…</td></tr></tbody>
+              <thead><tr><th class="col-narrow">重要</th><th>内容</th><th class="col-sm-hide">作用域</th><th class="col-sm-hide">时间</th><th class="col-actions"></th></tr></thead>
+              <tbody id="mem-body"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -126,14 +252,16 @@
       <!-- 规则 -->
       <section id="page-rules" class="page hidden">
         <div class="card">
-          <div class="card-head"><h2>规则</h2><span class="muted small">（注入系统提示，可热加）</span></div>
-          <div class="row">
-            <input id="rule-content" class="input grow" placeholder="添加一条规则…">
-            <button id="btn-rule-add" class="btn primary">添加</button>
+          <div class="card-head">
+            <div><h2>聊天规则</h2><p class="card-sub">实时注入系统提示词，可随时启停</p></div>
+          </div>
+          <div class="tool-row">
+            <input id="rule-content" class="input grow" placeholder="添加一条规则，例如：不要在群里发长段文字">
+            <button class="btn primary" data-action="rule-add">添加</button>
           </div>
           <div class="table-wrap">
             <table class="table">
-              <thead><tr><th>内容</th><th>状态</th><th></th></tr></thead>
+              <thead><tr><th>内容</th><th class="col-narrow">状态</th><th class="col-actions"></th></tr></thead>
               <tbody id="rule-body"><tr><td colspan="3" class="empty">加载中…</td></tr></tbody>
             </table>
           </div>
@@ -142,58 +270,76 @@
 
       <!-- 设置 -->
       <section id="page-settings" class="page hidden">
-        <div class="card">
-          <div class="card-head">
-            <h2>设置 <span class="muted small">（热更新，写回 config.json）</span></h2>
-            <span id="cfg-msg" class="cfg-msg muted small"></span>
-          </div>
-
-          <div class="cfg-group"><h3>LLM 请求参数</h3>
+        <div class="settings-grid">
+          <div class="card">
+            <div class="card-head"><div><h2>LLM 请求</h2><p class="card-sub">DeepSeek 生成参数</p></div></div>
             <div class="form-grid">
-              <label>temperature <input id="s-temperature" type="number" step="0.1" class="input"></label>
-              <label>top_p <input id="s-top_p" type="number" step="0.05" class="input"></label>
-              <label>max_tokens <input id="s-max_tokens" type="number" step="1" class="input"></label>
-              <label>thinking
-                <select id="s-thinking" class="sel">
+              <label class="field"><span>temperature</span><input class="input" data-path="deepseek.request.temperature" data-kind="float" type="number" step="0.1"></label>
+              <label class="field"><span>top_p</span><input class="input" data-path="deepseek.request.top_p" data-kind="float" type="number" step="0.05"></label>
+              <label class="field"><span>max_tokens</span><input class="input" data-path="deepseek.request.max_tokens" data-kind="int" type="number" step="1"></label>
+              <label class="field"><span>thinking</span>
+                <select class="sel" data-path="deepseek.request.thinking" data-kind="str">
                   <option value="disabled">disabled</option><option value="enabled">enabled</option>
-                </select></label>
-              <label><input id="s-stream" type="checkbox" class="chk"> stream 流式</label>
+                </select>
+              </label>
+              <label class="field check-field"><input type="checkbox" class="chk" data-path="deepseek.request.stream" data-kind="bool"><span>stream 流式输出</span></label>
             </div>
           </div>
 
-          <div class="cfg-group"><h3>在线作息</h3>
+          <div class="card">
+            <div class="card-head"><div><h2>在线作息</h2><p class="card-sub">带随机抖动的拟人上下线</p></div></div>
             <div class="form-grid">
-              <label>在线时长(s) <input id="s-online_duration_sec" type="number" step="1" class="input"></label>
-              <label>离线周期(s) <input id="s-offline_interval_sec" type="number" step="1" class="input"></label>
-              <label><input id="s-wake_on_at_message" type="checkbox" class="chk"> @消息立即唤醒</label>
-              <label><input id="s-wake_on_c2c" type="checkbox" class="chk"> 私聊唤醒</label>
-              <label><input id="s-renew_on_reply" type="checkbox" class="chk"> 回复续期（聊得火热）</label>
+              <label class="field"><span>在线时长 (s)</span><input class="input" data-path="behavior.presence.online_duration_sec" data-kind="float" type="number" step="1"></label>
+              <label class="field"><span>离线周期 (s)</span><input class="input" data-path="behavior.presence.offline_interval_sec" data-kind="float" type="number" step="1"></label>
+              <label class="field"><span>在线抖动 (±)</span><input class="input" data-path="behavior.presence.online_duration_jitter" data-kind="float" type="number" step="0.05" min="0"></label>
+              <label class="field"><span>离线抖动 (±)</span><input class="input" data-path="behavior.presence.offline_interval_jitter" data-kind="float" type="number" step="0.05" min="0"></label>
+              <label class="field"><span>续期时长 (s)</span><input class="input" data-path="behavior.presence.renew_per_reply_sec" data-kind="float" type="number" step="1"></label>
+              <label class="field"><span>续期抖动 (±)</span><input class="input" data-path="behavior.presence.renew_jitter" data-kind="float" type="number" step="0.05" min="0"></label>
+              <label class="field check-field"><input type="checkbox" class="chk" data-path="behavior.presence.wake_on_at_message" data-kind="bool"><span>@ 消息立即唤醒</span></label>
+              <label class="field check-field"><input type="checkbox" class="chk" data-path="behavior.presence.wake_on_c2c" data-kind="bool"><span>私聊立即唤醒</span></label>
+              <label class="field check-field"><input type="checkbox" class="chk" data-path="behavior.presence.renew_on_reply" data-kind="bool"><span>回复后续期</span></label>
             </div>
           </div>
 
-          <div class="cfg-group"><h3>回复与积压</h3>
+          <div class="card">
+            <div class="card-head"><div><h2>拟人回复</h2><p class="card-sub">阅读停顿、打字速度与分段</p></div></div>
             <div class="form-grid">
-              <label>最大分段 <input id="s-max_segments" type="number" step="1" class="input"></label>
-              <label>段长上限(字) <input id="s-max_chars_per_segment" type="number" step="1" class="input"></label>
-              <label>段间隔(s) <input id="s-segment_gap_sec" type="number" step="0.5" class="input"></label>
-              <label>抖动窗口(s) <input id="s-debounce_sec" type="number" step="1" class="input"></label>
-              <label>积压扫描上限 <input id="s-max_scan_messages" type="number" step="1" class="input"></label>
-              <label>积压合并批次 <input id="s-batch_size" type="number" step="1" class="input"></label>
-              <label>优先级规则
-                <select id="s-priority_rule" class="sel">
+              <label class="field"><span>阅读停顿下限 (s)</span><input class="input" data-path="behavior.reply.read_delay_min_sec" data-kind="float" type="number" step="0.1" min="0"></label>
+              <label class="field"><span>阅读停顿上限 (s)</span><input class="input" data-path="behavior.reply.read_delay_max_sec" data-kind="float" type="number" step="0.1" min="0"></label>
+              <label class="field"><span>打字速度 (字/s)</span><input class="input" data-path="behavior.reply.typing_chars_per_sec" data-kind="float" type="number" step="1" min="0"></label>
+              <label class="field"><span>打字最短 (s)</span><input class="input" data-path="behavior.reply.typing_min_sec" data-kind="float" type="number" step="0.1" min="0"></label>
+              <label class="field"><span>打字最长 (s)</span><input class="input" data-path="behavior.reply.typing_max_sec" data-kind="float" type="number" step="0.5" min="0"></label>
+              <label class="field"><span>打字抖动 (±)</span><input class="input" data-path="behavior.reply.typing_jitter" data-kind="float" type="number" step="0.05" min="0"></label>
+              <label class="field"><span>最大分段</span><input class="input" data-path="behavior.reply.max_segments" data-kind="int" type="number" step="1"></label>
+              <label class="field"><span>段长上限 (字)</span><input class="input" data-path="behavior.reply.max_chars_per_segment" data-kind="int" type="number" step="1"></label>
+              <label class="field"><span>段间隔 (s)</span><input class="input" data-path="behavior.reply.segment_gap_sec" data-kind="float" type="number" step="0.5"></label>
+              <label class="field"><span>抖动窗口 (s)</span><input class="input" data-path="behavior.reply.debounce_sec" data-kind="float" type="number" step="1"></label>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><div><h2>积压与日志</h2><p class="card-sub">离线消息扫描与运行日志</p></div></div>
+            <div class="form-grid">
+              <label class="field"><span>积压扫描上限</span><input class="input" data-path="behavior.backlog.max_scan_messages" data-kind="int" type="number" step="1"></label>
+              <label class="field"><span>积压合并批次</span><input class="input" data-path="behavior.backlog.batch_size" data-kind="int" type="number" step="1"></label>
+              <label class="field"><span>优先级规则</span>
+                <select class="sel" data-path="behavior.backlog.priority_rule" data-kind="str">
                   <option value="llm">llm</option><option value="at">at</option>
-                </select></label>
-              <label>日志等级
-                <select id="s-log_level" class="sel">
+                </select>
+              </label>
+              <label class="field"><span>日志等级</span>
+                <select class="sel" data-path="web.log_level" data-kind="str">
                   <option value="DEBUG">DEBUG</option><option value="INFO">INFO</option>
                   <option value="WARNING">WARNING</option><option value="ERROR">ERROR</option>
-                </select></label>
+                </select>
+              </label>
             </div>
           </div>
+        </div>
 
-          <div class="row end">
-            <button id="btn-save-cfg" class="btn primary">保存设置</button>
-          </div>
+        <div class="save-bar">
+          <span id="cfg-msg" class="muted small">修改后点击保存，写回 config.json 并热生效</span>
+          <button class="btn primary" data-action="save-config">保存设置</button>
         </div>
       </section>
 
@@ -201,23 +347,21 @@
       <section id="page-logs" class="page hidden">
         <div class="card">
           <div class="card-head">
-            <h2>日志 <span class="muted small">temp/logs/ggbot.log</span></h2>
+            <div><h2>运行日志</h2><p class="card-sub" id="log-file">temp/logs/ggbot.log</p></div>
             <div class="head-ops">
-              <label class="muted small">等级
-                <select id="log-level" class="sel small">
-                  <option value="DEBUG">DEBUG</option>
-                  <option value="INFO" selected>INFO</option>
-                  <option value="WARNING">WARNING</option>
-                  <option value="ERROR">ERROR</option>
-                </select>
-              </label>
-              <label class="muted small"><input id="log-auto" type="checkbox" checked> 自动刷新</label>
-              <button id="btn-log-refresh" class="btn ghost small">刷新</button>
+              <select id="log-level" class="sel small-input">
+                <option value="DEBUG">DEBUG</option><option value="INFO" selected>INFO</option>
+                <option value="WARNING">WARNING</option><option value="ERROR">ERROR</option>
+              </select>
+              <input id="log-session" class="input small-input" placeholder="会话筛选">
+              <input id="log-q" class="input small-input" placeholder="内容搜索">
+              <label class="check-field"><input id="log-auto" type="checkbox" class="chk" checked><span>自动</span></label>
+              <button class="btn ghost small" data-action="refresh-logs">刷新</button>
             </div>
           </div>
           <div class="table-wrap tall">
             <table class="table log-table">
-              <thead><tr><th class="col-ts">时间</th><th>等级</th><th>位置</th><th>会话</th><th>内容</th></tr></thead>
+              <thead><tr><th class="col-ts">时间</th><th class="col-lv">等级</th><th class="col-mod col-sm-hide">位置</th><th class="col-sess col-sm-hide">会话</th><th>内容</th></tr></thead>
               <tbody id="log-body"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
             </table>
           </div>
@@ -225,6 +369,21 @@
       </section>
 
     </main>
+  </div>
+</div>
+
+<!-- 通用弹窗 -->
+<div id="modal-root" class="modal-root hidden">
+  <div class="modal-backdrop" data-action="modal-close"></div>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <header class="modal-head">
+      <h2 id="modal-title">详情</h2>
+      <button class="icon-btn" data-action="modal-close" aria-label="关闭">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </header>
+    <div id="modal-body" class="modal-body"></div>
+    <footer id="modal-foot" class="modal-foot"></footer>
   </div>
 </div>
 

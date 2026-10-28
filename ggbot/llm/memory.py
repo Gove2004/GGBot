@@ -105,6 +105,30 @@ class MemoryStore:
             return m["id"]
         return self.storage.add_memory(session_id, content, type_, importance, vec.tobytes())
 
+    def update(
+        self,
+        memory_id: str,
+        content: str | None = None,
+        importance: int | None = None,
+    ) -> bool:
+        """编辑记忆（改内容会重新向量化），条目不存在返回 False。"""
+        if not self.storage.get_memory(memory_id):
+            return False
+        vec = None
+        if content is not None:
+            content = content.strip()
+            if not content:
+                raise ValueError("记忆内容不能为空")
+            vec = self.embed(content).astype(np.float32)
+        self.storage.update_memory(
+            memory_id,
+            content=content,
+            importance=importance,
+            embedding=vec.tobytes() if vec is not None else None,
+        )
+        logger.info("记忆已更新 id=%s（重新向量化=%s）", memory_id, vec is not None)
+        return True
+
     def search(
         self,
         query: str,
