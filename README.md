@@ -98,24 +98,27 @@ start.bat                    # Windows 前台（Ctrl+C 停止）
 
 | 机制 | 配置 | 说明 |
 |---|---|---|
-| 在线/离线作息 | `presence.online_duration_sec` / `offline_interval_sec` | 定时上线、在线一段时间后离线 |
-| @唤醒 | `presence.wake_on_at_message` | 离线被@ → 立即上线并立即回复该条（不进积压） |
-| 聊得火热 | `presence.renew_on_reply` | 在线每次回复重置在线计时器 |
-| 抖动聚合 | `reply.debounce_sec` | 在线消息 10s 窗口聚合，LLM 选择性回复（非每条必回） |
-| 积压分流 | `backlog.*` | 上线扫描 pending（≤1000）；@/C2C 事件消息窗口内单独被动回，其余每 100 条合并主动回（主动额度每月 4 条/群，合并省额度） |
+| 在线/离线作息 | `presence.online_duration_sec`（默认 60）/ `offline_interval_sec`（默认 600） | 每会话独立：定时上线、在线一段时间后下线 |
+| @唤醒 | `presence.wake_on_at_message` | 离线被@（本会话）→ 本会话上线并立即回复该条（不进积压） |
+| 聊得火热 | `presence.renew_on_reply` + `renew_per_reply_sec`（默认 30） | 每发送一条消息，本会话在线时长 +30s |
+| 抖动聚合 | `reply.debounce_sec`（默认 5） | 在线消息 5s 窗口聚合，LLM 选择性回复（非每条必回） |
+| 积压分流 | `backlog.*` | 上线扫描本会话 pending（≤1000）；@/C2C 事件窗口内单独被动回，其余每 100 条合并主动回 |
 | 分段发送 | `reply.max_segments` / `max_chars_per_segment` / `segment_gap_sec` | 回复拆短句逐条发送（msg_seq 递增，官方支持同一消息多次回复） |
 
-**状态机**
+> **会话隔离**：每个会话（每个群 / 每段私聊）是独立状态机——私聊被@只唤醒私聊会话，不会让群聊上线；A 群唤醒不影响 B 群；群聊积压只有本群被唤醒时才处理。离线倒计时/在线时长/抖动窗口均按会话独立计时。
+
+**状态机（每会话）**
 
 ```mermaid
 stateDiagram-v2
     [*] --> offline
-    offline --> online: 定时器到期 / 收到@消息(唤醒)
-    online --> online: 在线收到消息→10s 抖动窗口聚合→选择性回复<br/>回复后重置在线计时器(renew_on_reply)
-    online --> offline: 在线计时器到期(未续, online_duration_sec)
+    offline --> online: 收到@消息(唤醒) / 离线倒计时到期(默认600s)
+    offline --> offline: 普通消息入库积压(≤1000条)
+    online --> online: 先处理本会话积压→在线消息5s抖动聚合→选择性回复<br/>每发送一条消息在线时长+30s(renew_per_reply_sec)
+    online --> offline: 在线计时器到期(默认60s, 未续)
 ```
 
-**消息处理路径**：收到消息 → 在线？→ 离线：写存储层标记 pending（不调 LLM）；若被@且 `wake_on_at_message` → 唤醒并**立即被动回复该条**（不进积压）→ 上线流程。在线：先浏览积压 pending（≤1000 条）：`passive_ok` 事件（群@/C2C）且窗口内单独被动回，其余每 ≤`batch_size` 条合并为一条主动回（省额度），然后进入实时模式：10s 抖动窗口聚合 → LLM 选择性回复 → 重置在线计时器。
+**消息处理路径**：收到消息 → 归属会话 → 该会话离线？→ 入库标记 pending（不调 LLM）；若被@且 `wake_on_at_message` → 本会话唤醒并**立即被动回复该条**（不进积压）→ 本会话上线流程。在线：先浏览本会话积压 pending（≤1000 条）：`passive_ok` 事件（群@/C2C）且窗口内单独被动回，其余每 ≤`batch_size` 条合并为一条主动回（省额度），然后进入实时模式：5s 抖动窗口聚合 → LLM 选择性回复 → 每段发送成功续期 +30s。
 
 > **平台被动回复硬规则**：只有 `GROUP_AT_MESSAGE_CREATE`（群@本机器人）与 `C2C_MSG_RECEIVE`（私聊）事件的消息能带 `msg_id+event_id` 被动回复（不限额度）；`GROUP_MESSAGE_CREATE`（群全量）事件的 `event_id` 平台拒绝用于被动回复（400 40034027），只能主动发送（额度每月 4 条/群）。代码按事件来源持久化 `passive_ok` 标记并据此选通道。
 

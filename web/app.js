@@ -82,8 +82,23 @@ async function refreshStatus() {
     update("st-dur",
       (s.online_duration_sec != null ? s.online_duration_sec + "s" : "—") + " / " +
       (s.offline_interval_sec != null ? s.offline_interval_sec + "s" : "—"));
-    update("st-renew", s.renew_on_reply ? "开启（聊得火热）" : "关闭");
+    update("st-renew", s.renew_on_reply ? "开启（每发一条+30s）" : "关闭");
     update("st-backlog", (s.backlog_max_scan ?? "—") + " / " + (s.backlog_batch_size ?? "—"));
+    // 会话级状态列表（每群/每私聊独立状态机）
+    const slist = document.getElementById("st-sessions");
+    if (slist) {
+      const rows = (s.sessions || []).map(sess => {
+        const on = sess.state === "online";
+        return `<tr>
+          <td class="mono muted">${esc(sess.label || sess.sid || "")}</td>
+          <td><span class="badge ${on ? "on" : "off"}">${on ? "在线" : "离线"}</span></td>
+          <td>${esc(sess.next_event || "—")}</td>
+          <td>${sess.remaining_sec != null ? sess.remaining_sec.toFixed(0) + "s" : "—"}</td>
+          <td>${sess.debounce_count || 0}</td>
+        </tr>`;
+      }).join("");
+      slist.innerHTML = rows || `<tr><td colspan="5" class="muted">（暂无会话）</td></tr>`;
+    }
     update("st-updated", new Date().toLocaleTimeString());
   } catch (e) { /* 401 已处理 */ }
 }

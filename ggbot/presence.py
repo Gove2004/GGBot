@@ -1,8 +1,11 @@
-"""Presence 状态机：离线/在线作息、唤醒、积压分流、抖动聚合、选择性回复。
+"""Presence 状态机：每会话独立 在线/离线 作息、唤醒、积压分流、抖动聚合、选择性回复。
 
-离线：普通消息仅入库；被@立即上线并立即回复该条；定时器到期上线。
-在线：消息进入 debounce 窗口聚合 → LLM 选择性回复（非每条必回）；回复重置在线计时器（聊得火热）。
-积压：上线后扫描 pending（≤max_scan_messages），优先级（@/提问）单独回，其余每 ≤batch_size 条合并为一条。
+离线（默认 10 分钟）：普通消息仅入库积压（≤1000）；收到@（本会话）或倒计时结束 → 本会话上线。
+在线（默认 1 分钟）：先处理本会话积压；消息进入 5s 抖动窗口聚合 → 选择性回复；
+  每发送一条消息 +0.5 分钟在线时长（renew_per_reply_sec=30）；倒计时结束 → 下线。
+会话相互独立：私聊唤醒不会让群聊上线，A 群唤醒不影响 B 群。
+积压：上线后扫描本会话 pending（≤max_scan_messages），被动事件（@/C2C）窗口内单独回，
+  其余每 ≤batch_size 条合并为一条主动回。
 """
 
 from __future__ import annotations
@@ -127,47 +130,65 @@ class PresenceManager:
         self._budget_tokens = int(ctx_cfg.get("summary_threshold_tokens", 100000))
         self._history_limit = int(ctx_cfg.get("max_history_messages", 50))
 
-        self.state = "offline"
-        self._online_deadline = 0.0
-        self._next_online = 0.0
+        self.state = "offline"  # 兼容旧字段（面板聚合时不再使用单值）
+        self._states: dict[str, _SessionState] = {}  # 每会话独立状态机
         self._loop_task: asyncio.Task | None = None
-        self._debounce: list[dict] = []
-        self._debounce_task: asyncio.Task | None = None
         self._lock = threading.RLock()
         self._recent_reply_ts = 0.0
         # 回复消息序号：小整数递增（与 msg_id 联合防重；官方默认 1）。
         # 切勿用毫秒时间戳等 int32 超限值——QQ 服务端会 400「请求数据异常」
         self._seq_by_sid: dict[str, int] = {}  # 用于面板展示
+        self._max_states = 200  # 会话状态对象上限，超出清理离线无积压的
+
+    def _state_of(self, sid: str) -> "_SessionState":
+        """获取（或创建）会话状态机；超上限时清理最久未活动的离线会话。"""
+        st = self._states.get(sid)
+        if st is not None:
+            return st
+        with self._lock:
+            if len(self._states) >= self._max_states:
+                for k, s in list(self._states.items()):
+                    if s.state == "offline" and not self.storage.get_pending_messages(k, 1):
+                        self._states.pop(k, None)
+                        break
+            st = _SessionState(self, sid)
+            self._states[sid] = st
+        return st
 
     # ---------- 生命周期 ----------
 
     async def start(self) -> None:
-        self._next_online = time.monotonic() + float(self.p.get("offline_interval_sec", 900))
         self._loop_task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
-        for t in (self._loop_task, self._debounce_task):
-            if t:
-                t.cancel()
+        if self._loop_task:
+            self._loop_task.cancel()
+            try:
+                await self._loop_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        for st in list(self._states.values()):
+            if st._debounce_task:
+                st._debounce_task.cancel()
                 try:
-                    await t
+                    await st._debounce_task
                 except (asyncio.CancelledError, Exception):
                     pass
 
     async def _loop(self) -> None:
+        """统一 tick：每 2 秒扫一遍全部会话状态机，触发到期上线/下线。"""
         while True:
-            if self.state == "offline":
-                wait = self._next_online - time.monotonic()
-                if wait <= 0:
-                    await self._go_online("scheduled")
-                else:
-                    await asyncio.sleep(min(wait, 5))
-            else:
-                remain = self._online_deadline - time.monotonic()
-                if remain <= 0:
-                    await self._go_offline("timeout")
-                else:
-                    await asyncio.sleep(min(remain, 5))
+            await self._tick()
+            await asyncio.sleep(2)
+
+    async def _tick(self) -> None:
+        now = time.monotonic()
+        for st in list(self._states.values()):
+            if st.state == "offline":
+                if st._next_online <= now:
+                    await st.go_online("scheduled")
+            elif st._online_deadline <= now:
+                await st.go_offline("timeout")
 
     # ---------- 消息入口 ----------
 
@@ -181,51 +202,62 @@ class PresenceManager:
             inbound.get("event_id"), inbound.get("is_at", False), inbound.get("passive_ok", False),
             status="pending",
         )
-        if self.state == "offline":
+        st = self._state_of(sid)
+        if st.state == "offline":
             if inbound.get("is_at") and self.p.get("wake_on_at_message", True):
-                logger.info("收到@消息，唤醒上线并立即回复: %s", inbound["msg_id"])
+                logger.info("会话%s收到@，唤醒上线并立即回复: %s", st.label, inbound["msg_id"])
                 # 先即时被动回复该条（5 分钟窗口内有效、不耗主动消息额度），
                 # 成功后状态标记 replied，之后处理积压不会再重复回复它
                 await self._reply_now(inbound)
-                await self._go_online("wake-on-at")
+                await st.go_online("wake-on-at")
                 return True
-            logger.debug("离线：消息入库 %s (pending)", inbound["msg_id"])
+            logger.debug("会话%s 离线：消息入库 %s (pending)", st.label, inbound["msg_id"])
             return True
-        # 在线：进入 debounce 窗口聚合
-        self._debounce.append(inbound)
-        logger.debug("在线：进入抖动窗口 %s（当前 %d 条）", inbound["msg_id"], len(self._debounce))
-        if self._debounce_task is None or self._debounce_task.done():
-            self._debounce_task = asyncio.create_task(self._flush_debounce())
+        # 在线：进入本会话 debounce 窗口聚合
+        st.debounce.append(inbound)
+        logger.debug("会话%s 在线：进入抖动窗口 %s（当前 %d 条）", st.label, inbound["msg_id"], len(st.debounce))
+        if st._debounce_task is None or st._debounce_task.done():
+            st._debounce_task = asyncio.create_task(self._flush_debounce(st))
         return True
 
-    async def _flush_debounce(self) -> None:
-        await asyncio.sleep(float(self.r.get("debounce_sec", 10)))
-        batch = self._debounce
-        self._debounce = []
+    async def _flush_debounce(self, st: "_SessionState") -> None:
+        await asyncio.sleep(float(self.r.get("debounce_sec", 5)))
+        batch = st.debounce
+        st.debounce = []
+        st._debounce_task = None
         if not batch:
             return
-        await self._process_batch(batch)
+        await self._process_batch(batch, st)
 
-    # ---------- 在线/离线 ----------
+    # ---------- 在线/离线（会话级） ----------
 
     async def _go_online(self, reason: str) -> None:
-        if self.state == "online":
-            return
-        self.state = "online"
-        self._online_deadline = time.monotonic() + float(self.p.get("online_duration_sec", 300))
-        logger.info("上线（%s），在线时长 %.0fs，先处理积压", reason, self.p.get("online_duration_sec", 300))
-        await self._process_backlog()
+        """兼容入口：作用于当前唯一/默认会话（保留给外部调用，主路径走 _SessionState.go_online）。"""
+        st = self._state_of(self._primary_sid())
+        await st.go_online(reason)
 
-    async def _go_offline(self, reason: str) -> None:
-        if self.state == "offline":
-            return
-        self.state = "offline"
-        self._next_online = time.monotonic() + float(self.p.get("offline_interval_sec", 900))
-        logger.info("下线（%s），%.0fs 后再次上线", reason, self.p.get("offline_interval_sec", 900))
+    def _primary_sid(self) -> str:
+        if self._states:
+            return next(iter(self._states))
+        return "group:default"
 
-    def _renew_online(self) -> None:
-        if self.p.get("renew_on_reply", True):
-            self._online_deadline = time.monotonic() + float(self.p.get("online_duration_sec", 300))
+    def _session_label(self, sid: str) -> str:
+        prefix, _, rest = (sid or "").partition(":")
+        return ("群" if prefix == "group" else "私聊") + (rest or sid)[:12]
+
+    async def _process_batch(self, msgs: list[dict], st: "_SessionState" | None = None) -> None:
+        """在线批次：聚合多条消息一次决策。
+
+        平台硬限制：全量消息不能被动回复，主动消息每月仅 4 条/群——
+        在线聚合的普通消息只进上下文/记忆，不实际发送（真人"看到没回"也符合人设）；
+        含被动事件（@/C2C）的批次才走回复。
+        """
+        last = msgs[-1]
+        if not any(m.get("passive_ok") for m in msgs):
+            logger.debug("在线普通消息批次跳过回复（主动额度限制）: %d 条", len(msgs))
+            return
+        if await self._safe_reply(msgs, passive=True, renew_sid=(st.sid if st else None)):
+            self._renew_online(st)
 
     # ---------- 回复核心 ----------
 
@@ -239,12 +271,13 @@ class PresenceManager:
             return t
         return _derive_target(sid)
 
-    async def _safe_reply(self, msgs: list[dict], passive: bool) -> bool:
+    async def _safe_reply(self, msgs: list[dict], passive: bool, renew_sid: str | None = None) -> bool:
         """生成并发送回复；任何失败只标记状态，不向上抛（避免单条失效群打崩整轮积压）。
 
         状态：成功 replied / 生成失败或发送失败 failed / 无需回复 skipped。
         发送通道：batch 中存在可被动消息（@/C2C 事件）时，绑定其中最后一条走被动回复
         （msg_id+event_id，不耗主动额度）；纯普通消息才走主动合并（额度每月 4 条/群）。
+        续期：发送成功后由 _send_chunked 按段调用会话 renew（聊得火热）。
         """
         ctx_msg = msgs[-1]
         sid = ctx_msg["session_id"]
@@ -281,51 +314,40 @@ class PresenceManager:
             return False
 
     async def _reply_now(self, inbound: dict) -> None:
-        """唤醒即时回复：单条消息直接走 agent 循环。"""
-        if await self._safe_reply([inbound], passive=True):
-            self._renew_online()
-
-    async def _process_batch(self, msgs: list[dict]) -> None:
-        """在线批次：聚合多条消息一次决策。
-
-        平台硬限制：全量消息不能被动回复，主动消息每月仅 4 条/群——
-        在线聚合的普通消息只进上下文/记忆，不实际发送（真人"看到没回"也符合人设）；
-        含被动事件（@/C2C）的批次才走回复。
-        """
-        last = msgs[-1]
-        if not any(m.get("passive_ok") for m in msgs):
-            logger.debug("在线普通消息批次跳过回复（主动额度限制）: %d 条", len(msgs))
-            return
-        if await self._safe_reply(msgs, passive=True):
-            self._renew_online()
+        """唤醒即时回复：单条消息直接走 agent 循环（发送成功即续期）。"""
+        await self._safe_reply([inbound], passive=True)
 
     async def _process_backlog(self) -> None:
-        """上线积压处理：被动事件（@/C2C）且窗口内的单独被动回复，其余合并主动。
+        """兼容入口：遍历全部有积压的会话，逐个处理（保留给外部调用/验证脚本）。"""
+        for sid in self._iter_pending_sessions():
+            st = self._state_of(sid)
+            if st.state == "online":
+                await self._process_backlog_sid(sid)
+
+    async def _process_backlog_sid(self, sid: str) -> None:
+        """上线积压处理（单会话）：被动事件（@/C2C）且窗口内的单独被动回复，其余合并主动。
 
         平台硬限制：仅 @本机器人事件 / C2C 事件消息可用被动回复（带 msg_id+event_id）；
         全量消息（含问句、普通消息）的 event_id 不能用于被动回复（40034027），
         一律主动发送。主动消息额度：每月 4 条/群，故其余消息按 batch_size 合并省额度。
         """
-        sessions = {}
-        for sid in self._iter_pending_sessions():
-            sessions[sid] = self._pending_of(sid)
-        for sid, pend in sessions.items():
-            if not pend:
-                continue
-            # 仅可被动事件（@/C2C）消息可被动；窗口内单独回，过窗并入主动合并
-            at_msgs = [m for m in pend if m.get("passive_ok")]
-            rest = [m for m in pend if not m.get("passive_ok")]
-            fresh, stale = [], []
-            for m in at_msgs:
-                (fresh if self._is_fresh(m) else stale).append(m)
-            for m in fresh:
-                await self._safe_reply([m], passive=True)
-            if stale:
-                rest = stale + rest
-            if rest:
-                for i in range(0, len(rest), self.b.get("batch_size", 100)):
-                    chunk = rest[i : i + self.b.get("batch_size", 100)]
-                    await self._safe_reply(chunk, passive=False)
+        pend = self._pending_of(sid)
+        if not pend:
+            return
+        # 仅可被动事件（@/C2C）消息可被动；窗口内单独回，过窗并入主动合并
+        at_msgs = [m for m in pend if m.get("passive_ok")]
+        rest = [m for m in pend if not m.get("passive_ok")]
+        fresh, stale = [], []
+        for m in at_msgs:
+            (fresh if self._is_fresh(m) else stale).append(m)
+        for m in fresh:
+            await self._safe_reply([m], passive=True)
+        if stale:
+            rest = stale + rest
+        if rest:
+            for i in range(0, len(rest), self.b.get("batch_size", 100)):
+                chunk = rest[i : i + self.b.get("batch_size", 100)]
+                await self._safe_reply(chunk, passive=False)
 
     def _is_fresh(self, m: dict, window_sec: int = 300) -> bool:
         """消息是否仍在被动回复窗口内（入库时间距今 ≤ window_sec）。"""
@@ -463,6 +485,10 @@ class PresenceManager:
                         logger.info("QQ 已受理(降级主动) seq=%d resp_id=%s ts=%s", seq, rid, ts)
                 else:
                     raise
+            # 每发送一条消息：会话在线时长 +renew_per_reply_sec（聊得火热）
+            st = self._states.get(sid)
+            if st is not None:
+                st.renew()
             if i < len(segments) - 1:
                 await asyncio.sleep(gap)
         self._recent_reply_ts = time.monotonic()
@@ -471,23 +497,97 @@ class PresenceManager:
     # ---------- 面板状态 ----------
 
     def status(self) -> dict:
+        """聚合各会话状态，供 Web 面板展示。"""
         now = time.monotonic()
-        if self.state == "online":
-            remaining = max(0.0, self._online_deadline - now)
-            next_event = "离线倒计时"
-        else:
-            remaining = max(0.0, self._next_online - now)
-            next_event = "上线倒计时"
+        sessions = []
+        for sid, st in self._states.items():
+            if st.state == "online":
+                remaining = max(0.0, st._online_deadline - now)
+                next_event = "离线倒计时"
+            else:
+                remaining = max(0.0, st._next_online - now)
+                next_event = "上线倒计时"
+            sessions.append({
+                "sid": sid,
+                "label": self._session_label(sid),
+                "state": st.state,
+                "next_event": next_event,
+                "remaining_sec": round(remaining, 1),
+                "debounce_count": len(st.debounce),
+            })
+        sessions.sort(key=lambda s: (s["state"] != "online", s["sid"]))
+        online = sum(1 for s in sessions if s["state"] == "online")
+        # 顶层聚合字段（兼容旧前端）：优先第一个在线会话的倒计时，否则第一个会话
+        head = next((s for s in sessions if s["state"] == "online"), sessions[0] if sessions else None)
         return {
-            "state": self.state,
-            "next_event": next_event,
-            "remaining_sec": round(remaining, 1),
+            "state": "online" if online else "offline",  # 任一在线即 online
+            "online_sessions": online,
+            "sessions": sessions,
+            "next_event": head["next_event"] if head else "—",
+            "remaining_sec": head["remaining_sec"] if head else 0,
+            "debounce_count": sum(s["debounce_count"] for s in sessions),
             "pending_count": self.storage.count_pending(),
-            "debounce_count": len(self._debounce),
             "online_duration_sec": self.p.get("online_duration_sec"),
             "offline_interval_sec": self.p.get("offline_interval_sec"),
             "renew_on_reply": self.p.get("renew_on_reply"),
+            "renew_per_reply_sec": self.p.get("renew_per_reply_sec"),
             "debounce_sec": self.r.get("debounce_sec"),
             "backlog_max_scan": self.b.get("max_scan_messages"),
             "backlog_batch_size": self.b.get("batch_size"),
         }
+
+
+class _SessionState:
+    """单会话 在线/离线 状态机。
+
+    离线：普通消息积压；收到@或倒计时结束 → 上线（先处理本会话积压）。
+    在线：消息进 5s 抖动窗口；每发送一条消息续期 +renew_per_reply_sec；倒计时结束下线。
+    """
+
+    def __init__(self, pm: "PresenceManager", sid: str):
+        self.pm = pm
+        self.sid = sid
+        self.label = pm._session_label(sid)
+        self.state = "offline"
+        self._online_deadline = 0.0
+        self._next_online = time.monotonic() + float(pm.p.get("offline_interval_sec", 600))
+        self.debounce: list[dict] = []
+        self._debounce_task: asyncio.Task | None = None
+
+    @property
+    def _p(self) -> dict:
+        return self.pm.p
+
+    async def go_online(self, reason: str) -> None:
+        if self.state == "online":
+            return
+        self.state = "online"
+        self._online_deadline = time.monotonic() + float(self._p.get("online_duration_sec", 60))
+        logger.info("会话%s 上线（%s），在线 %.0fs，先处理积压", self.label, reason,
+                    self._p.get("online_duration_sec", 60))
+        # 上线先处理本会话积压（唤醒即时回复的那条已标记 replied，不会重复）
+        await self.pm._process_backlog_sid(self.sid)
+
+    async def go_offline(self, reason: str) -> None:
+        if self.state == "offline":
+            return
+        self.state = "offline"
+        self._next_online = time.monotonic() + float(self._p.get("offline_interval_sec", 600))
+        # 清理本会话未发送的抖动批次（下线即停，避免残留任务/消息堆积）
+        if self._debounce_task:
+            self._debounce_task.cancel()
+            try:
+                await self._debounce_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._debounce_task = None
+        self.debounce = []
+        logger.info("会话%s 下线（%s），%.0fs 后再次上线", self.label, reason,
+                    self._p.get("offline_interval_sec", 600))
+
+    def renew(self) -> None:
+        """每发送一条消息：在线时长 +renew_per_reply_sec（聊得火热）。"""
+        if not self._p.get("renew_on_reply", True):
+            return
+        inc = float(self._p.get("renew_per_reply_sec", 30))
+        self._online_deadline = max(self._online_deadline, time.monotonic()) + inc
