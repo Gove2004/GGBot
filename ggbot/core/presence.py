@@ -17,7 +17,7 @@ import threading
 import time
 from datetime import datetime
 
-from ggbot.core.tools import NO_REPLY, agent_loop
+from ggbot.tool import NO_REPLY, agent_loop
 
 logger = logging.getLogger("ggbot.presence")
 
@@ -36,9 +36,11 @@ SYSTEM_TEMPLATE = """你是群聊里的一个真实的人，昵称“{name}”�
 {rules}
 
 【行为准则】
-1. 用口语化短句聊天，一条消息别超过 40 字；需要说多句时用空行隔开（会逐条发送）。
-2. 不要每条消息都回：只有值得接话时才回复；觉得没必要回就只输出 {no_reply}。
-3. 被@时必须回应。
+1. 用口语化短句聊天，一条消息别超过 40 字；需要说多句时多次调用 send_text 或一条带换行。
+2. 你的纯文本输出不会发送给任何人，会被忽略——要行动必须调用工具：
+   - 想说话 → send_text（回复）/ seed_message（主动开场、挑起话题）；
+   - 不想回、没话可说 → end_call 结束本轮（或什么都不调用，等同 end_call）。
+3. 被@时必须回应（调用 send_text）。
 4. 群友发来的图片/语音/视频，其下载地址会标注在消息里，你可以转发（send_image 等工具）或点评。
 5. 想不起的事用 memory_search 回忆；值得长期记住的用 memory_write。
 6. 说话风格、人设随相处自然进化，必要时用 persona_update 微调自己。
@@ -275,46 +277,37 @@ class PresenceManager:
         return _derive_target(sid)
 
     async def _safe_reply(self, msgs: list[dict], passive: bool, renew_sid: str | None = None) -> bool:
-        """生成并发送回复；任何失败只标记状态，不向上抛（避免单条失效群打崩整轮积压）。
+        """工具制回合：LLM 通过 send_text/seed_message 等工具实际发送消息。
 
-        状态：成功 replied / 生成失败或发送失败 failed / 无需回复 skipped。
-        发送通道：batch 中存在可被动消息（@/C2C 事件）时，绑定其中最后一条走被动回复
-        （msg_id+event_id，不耗主动额度）；纯普通消息才走主动合并（额度每月 4 条/群）。
-        续期：发送成功后由 _send_chunked 按段调用会话 renew（聊得火热）。
+        状态判定：
+        - 回合内工具实际发送成功（ctx.sent_any）→ replied（续期）；
+        - 发送工具报错（ctx.send_error）→ failed；
+        - 未调用工具 / end_call / 无话可说 → skipped。
+        任何失败只标记状态，不向上抛（避免单条失效群打崩整轮积压）。
         """
         ctx_msg = msgs[-1]
         sid = ctx_msg["session_id"]
         ids = [m["msg_id"] for m in msgs if m.get("msg_id")]
-        pv = [m for m in msgs if m.get("passive_ok")]
-        send_msg = pv[-1] if (passive and pv) else ctx_msg
-        can_passive = bool(passive and pv)
 
         def _mark(status: str) -> None:
             self.storage.mark_pending_processed(ids, status)
 
+        ctx: dict = {}
         try:
-            reply = await self._agent_loop(sid, msgs, ctx_msg)
+            await self._agent_loop(sid, msgs, ctx_msg, ctx)
         except Exception as e:  # noqa: BLE001
             logger.warning("回复生成失败 n=%d sid=%s: %s", len(msgs), sid, e)
             _mark("failed")
             return False
-        if not reply or reply == NO_REPLY:
-            _mark("skipped")
-            return False
-        try:
-            sent = await self._send_chunked(send_msg, reply, passive=can_passive)
-            if not sent:
-                # 回复文本切分后为空（如全空白）：视为无需发送
-                _mark("skipped")
-                return False
+        if ctx.get("sent_any"):
             _mark("replied")
             return True
-        except Exception as e:  # noqa: BLE001
-            target = send_msg.get("target") or self._target_of(sid)[0]
-            scene = send_msg.get("scene") or self._target_of(sid)[1]
-            logger.warning("回复发送失败 n=%d target=%s scene=%s: %s", len(msgs), target, scene, e)
+        if ctx.get("send_error"):
+            logger.warning("回复发送失败 n=%d sid=%s: %s", len(msgs), sid, ctx["send_error"])
             _mark("failed")
             return False
+        _mark("skipped")
+        return False
 
     async def _reply_now(self, inbound: dict) -> None:
         """唤醒即时回复：单条消息直接走 agent 循环（发送成功即续期）。"""
@@ -376,7 +369,8 @@ class PresenceManager:
 
     # ---------- 上下文组装 ----------
 
-    async def _agent_loop(self, sid: str, msgs: list[dict], ctx_msg: dict) -> str:
+    async def _agent_loop(self, sid: str, msgs: list[dict], ctx_msg: dict, ctx: dict | None = None) -> str:
+        ctx = ctx if ctx is not None else {}
         system = await self._build_system(sid, msgs[-1] if msgs else ctx_msg)
         history = self.storage.get_recent_messages(sid, self._history_limit)
         history_msgs = []
@@ -408,13 +402,12 @@ class PresenceManager:
             ]
             logger.info("上下文超限，已压缩历史为摘要（%s tokens）", total)
 
-        ctx = {
-            "target": ctx_msg.get("target") or self._target_of(sid)[0],
-            "scene": ctx_msg.get("scene") or self._target_of(sid)[1],
-            "msg_id": ctx_msg.get("msg_id"),
-            "msg_seq": 1,
-            "session_id": sid,
-        }
+        ctx["target"] = ctx_msg.get("target") or self._target_of(sid)[0]
+        ctx["scene"] = ctx_msg.get("scene") or self._target_of(sid)[1]
+        ctx["msg_id"] = ctx_msg.get("msg_id")
+        ctx["event_id"] = ctx_msg.get("event_id")  # 工具回复携带，可走被动通道不耗主动额度
+        ctx["msg_seq"] = 1
+        ctx["session_id"] = sid
         return await agent_loop(self.llm, self.executor, messages, ctx)
 
     async def _build_system(self, sid: str, ctx_msg: dict) -> str:

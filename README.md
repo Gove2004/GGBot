@@ -26,7 +26,7 @@ GGBot/
 │   │   ├── config.py     #   配置加载（纯配置文件驱动 + Web 热更新）
 │   │   ├── storage.py    #   SQLite（会话/消息/记忆/规则/人设版本）
 │   │   ├── presence.py   #   在线/离线状态机（会话级唤醒/积压分流/抖动/分段发送）
-│   │   └── tools.py      #   8 个 function calling 工具 + agent 循环
+│   │   └── tool/__init__.py #   10 个 function calling 工具 + agent 循环（ggbot.tool）
 │   ├── llm/
 │   │   ├── llm.py        #   DeepSeek 请求装置
 │   │   └── memory.py     #   向量记忆（SiliconFlow Embedding + 余弦检索 + 整理）
@@ -68,7 +68,7 @@ flowchart LR
 
 数据流：QQ 事件 → 网关归一化 → 上下文装置组织会话 → AI 装置请求 DeepSeek → 回复回传网关 → QQ；全链路事件同步推送到 Web 面板。
 
-**核心循环**：`人设（内核+动态）+ 技能（8 工具）+ 上下文（群窗口≤128k，超限摘要压缩） → 回复`。工具层（可调用动作）通过 DeepSeek function calling 实现；认知层（人设进化、记忆沉淀）由 AI 通过工具触发；基础设施层为 SQLite 持久化。人设双层：内核人设 owner 定义 AI 只读，动态人设 AI 可追加/整理，版本化带 diff 可回滚。
+**核心循环**：`人设（内核+动态）+ 技能（10 工具）+ 上下文（群窗口≤128k，超限摘要压缩） → 工具行动`。工具层（可调用动作）通过 DeepSeek function calling 实现；**回合语义：LLM 纯文本输出不发送、会被忽略，必须通过工具行动——send_text/seed_message 发送消息、end_call（或未调用任何工具）结束回合**；认知层（人设进化、记忆沉淀）由 AI 通过工具触发；基础设施层为 SQLite 持久化。人设双层：内核人设 owner 定义 AI 只读，动态人设 AI 可追加/整理，版本化带 diff 可回滚。
 
 ## 快速开始
 
