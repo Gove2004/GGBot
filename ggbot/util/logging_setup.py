@@ -5,7 +5,7 @@
   - 会话列优先取 logger extra={"session": ...}（业务代码显式传入，8 位 id）；
     未传时从内容兜底识别（群=xx / 会话X），否则系统00000000
 - 等级：root 按配置设置（默认 INFO，可调 DEBUG/WARNING/ERROR）；set_level 热切换
-- 第三方库（botpy/openai/httpx/uvicorn）默认 WARNING，避免刷屏
+- DEBUG 用于业务排查；第三方库（botpy/openai/httpx/httpcore2/uvicorn）固定 WARNING，避免连接/报文刷屏
 """
 
 from __future__ import annotations
@@ -19,9 +19,10 @@ from ggbot.util.session import SYSTEM_LABEL
 
 FMT = "%(asctime)s | %(levelname)-5s | %(name)-15s | %(session)-10s | %(message)s"
 
-# 第三方库降噪（默认等级）
+# 第三方库降噪（它们只在自身 logger 上输出 DEBUG，改代码管不到，只能限等级）
 NOISY_LOGGERS = (
-    "botpy", "openai", "httpx", "httpx2", "httpcore", "uvicorn", "uvicorn.error", "uvicorn.access", "asyncio",
+    "botpy", "openai", "httpx", "httpx2", "httpcore", "httpcore2", "h11", "hpack",
+    "urllib3", "truststore", "anyio", "uvicorn", "uvicorn.error", "uvicorn.access", "asyncio",
 )
 
 

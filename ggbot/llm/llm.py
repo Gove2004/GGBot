@@ -58,13 +58,6 @@ class DeepSeekClient:
         for attempt in range(retries):
             try:
                 resp = self.client.chat.completions.create(**kwargs)
-                msg = resp.choices[0].message
-                if msg.tool_calls:
-                    logger.debug(
-                        "LLM 响应: tool_calls=%s", [tc.function.name for tc in msg.tool_calls]
-                    )
-                else:
-                    logger.debug("LLM 响应: %.80r", msg.content or "")
                 return resp
             except Exception as e:  # noqa: BLE001
                 last_err = e

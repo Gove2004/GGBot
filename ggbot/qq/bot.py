@@ -93,7 +93,6 @@ class QQBot(botpy.Client):
 
             state.parse_group_message_create = types.MethodType(parse_group_message_create, state)
             state.parsers["group_message_create"] = state.parse_group_message_create
-            logger.debug("已注册 group_message_create（群全量消息）事件解析")
         except Exception as e:  # noqa: BLE001
             logger.warning("注册 group_message_create 解析失败: %s", e)
 
@@ -123,13 +122,6 @@ class QQBot(botpy.Client):
         if inbound is None:
             logger.warning("消息归一化失败，跳过 id=%s", msg_id)
             return
-        sid = session_label(inbound["key"])
-        logger.debug(
-            "归一化 [%s] scene=%s target=%s at=%s passive=%s att=%d content=%.60r",
-            oid8(inbound["sender"]), inbound["scene"], oid8(inbound["target"]),
-            inbound["is_at"], inbound["passive_ok"], len(inbound["attachments"] or []),
-            inbound["content"], extra={"session": sid},
-        )
         if self.presence:
             await self.presence.handle_message(inbound)
         else:
@@ -303,9 +295,6 @@ class QQBot(botpy.Client):
     async def send_text(self, target: str, content: str, scene: str, msg_id: str | None = None,
                         msg_seq: int = 1, event_id: str | None = None):
         """发送文本。携带 msg_id 为被动回复（msg_seq 递增支持同一消息多次回复，event_id 为前置事件 ID）。"""
-        logger.debug("send_text target=%s msg_id=%s seq=%d content=%.60r",
-                     oid8(target), msg_id, msg_seq, content,
-                     extra={"session": session_label(f"{scene}:{target}")})
         if scene == "group":
             return await self.api.post_group_message(
                 group_openid=target, msg_type=0, content=content,

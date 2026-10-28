@@ -51,9 +51,6 @@ class MemoryStore:
                 rows = sorted(resp.data, key=lambda d: d.index)
                 if not rows:
                     raise RuntimeError("embedding 返回为空")
-                logger.debug(
-                    "embedding 请求 %d 条，维度 %d (模型 %s)", len(texts), len(rows[0].embedding), self.model
-                )
                 return [np.array(r.embedding, dtype=np.float32) for r in rows]
             except Exception as e:  # noqa: BLE001
                 last_err = e

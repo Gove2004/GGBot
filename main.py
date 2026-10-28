@@ -118,7 +118,6 @@ async def main(cfg: Config | None = None) -> None:
         web_task = asyncio.create_task(start_web(cfg, storage, memory, presence))
 
     try:
-        log.debug("连接 QQ gateway（appid=%s）…", cfg.qq.get("appid"))
         await bot.start(cfg.qq["appid"], cfg.qq["secret"])
     finally:
         await presence.stop()

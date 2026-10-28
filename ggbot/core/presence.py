@@ -230,7 +230,6 @@ class PresenceManager:
         st.touch()
         if st.state == "offline":
             if inbound.get("is_at") and self.p.get("wake_on_at_message", True):
-                logger.debug("收到@，立即唤醒本会话", extra={"session": st.label})
                 # 先读入离线积压（不含本条），让本次回复能看到期间发生了什么；
                 # 旧消息只标记 seen 不回复，本条@仍走即时被动回复
                 self._read_backlog_sid(sid, exclude_msg_id=inbound.get("msg_id"))
@@ -242,8 +241,7 @@ class PresenceManager:
             return True
         # 在线：进入本会话 debounce 窗口聚合
         st.debounce.append(inbound)
-        logger.debug("在线入窗 msg=%s 窗口=%d", inbound["msg_id"], len(st.debounce),
-                     extra={"session": st.label})
+        logger.debug("在线入窗 窗口=%d", len(st.debounce), extra={"session": st.label})
         if st._debounce_task is None or st._debounce_task.done():
             st._debounce_task = asyncio.create_task(self._flush_debounce(st))
         return True

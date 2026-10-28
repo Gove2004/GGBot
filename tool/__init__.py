@@ -26,7 +26,11 @@ class ToolExecutor:
     def __init__(self, cfg, storage, memory, bot):
         self.rt = ToolRuntime(cfg, storage, memory, bot)
         self.registry = ToolRegistry(self.rt)
-        logger.debug("工具就绪: %s", ", ".join(self.registry.tools) or "（无）")
+        counts: dict[str, int] = {}
+        for t in self.registry.tools.values():
+            counts[t.category] = counts.get(t.category, 0) + 1
+        summary = " / ".join(f"{k} {v}" for k, v in sorted(counts.items()))
+        logger.debug("工具就绪: %d 个（%s）", len(self.registry.tools), summary or "无")
 
     @property
     def schemas(self) -> list[dict]:
@@ -47,8 +51,9 @@ class ToolExecutor:
             known = name in self.registry.tools
             return {"ok": False, "error": f"工具 {name} 未启用" if known else f"未知工具 {name}"}
         sid = session_label(ctx.get("session_id"))
-        logger.debug("工具 %s args=%s", name, json.dumps(args, ensure_ascii=False)[:200],
-                     extra={"session": sid})
+        if name not in ("send_text", "seed_message", "end_call"):
+            logger.debug("工具 %s args=%s", name, json.dumps(args, ensure_ascii=False)[:200],
+                         extra={"session": sid})
         try:
             return await tool.run(args, ctx)
         except Exception as e:  # noqa: BLE001
