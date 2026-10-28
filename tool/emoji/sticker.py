@@ -33,12 +33,13 @@ class _StickerBase(Tool):
     default_config = {
         "enabled": True,
         "max_per_turn": 1,
-        "min_interval_sec": 30,
+        "min_interval_sec": 10,
         "max_user_stickers": 200,
     }
     prompt_hint = (
-        "表情包要有节制：一次回复最多一张，别刷屏；对方说正事时不要用表情打岔。"
-        "只有用户明确投喂并同意收藏时才能调用 sticker_save，不要收藏群友随手发的图。"
+        "情绪类回复优先用表情：对方在笑、吐槽、无语、卖萌、道谢、打招呼，或你想表达语气时，"
+        "先 send_sticker 再补一句文字（同一轮可一起调用），比干打字自然；一次最多一张，别刷屏。"
+        "对方说正事时不要用表情打岔。只有用户明确投喂并同意收藏时才能调用 sticker_save。"
     )
 
     def __init__(self, rt):
@@ -109,9 +110,10 @@ class _StickerBase(Tool):
 class SendSticker(_StickerBase):
     name = "send_sticker"
     description = (
-        "从本地表情包素材库挑一张合适的图发送。mood 用一两个词描述此刻想表达的情绪/场景"
-        "（如 开心、无语、委屈、期待、惊讶、卖萌、吐槽、盯人、卖惨、夸赞），"
-        "系统会按含义索引自动挑图；也可用 name 指定素材文件名"
+        "从本地表情包素材库挑一张合适的图发送，用来代替文字表达情绪。"
+        "mood 用一两个词描述此刻想表达的情绪/场景（如 开心、无语、委屈、期待、惊讶、卖萌、"
+        "吐槽、盯人、卖惨、夸赞、道谢、打招呼），系统会按含义索引自动挑图；"
+        "也可用 name 指定素材文件名。一次回复最多一张"
     )
     parameters = {
         "type": "object",
@@ -165,6 +167,7 @@ class StickerList(_StickerBase):
     name = "sticker_list"
     config_owner = False
     toggleable = False
+    prompt_hint = ""
     description = "查看表情库中与情绪/场景匹配的素材（最多返回 10 条），用于了解有哪些图可用"
     parameters = {
         "type": "object",
@@ -199,6 +202,7 @@ class StickerSave(_StickerBase):
     name = "sticker_save"
     config_owner = False
     toggleable = False
+    prompt_hint = ""
     description = (
         "把用户明确投喂并同意收藏的图片存进表情库（仅限 temp 目录下的图片路径），"
         "同时记录含义与适用场景。群友随手发的图未经同意不要收藏"

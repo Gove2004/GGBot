@@ -2,8 +2,8 @@
 
 一切能力都是 Tool：插件按能力域放在项目根 tool/{core,memory,emoji,audio,media,mail}/，
 启动时自动发现并按配置挂载 schema。每个 toolset 目录自包含代码、config.json 与持久化数据。
-回合语义：优先通过工具行动——send_text 发送消息、end_call 结束本轮（或未调用任何工具时
-默认视为 end_call）；模型无视协议直接回文本且本轮尚未发送时，自动按 send_text 兜底。
+回合语义：优先通过工具行动——send_text 发送消息；未调用任何工具即本轮不回复。
+模型无视协议直接回文本且本轮尚未发送时，自动按 send_text 兜底。
 """
 
 from __future__ import annotations
@@ -66,8 +66,7 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
 
     回合结束条件（返回 NO_REPLY，调用方不会把文本当回复发送）：
     - LLM 未调用工具但有文本，且本轮尚未发送过 → 按 send_text 兜底发送；
-    - LLM 未调用工具且无文本（或已有发送）→ 默认 end_call，文本忽略；
-    - LLM 显式调用 end_call → 立即结束；
+    - LLM 未调用工具且无文本（或已有发送）→ 结束本轮，文本忽略；
     - 达到 max_rounds。
     回复内容优先由工具发送（send_text / send_image 等），不依赖返回文本。
     """
@@ -89,7 +88,7 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
             else:
                 logger.debug("agent 未调用工具，结束本轮")
             return NO_REPLY
-        names = [tc.function.name for tc in calls]
+        logger.debug("agent 工具调用: %s", ", ".join(tc.function.name for tc in calls))
         history.append({"role": "assistant", "content": msg.content or "", "tool_calls": [
             {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
             for tc in calls
@@ -105,8 +104,5 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
                 "tool_call_id": tc.id,
                 "content": json.dumps(result, ensure_ascii=False),
             })
-        if "end_call" in names:
-            logger.debug("agent 显式 end_call 结束本轮")
-            return NO_REPLY
     # 工具循环超限：兜底结束（不回复）
     return NO_REPLY

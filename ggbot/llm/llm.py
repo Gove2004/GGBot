@@ -50,7 +50,7 @@ class DeepSeekClient:
     def chat(self, messages: list, tools=None, tool_choice=None, retries: int = 3):
         """单次补全调用。返回 openai response 对象。"""
         kwargs = self._kwargs(messages, tools, tool_choice)
-        logger.debug("LLM 请求 tokens ≈ %d", self.estimate_tokens(str(messages)))
+        logger.debug("LLM 请求 tokens ≈ %d", self.estimate_messages_tokens(messages))
         last_err: Exception | None = None
         for attempt in range(retries):
             try:
@@ -74,6 +74,10 @@ class DeepSeekClient:
         cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
         other = len(text) - cjk
         return int(cjk * 1.0 + other / 4.0) + 8
+
+    def estimate_messages_tokens(self, messages: list) -> int:
+        """按消息正文估算请求 tokens；上下文预算与请求日志共用同一口径。"""
+        return sum(self.estimate_tokens(m.get("content") or "") for m in messages)
 
     def summarize(self, text: str, max_chars: int = 600) -> str:
         """用 LLM 压缩一段文本（用于上下文窗口超限时的历史摘要）。"""

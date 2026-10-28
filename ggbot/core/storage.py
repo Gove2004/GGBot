@@ -264,6 +264,17 @@ class Storage:
             ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
+    def list_pending_ids(self, session_id: str, exclude_msg_id: str | None = None) -> list[str]:
+        """本会话全部待处理消息的 msg_id（用于按上限读入后统一置 seen）。"""
+        sql = ("SELECT msg_id FROM messages WHERE session_id=? AND status='pending' "
+               "AND role='user' AND msg_id IS NOT NULL")
+        params: list[str] = [session_id]
+        if exclude_msg_id:
+            sql += " AND msg_id<>?"
+            params.append(exclude_msg_id)
+        with self._lock, self._conn() as c:
+            return [r["msg_id"] for r in c.execute(sql, params).fetchall()]
+
     def mark_message_status(self, msg_id: str, status: str) -> None:
         with self._lock, self._conn() as c:
             c.execute("UPDATE messages SET status=? WHERE msg_id=?", (status, msg_id))

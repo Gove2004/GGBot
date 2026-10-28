@@ -11,7 +11,7 @@ class MemorySearch(Tool):
     name = "memory_search"
     description = (
         "在长期记忆中按语义检索，返回与 query 相关的记忆条目。"
-        "用于回忆关于某个群友、某件事、某个话题的过往信息"
+        "想不起某个群友、某件事、某个话题的细节时先用它查，不要凭空猜"
     )
     parameters = {
         "type": "object",
@@ -21,6 +21,7 @@ class MemorySearch(Tool):
         },
         "required": ["query"],
     }
+    prompt_hint = "遇到“你还记得吗”“上次说的那个”或想不起某人某事时，先 memory_search 再回答。"
 
     async def run(self, args: dict, ctx: dict) -> dict:
         query = str(args.get("query") or "").strip()
@@ -36,17 +37,19 @@ class MemorySearch(Tool):
 class MemoryWrite(Tool):
     name = "memory_write"
     description = (
-        "把值得长期记住的信息写入记忆库（例如某人的偏好、约定、重要事件）。"
-        "只记重要且长期有用的内容，不要记琐碎对话"
+        "把值得长期记住的信息写入记忆库（例如某人的叫法、偏好、脾气、约定、重要日子、最近在忙的事）。"
+        "内容要自带主语、能独立看懂；不要记琐碎寒暄。"
+        "对方提到关于自己的新信息、或让你记住什么时，主动写入，不用等对方提醒"
     )
     parameters = {
         "type": "object",
         "properties": {
-            "content": {"type": "string", "description": "要记住的内容，用一句话完整表述"},
+            "content": {"type": "string", "description": "要记住的内容，一句话完整表述（带上是谁）"},
             "importance": {"type": "integer", "description": "重要度 1-5，默认 1"},
         },
         "required": ["content"],
     }
+    prompt_hint = "对方聊到自己的名字/喜好/近况/约定时，主动 memory_write；别只记在脑子里。"
 
     async def run(self, args: dict, ctx: dict) -> dict:
         content = to_str(args.get("content", "")).strip()

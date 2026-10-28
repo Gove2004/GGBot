@@ -16,6 +16,7 @@ class SendImage(Tool):
         "properties": {"source": {"type": "string", "description": "图片公网 URL 或本地文件路径"}},
         "required": ["source"],
     }
+    prompt_hint = "群友刚发的图片可以直接转发（用消息里的 url 或 local），也可以发本地存图。"
 
     async def run(self, args: dict, ctx: dict) -> dict:
         source = str(args.get("source") or "").strip()
@@ -32,6 +33,7 @@ class SendVideo(Tool):
         "properties": {"source": {"type": "string", "description": "视频公网 URL 或本地文件路径"}},
         "required": ["source"],
     }
+    prompt_hint = "群友刚发的视频可以直接转发（用消息里的 url），不要假装看过视频内容。"
 
     async def run(self, args: dict, ctx: dict) -> dict:
         source = str(args.get("source") or "").strip()

@@ -124,7 +124,7 @@ async def main(cfg: Config | None = None) -> None:
     log.info("记忆就绪: %s @ %s", memory.model, memory.base_url)
 
     llm = DeepSeekClient(cfg)
-    log.info("LLM就绪: %s @ %s", cfg.model, cfg.llm.get("base_url"))
+    log.info("LLM 就绪: %s @ %s", cfg.model, cfg.llm.get("base_url"))
 
     intents = botpy.Intents(public_messages=True, public_guild_messages=True, message_audit=True)
     bot = QQBot(cfg, presence=None, intents=intents)

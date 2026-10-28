@@ -17,7 +17,7 @@ GGBot/
 │   ├── config.json      # 全局配置（QQ 凭据 / DeepSeek / Embedding / 行为 / 存储 / Web；含密钥，gitignored）
 │   └── ggbot.db         # SQLite 持久化：会话/消息/记忆/规则（运行时生成，gitignored）
 ├── tool/                # Tool 自包含目录：每个 toolset = 代码 + config.json + 持久化数据（整目录可复制迁移）
-│   ├── core/            #   send_text / end_call
+│   ├── core/            #   send_text
 │   ├── memory/          #   memory_search / memory_write
 │   ├── emoji/           #   sticker.py + config.json + index.json + stickers/（内置素材）+ user/（用户投喂）
 │   ├── audio/           #   voice_clone.py + config.json（MiMo key）+ voice_ref.wav（参考音频）
@@ -42,7 +42,7 @@ GGBot/
 │   │   └── bot.py        #   QQ 网关（botpy 连接 / 事件解析 / 富媒体落地）
 │   ├── util/
 │   │   ├── logging_setup.py  # 日志系统（四列格式 / 文件轮转 / 面板 tail）
-│   │   ├── human.py          # 拟人化时序（抖动 / 阅读停顿 / 打字速度）
+│   │   ├── human.py          # 拟人化时序（上下线/续期时长抖动）
 │   │   ├── media.py          #   本地媒体 HMAC 签名 URL（/media/<exp>/<sig>/<rel>）
 │   │   └── session.py        # 会话显示标签（场景 + 8 位 openid）
 │   └── web/              # 控制面板
@@ -79,7 +79,7 @@ flowchart LR
 
 数据流：QQ 事件 → 网关归一化 → 上下文装置组织会话 → AI 装置请求 DeepSeek → 回复回传网关 → QQ；全链路事件同步推送到 Web 面板。
 
-**核心循环**：`Tool 插件（按配置动态挂载）+ 上下文（群窗口≤128k，超限摘要压缩）+ 相关记忆 → Tool 行动`。Tool 层通过 DeepSeek function calling 实现，插件在项目根 `tool/<分类>/` 下自动发现；**回合语义：优先通过 Tool 行动——send_text 发送消息、end_call（或未调用任何 Tool）结束回合；若模型无视协议直接回文本且本轮尚未发送，自动按 send_text 兜底发出，避免整轮静默**；认知状态只有记忆：AI 通过 `memory_write` 沉淀、`memory_search` 回忆，system prompt 只注入规则、各 Tool 自己挂载的提示与当前话题相关的 top-3 记忆（不设固定人设，避免上下文膨胀）。
+**核心循环**：`Tool 插件（按配置动态挂载）+ 上下文（最近 64 条 / 16k tokens，超限摘要压缩）+ 相关记忆 → Tool 行动`。Tool 层通过 DeepSeek function calling 实现，插件在项目根 `tool/<分类>/` 下自动发现；**回合语义：一切皆工具——send_text 发送消息，未调用任何 Tool 即本轮不回复；若模型无视协议直接回文本且本轮尚未发送，自动按 send_text 兜底发出，避免整轮静默**；认知状态只有记忆：AI 通过 `memory_write` 沉淀、`memory_search` 回忆，system prompt 注入「感觉」型人设、规则、各 Tool 自己挂载的提示与当前话题相关的 top-3 记忆（不写死具体身份/经历，避免上下文膨胀）。
 
 ## 快速开始
 
@@ -106,9 +106,9 @@ start.bat                    # Windows 前台（Ctrl+C 停止）
 ## 日志与 Web 运维
 
 - **日志文件**：只写 `temp/logs/ggbot.log`（RotatingFileHandler，5MB × 5 轮转；**每次启动以 `mode="w"` 清空重写**，不保留上次进程的日志；目录随 `storage.temp_dir` 自动创建；stderr 同时输出）。项目根目录不再产生 `botpy.log` / `logs/`——botpy 的文件 handler 已关闭（`bot_log=None, ext_handlers=False`）。格式 `时间 | 等级 | 会话 | 内容`——会话列统一为 `群聊xxxxxxxx` / `私聊xxxxxxxx` / `系统00000000`（8 位 openid），控制台、文件、Web 面板三处一致；DEBUG 只输出业务状态（入站 / 上下文 / LLM 请求 / 工具 / 发送 / 上下线），第三方库（botpy / openai / httpx / httpcore2 / uvicorn 等）固定 WARNING，不打印连接与报文细节
-- **启动日志**：仅六条就绪信息——`日志就绪`（相对路径 + 等级）/ `存储就绪`（相对路径）/ `记忆就绪`（模型 + 地址）/ `LLM就绪`（模型 + 地址）/ `Web就绪`（地址）/ `QQBot就绪`（gateway）；收发消息只保留一条入站日志（`私聊[昵称/54019C24] 内容` / `群@[昵称/54019C24] 内容`；无昵称时只显示 8 位 id，引用消息显示为 `[引用 被引内容] 正文`；纯富媒体消息（图片/语音/视频/文件）没有文本时显示 `[图片 cat.gif]` / `[语音]` / `[视频]` / `[文件 报告.pdf]` 等标记，不会出现空内容）和一条发送内容；上下文与 token 统计为 `agent 上下文: history = 49 / 50 tokens ≈ 2234 / 100000`、`LLM 请求 tokens ≈ 1617`、`LLM 响应 tokens ≈ 52`；上下线只打 `自然上线 预计在线 53s, 积压消息 0 / 100 条` / `强制上线 …` / `下线 预计离线 438s`
+- **启动日志**：仅六条就绪信息——`日志就绪`（相对路径 + 等级）/ `存储就绪`（相对路径）/ `记忆就绪`（模型 + 地址）/ `LLM 就绪`（模型 + 地址）/ `Web 就绪`（地址）/ `Bot 就绪`（gateway）；收发消息只保留一条入站日志（`私聊[昵称/54019C24] 内容` / `群@[昵称/54019C24] 内容`；无昵称时只显示 8 位 id，引用消息显示为 `[引用 被引内容] 正文`；纯富媒体消息（图片/语音/视频/文件）没有文本时显示 `[图片 cat.gif]` / `[语音]` / `[视频]` / `[文件 报告.pdf]` 等标记，不会出现空内容）和一条发送内容；上下文与 token 统计为 `agent 上下文: history = 40 / 64 tokens ≈ 9000 / 16000`、`LLM 请求 tokens ≈ 9000`、`LLM 响应 tokens ≈ 52`（上下文日志与请求日志使用同一估算口径，不再重复计算 system 提示词）；上下线只打 `自然上线 预计在线 53s, 积压消息 0 / 128 条` / `强制上线 …` / `下线 预计离线 438s`
 - **等级控制**：`db/config.json → web.log_level`（默认 INFO）；面板保存设置即时热切换。`start.bat` / `start.sh` 默认带 `--log-level DEBUG`，直接 `python main.py` 则用配置值；项目不使用环境变量（Web 面板开关：`web.enable`）
-- **Web 面板**：深色玻璃拟态 + 响应式。桌面端侧栏可折叠为图标栏（78px，状态记忆在 localStorage；≤900px 改为抽屉）；仪表盘为 bento 布局——主卡显示运行状态 / 在线会话 / 待处理，右侧 6 个指标两列排布，下方图表与最近消息；会话与上下文改为左右分栏（左列表支持筛选与待处理角标、滚动位置保持，右侧详情含摘要、统计、消息气泡与单独清空）；消息流为时间线卡片（角色色点 / 会话标签 / 状态徽标）；日志改为等宽控制台（时间去色、等级 / 会话 / 内容四列，警告与错误行带底色，≤620px 隐藏会话列）；向量记忆（语义检索 / 写入 / 编辑 / 整理）、规则启停、工具（11 个 Tool 的启停与脱敏配置概览）、设置分组（LLM / 在线作息 / 拟人回复 / 积压读取与日志，白名单热更新并写回 config.json）
+- **Web 面板**：深色玻璃拟态 + 响应式。桌面端侧栏可折叠为图标栏（78px，状态记忆在 localStorage；≤900px 改为抽屉）；仪表盘为 bento 布局——主卡显示运行状态 / 在线会话 / 待处理，右侧 6 个指标两列排布，下方图表与最近消息；会话与上下文改为左右分栏（左列表支持筛选与待处理角标、滚动位置保持，右侧详情含摘要、统计、消息气泡与单独清空）；消息流为时间线卡片（角色色点 / 会话标签 / 状态徽标）；日志改为等宽控制台（时间去色、等级 / 会话 / 内容四列，警告与错误行带底色，≤620px 隐藏会话列）；向量记忆（语义检索 / 写入 / 编辑 / 整理）、规则启停、工具（10 个 Tool 的启停与脱敏配置概览）、设置分组（LLM / 在线作息 / 回复节奏 / 上下文与积压 / 日志，白名单热更新并写回 config.json）
 - **运维 CLI**：`python tools/manage.py stats|sessions|context|clear|reset-chat|memory ...`，可直接查看统计、导出会话上下文、清空单个会话、检索/增改/整理记忆（`--yes` 跳过确认）
 - **API**：登录 `POST /api/login`（HttpOnly Cookie，失败限流 8 次/60s）、`GET /api/auth`、`POST /api/logout`；业务 `GET /api/stats|sessions|messages|memories|rules|tools|config|logs`，`POST /api/config`（`[{"path": "a.b.c", "value": x}]` 批量，白名单 + 类型校验，越权拒绝）、`POST /api/tools/{name}/toggle`（共享配置的 Tool 返回 400）；`GET /api/config|tools` 密钥脱敏；`GET /media/{exp}/{sig}/{rel}` 为 QQ 提供签名媒体，不参与 Cookie 鉴权
 - **安全**：Cookie 鉴权（常量时间比较）、`/ws` 同源 + Cookie 校验、跨站写请求拦截、CSP / X-Frame-Options DENY / nosniff / no-store，FastAPI 文档端点关闭；公网部署建议再加 HTTPS 反向代理并设 `web.cookie_secure=true`
@@ -120,12 +120,11 @@ start.bat                    # Windows 前台（Ctrl+C 停止）
 | 在线/离线作息 | `presence.online_duration_sec`（默认 60）/ `offline_interval_sec`（默认 600） | 每会话独立：定时上线、在线一段时间后下线 |
 | @唤醒 | `presence.wake_on_at_message` | 离线被@（本会话）→ 先读入离线积压（不含本条），本会话上线并立即回复该条 |
 | 回复续期 | `presence.renew_on_reply` + `renew_per_reply_sec`（默认 30）/ `renew_max_sec`（默认 600） | 每成功回复一轮固定续期 30s（带抖动），单次封顶 600s；不随连聊轮数递增 |
-| 积压只读 | `backlog.max_scan_messages`（默认 1000） | 上线把离线 pending（≤上限）标记为 `seen` 读入上下文，**不回复、不触发 LLM**；下次回复时能看到期间发生了什么 |
+| 积压只读 | `backlog.max_scan_messages`（默认 128） | 上线把离线 pending（最多 128 条）标记为 `seen` 读入上下文，**不回复、不触发 LLM**；超出上限的旧消息同样置 seen（不读入），不会永远挂在 pending |
+| 在线批次 | `backlog.online_max_messages`（默认 16） | 在线抖动窗口最多保留 16 条，超出时最旧的转 `seen`，避免一次处理过大批次 |
 | 抖动聚合 | `reply.debounce_sec`（默认 5）/ `debounce_max_sec`（默认 10） | 在线消息进入 5–10s 随机抖动窗口聚合（每条新消息重新计时），LLM 选择性回复（非每条必回） |
 | 分段发送 | `reply.segment_gap_sec` | send_text 遇到换行自动拆成多条，按间隔逐条发送（msg_seq 递增） |
 | 作息抖动 | `presence.online_duration_jitter` / `offline_interval_jitter` / `renew_jitter` | 上下线时长、续期时长按 ±比例随机，避免机械整点；每会话首次上线时间也随机错开 |
-| 阅读停顿 | `reply.read_delay_min_sec` / `read_delay_max_sec` | 被动回复前随机"看一眼"停顿（仅被动且消息 ≤3 条时加，避免拖过 5 分钟窗口；默认 0.4–1.6s） |
-| 打字速度 | `reply.typing_chars_per_sec` / `typing_min_sec` / `typing_max_sec` / `typing_jitter` | 按文本长度估算打字耗时再发送（受最短/最长限制与随机抖动；默认 0 关闭） |
 
 > **会话隔离**：每个会话（每个群 / 每段私聊）是独立状态机——私聊被@只唤醒私聊会话，不会让群聊上线；A 群唤醒不影响 B 群；群聊积压只在本群上线时读入，不会跨群回复。离线倒计时/在线时长/抖动窗口均按会话独立计时。
 
@@ -135,12 +134,14 @@ start.bat                    # Windows 前台（Ctrl+C 停止）
 stateDiagram-v2
     [*] --> offline
     offline --> online: 收到@消息(唤醒) / 离线倒计时到期(默认600s)
-    offline --> offline: 普通消息入库积压(≤1000条)
+    offline --> offline: 普通消息入库积压(读入≤128条)
     online --> online: 积压标记seen读入上下文(不回复)→在线消息5-10s随机抖动聚合→选择性回复<br/>每成功回复一轮续期 +30s(封顶600s)
     online --> offline: 在线计时器到期(默认60s, 未续)
 ```
 
-**消息处理路径**：收到消息 → 归属会话 → 该会话离线？→ 入库标记 pending（不调 LLM）；若被@且 `wake_on_at_message` → 先把旧积压标记 `seen` 读入上下文，再**立即被动回复本条** → 本会话上线。定时上线：把本会话积压（≤1000）标记 `seen` 后**直接进入在线状态，不回复任何积压消息**（`seen` 历史会参与之后生成，所以 AI 知道离线期间聊了什么）。在线：5–10s 随机抖动窗口聚合 → 走 LLM 决策是否接话（@/私聊用被动回复，普通群消息用主动消息）→ 每成功回复一轮固定续期 30s（封顶 600s）。
+**消息处理路径**：收到消息 → 归属会话 → 该会话离线？→ 入库标记 pending（不调 LLM）；若被@且 `wake_on_at_message` → 先把旧积压标记 `seen` 读入上下文，再**立即被动回复本条** → 本会话上线。定时上线：把本会话积压（读入上限 128）标记 `seen` 后**直接进入在线状态，不回复任何积压消息**（`seen` 历史会参与之后生成，所以 AI 知道离线期间聊了什么）。在线：5–10s 随机抖动窗口聚合（最多 16 条）→ 走 LLM 决策是否接话（@/私聊用被动回复，普通群消息用主动消息）→ 每成功回复一轮固定续期 30s（封顶 600s）。
+
+> **上下文满了会怎样**：历史只取最近 64 条（更早的消息仍在库里，只是不进入本次请求）；当估算请求超过 16k tokens 时，从最旧的历史开始移出，交给 LLM 压缩进 `sessions.summary`（≤600 字），摘要随会话持久化并在之后每轮注入；`【本轮消息】` 始终完整保留，不会被截断。极端情况下会把历史全部压进摘要，只留下 system + 摘要 + 当前批次。
 
 > **平台发送通道**：只有 `GROUP_AT_MESSAGE_CREATE`（群@本机器人）与 `C2C_MSG_RECEIVE`（私聊）事件能用 `msg_id+event_id` 被动回复（5 分钟内至多 5 次，不占主动额度）；`GROUP_MESSAGE_CREATE`（群全量）事件只能主动发送（2026-06-22 起全量开放，群主需开启「机器人主动在群聊内发言」，20 条/分钟、1000 条/天）。代码按事件来源持久化 `passive_ok` 标记并据此选通道，另加 `proactive_per_minute`（默认 6）/`proactive_per_day`（默认 1000）本地闸门。
 
@@ -176,8 +177,7 @@ stateDiagram-v2
     "base_url": "https://api.deepseek.com", "api_key": "...", "model": "deepseek-flash",
     "request": { "thinking": "disabled", "reasoning_effort": "high", "temperature": 1.0,
                  "top_p": 1.0, "max_tokens": 2048, "stop": [], "stream": false },
-    "context": { "max_input_tokens": 128000, "max_history_messages": 50,
-                 "summary_threshold_tokens": 100000 }
+    "context": { "max_history_messages": 64, "summary_threshold_tokens": 16000 }
   },
   "embedding": { "provider": "siliconflow", "base_url": "https://api.siliconflow.cn/v1",
                  "model": "Qwen/Qwen3-Embedding-4B", "api_key": "...", "batch_size": 32 },
@@ -189,11 +189,8 @@ stateDiagram-v2
                   "renew_max_sec": 600,
                   "proactive_enabled": true, "proactive_per_minute": 6,
                   "proactive_per_day": 1000 },
-    "backlog": { "max_scan_messages": 1000 },
-    "reply": { "segment_gap_sec": 2, "debounce_sec": 5, "debounce_max_sec": 10,
-               "read_delay_min_sec": 0.4, "read_delay_max_sec": 1.6,
-               "typing_chars_per_sec": 10, "typing_min_sec": 0.4,
-               "typing_max_sec": 4.0, "typing_jitter": 0.25 }
+    "backlog": { "max_scan_messages": 128, "online_max_messages": 16 },
+    "reply": { "segment_gap_sec": 2, "debounce_sec": 5, "debounce_max_sec": 10 }
   },
   "storage": { "temp_dir": "temp", "db_path": "db/ggbot.db", "public_base_url": "",
                "temp_ttl_hours": 24, "download_video": false },
@@ -212,10 +209,11 @@ stateDiagram-v2
 
 `tool/base.py` 是插件基座；每个 **toolset 自包含**在项目根的 `tool/<分类>/` 下——代码、`config.json`、持久化数据（索引 / 素材 / 参考音频）同目录，整个文件夹可原样复制到另一台机器。启动时由 `ToolRegistry` 自动发现 `tool/` 的子包——每个模块暴露 `get_tools(rt)`，返回若干 `Tool` 实例，注册表按所在子包自动打上 `category`。新增能力 = 在某个分类下新增一个模块，无需改动注册表或提示词模板；新增分类 = 新建一个含插件模块的子包。
 
+提示词的「一切皆工具」部分会明确要求：说话用 `send_text`，情绪配表情、亲密场景可发语音、值得记住的事主动 `memory_write`；模型不调用任何工具就等于本轮不回复。各 Tool 的 `description` 与 `prompt_hint` 决定它会不会被调用，迁移旧工具时应按当前项目重写触发场景，而不是只保留功能描述。
+
 | 分类 | Tool | 作用 | 配置/数据（`tool/<分类>/`） |
 |---|---|---|---|
 | core | `send_text` | 发送一条聊天消息（回应、主动开场、分段接话都用它；一条一句，换行会自动拆成多条） | 无（首次停用才生成 config） |
-| core | `end_call` | 结束本回合 | 无 |
 | memory | `memory_search` / `memory_write` | 向量记忆检索 / 沉淀 | 无 |
 | emoji | `send_sticker` | 按情绪/场景从素材库挑图发送 | `config.json`、`index.json`、`stickers/`、`user/` |
 | emoji | `sticker_list` / `sticker_save` | 查看可用素材 / 收藏用户投喂的图 | 与 `send_sticker` 同组（不单独启停） |
@@ -269,7 +267,7 @@ stateDiagram-v2
 记忆分三层，各自独立持久化、独立清理：
 
 1. **会话消息（短期上下文）** — `messages` 表，用户消息与助手消息都落库。聊天发送工具（`send_text` 与 `send_media` 背后的图片/视频/语音/表情）成功后写入一条 `assistant` 行，状态 `sent`；用户消息按处理阶段标记 `pending`（未处理积压）→ `seen`（上线只读）/ `replied` / `skipped` / `failed`。组装上下文时**排除 `pending`**，当前批次单独放进 `【本轮消息】（只回应这里的内容）`，历史只作背景——避免模型逐条重答旧消息。
-2. **会话摘要** — `sessions.summary`。历史 + 系统提示超过 `summary_threshold_tokens`（默认 100k）时，调用 LLM 把历史压缩成摘要，旧消息从上下文移出但仍在库里；摘要随会话保存。
+2. **会话摘要** — `sessions.summary`。请求估算超过 `summary_threshold_tokens`（默认 16k）时，从最旧的历史开始移出并调用 LLM 增量压缩进摘要（≤600 字），旧消息仍在库里；摘要随会话保存并在之后每轮注入，避免重复摘要全部历史。
 3. **长期记忆（向量）** — `memories` 表，`content + embedding + importance + session_id`。AI 通过 `memory_write` 主动沉淀，`memory_search` 按语义回忆；system prompt 只注入与当前消息相关度 ≥0.35 的 top-3，作用域为「全局 + 本会话」。
 
 - **写入**：SiliconFlow `Qwen/Qwen3-Embedding-4B` 生成向量；同会话余弦 ≥0.95 视为重复，更新原条目而非新增；importance 1-5
@@ -298,7 +296,7 @@ stateDiagram-v2
 [PASS] storage_crud      # SQLite 会话/消息/记忆/规则 CRUD + 积压查询
 [PASS] memory_vector     # SiliconFlow embedding 真实调用 + 语义检索 + 去重/ tidy 合并
 [PASS] llm_chat          # DeepSeek deepseek-flash 真实调用（thinking=disabled 生效）
-[PASS] tools_schema      # 11 个 Tool 插件自动发现 + schema 校验 + 启用状态过滤
+[PASS] tools_schema      # 10 个 Tool 插件自动发现 + schema 校验 + 启用状态过滤
 [PASS] tool_layout       # 根目录 tool/ 按分类包自动发现（core/memory/emoji/audio/media/mail）+ 自包含数据目录 + config-less 工具 toggle 生效
 [PASS] assistant_persist # 发送成功后 assistant 消息入库；pending 不进历史；本轮消息独立标注（防逐条重答旧消息）
 [PASS] tool_plugin       # 插件配置隔离（send_email→tool/mail）、共享配置同组不可单独启停、/api/tools 密钥脱敏
@@ -311,9 +309,12 @@ stateDiagram-v2
 [PASS] voice_silk        # MiMo wav 24kHz/单声道 → pysilk 编码出 #!SILK_V3 头（207KB→9.5KB）
 [PASS] qq_face_clean     # QQ 表情富文本还原为 [表情:文字] + @标记剥离
 [PASS] tool_loop         # function calling 端到端：AI 调用 memory_write 真实入库
+[PASS] tool_choice       # 真实 LLM 触发率：笑→send_sticker、晚安/求安慰→send_voice_clone、自我介绍→memory_write、回忆→memory_search
 [PASS] config_read       # 纯配置文件驱动（无环境变量）+ temp/db 路径
 [PASS] logging_system    # 多等级写文件 + tail 等级过滤 + set_level 热切换；根目录不产生 botpy.log
-[PASS] presence_backlog  # 上线积压只读：pending→seen、零 LLM 调用/零发送；唤醒先读旧积压再回本条
+[PASS] presence_backlog  # 上线积压只读：pending→seen、零 LLM 调用/零发送；唤醒先读旧积压再回本条；读入上限 128、在线批次上限 16
+[PASS] context_limits    # 历史窗口 64、16k 预算下从最旧压缩进摘要并持久注入；上下文与请求 token 口径一致
+[PASS] system_prompt     # 默认提示词仅保留感觉与说话方式（无固定名字/经历），工具行动与主动记忆引导生效
 [PASS] presence_proactive # 在线普通消息可主动接话（不带 msg_id/event_id）、开关与每分钟/每日闸门、混合批次取被动锚点
 [PASS] renew_flat        # 每轮续期固定 30s（带抖动）、不随轮数递增、renew_max_sec 封顶
 [PASS] presence_fail     # 发送失败隔离（失效会话标记 failed，不中断其余会话积压）

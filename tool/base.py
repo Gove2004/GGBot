@@ -23,7 +23,6 @@ import re
 import threading
 from pathlib import Path
 
-from ggbot.util.human import typing_delay_sec
 from ggbot.util.session import session_label
 
 logger = logging.getLogger("ggbot.tools")
@@ -137,9 +136,6 @@ class ToolRuntime:
         gap = max(0.0, float(reply_cfg.get("segment_gap_sec", 2) or 0))
         sid = ctx.get("session_id")
         for i, seg in enumerate(segments):
-            think = typing_delay_sec(seg, reply_cfg)
-            if think > 0:
-                await asyncio.sleep(think)
             seq = ctx.get("msg_seq", 1)
             try:
                 await self.bot.send_text(

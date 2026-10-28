@@ -58,7 +58,7 @@ class Config:
 
     @property
     def context(self) -> dict:
-        """上下文预算：max_input_tokens / max_history_messages / summary_threshold_tokens。"""
+        """上下文预算：max_history_messages / summary_threshold_tokens。"""
         return self.llm.get("context", {})
 
     @property

@@ -115,13 +115,10 @@ ALLOWED_SETTINGS = [
     "behavior.reply.segment_gap_sec",
     "behavior.reply.debounce_sec",
     "behavior.reply.debounce_max_sec",
-    "behavior.reply.read_delay_min_sec",
-    "behavior.reply.read_delay_max_sec",
-    "behavior.reply.typing_chars_per_sec",
-    "behavior.reply.typing_min_sec",
-    "behavior.reply.typing_max_sec",
-    "behavior.reply.typing_jitter",
     "behavior.backlog.max_scan_messages",
+    "behavior.backlog.online_max_messages",
+    "deepseek.context.max_history_messages",
+    "deepseek.context.summary_threshold_tokens",
     "web.log_level",
 ]
 
@@ -647,5 +644,5 @@ async def start_web(cfg, storage, memory, presence) -> None:
             app, host=host, port=port, log_level="warning", access_log=False, server_header=False
         )
     )
-    logger.info("Web就绪: http://%s:%s", host, port)
+    logger.info("Web 就绪: http://%s:%s", host, port)
     await server.serve()

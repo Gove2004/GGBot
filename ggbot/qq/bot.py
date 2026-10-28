@@ -123,7 +123,7 @@ class QQBot(botpy.Client):
 
     async def on_ready(self) -> None:
         self._register_message_parsers()
-        logger.info("QQBot就绪: WebSocket gateway 已连接")
+        logger.info("Bot 就绪: WebSocket gateway 已连接")
 
     async def on_group_at_message_create(self, message: GroupMessage) -> None:
         # GROUP_AT_MESSAGE_CREATE：只有真正被@本机器人时触发（事件通道）
