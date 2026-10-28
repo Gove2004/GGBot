@@ -2,7 +2,8 @@
 
 - 输出：temp/logs/ggbot.log（RotatingFileHandler，5MB × 5 备份）+ stderr 控制台
 - 格式（所有日志统一）：`时间 | 等级 | 位置 | 会话 | 内容`
-  - 会话列自动识别：日志内容含 `会话X` / `群=xx` / `user=xx` / `target=xx` → 填该会话；否则 System
+  - 会话列优先取 logger extra={"session": ...}（业务代码显式传入，8 位 id）；
+    未传时从内容兜底识别（会话X / 群=xx / sender=xx），否则 System
 - 等级：root 按配置设置（默认 INFO，可调 DEBUG/WARNING/ERROR）；set_level 热切换
 - 第三方库（botpy/openai/httpx/uvicorn）默认 WARNING，避免刷屏
 """
@@ -14,7 +15,7 @@ import logging.handlers
 import re
 from pathlib import Path
 
-FMT = "%(asctime)s | %(levelname)-7s | %(name)s | %(session)s | %(message)s"
+FMT = "%(asctime)s | %(levelname)-5s | %(name)-15s | %(session)-10s | %(message)s"
 
 # 第三方库降噪（默认等级）
 NOISY_LOGGERS = (
@@ -23,30 +24,28 @@ NOISY_LOGGERS = (
 
 
 def extract_session(content: str) -> str:
-    """从日志内容提取会话标识（群名/用户/目标），提取不到归 System。"""
+    """从日志内容兜底提取会话标识（8 位 id），提取不到归 System。"""
     m = re.search(r"会话([^\s，,：:]+)", content)
     if m:
         return m.group(1)
     m = re.search(r"群=([^\s,]+)", content)
     if m:
-        return "群" + m.group(1)
-    m = re.search(r"user=([^\s,]+)", content)
+        return "群" + m.group(1)[:8]
+    m = re.search(r"(?:sender|user|target)=([^\s,]+)", content)
     if m:
-        return "用户" + m.group(1)
-    m = re.search(r"target=([^\s,]+)", content)
-    if m:
-        return m.group(1)[:12]
+        return m.group(1)[:8]
     return "System"
 
 
 class SessionFormatter(logging.Formatter):
-    """每条日志自动附加「会话」列：从消息内容提取，提取不到归 System。"""
+    """每条日志附加「会话」列：优先业务显式传入，其次从内容兜底提取。"""
 
     def format(self, record: logging.LogRecord) -> str:
-        try:
-            record.session = extract_session(record.getMessage())
-        except Exception:  # noqa: BLE001
-            record.session = "System"
+        if not getattr(record, "session", None):
+            try:
+                record.session = extract_session(record.getMessage())
+            except Exception:  # noqa: BLE001
+                record.session = "System"
         return super().format(record)
 
 

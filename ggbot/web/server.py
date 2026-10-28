@@ -1,7 +1,7 @@
 """Web 控制面板：FastAPI + WebSocket + 静态前端（ggbot/web/static）。
 
 前端与后端分离：ggbot/web/static/{index.html,style.css,app.js}，经 /static 托管，可独立修改热加载。
-功能：在线状态、消息流、记忆（向量检索/写入/整理）、规则管理、人设查看与回滚、配置热更新、日志查看。
+功能：在线状态、消息流、记忆（向量检索/写入/整理）、规则管理、配置热更新、日志查看。
 鉴权：config.web.token，所有 /api 请求需带 ?token= 或 X-Token 头。
 """
 
@@ -22,6 +22,11 @@ logger = logging.getLogger("ggbot.web")
 
 WEB_DIR = Path(__file__).resolve().parent / "static"
 
+# 五列日志：时间 | 等级 | 位置 | 会话 | 内容（等级/位置/会话按宽度右填充空格）
+LOG_LINE_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) \| (\w+)\s*\| ([\w.]+)\s*\| (.*?)\s*\| (.*)$"
+)
+
 
 class RuleIn(BaseModel):
     content: str
@@ -31,11 +36,6 @@ class RuleIn(BaseModel):
 class MemoryIn(BaseModel):
     content: str
     importance: int = 1
-
-
-class RollbackIn(BaseModel):
-    layer: str
-    version: int
 
 
 class SettingIn(BaseModel):
@@ -150,23 +150,6 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         storage.set_rule_active(rule_id, not row["active"])
         return {"ok": True}
 
-    @app.get("/api/persona")
-    async def persona(x_token: str | None = Header(default=None), token: str | None = Query(default=None)):
-        _auth(x_token, token)
-        def _latest(layer: str) -> dict:
-            versions = storage.list_persona_versions(layer, 1)
-            return {"content": storage.get_persona(layer), "version": versions[0]["version"] if versions else 0,
-                    "history": storage.list_persona_versions(layer, 10)}
-        return {"inner": _latest("inner"), "dynamic": _latest("dynamic")}
-
-    @app.post("/api/persona/rollback")
-    async def persona_rollback(body: RollbackIn, x_token: str | None = Header(default=None), token: str | None = Query(default=None)):
-        _auth(x_token, token)
-        content = storage.rollback_persona(body.layer, body.version)
-        if content is None:
-            raise HTTPException(status_code=404, detail="version not found")
-        return {"ok": True, "content": content}
-
     # ---------- 配置（Web 热更新） ----------
 
     @app.get("/api/config")
@@ -194,10 +177,6 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         return {"ok": True, "updated": updated, "config": mask_secrets(cfg.data)}
 
     # ---------- 日志查看 ----------
-
-    LOG_LINE_RE = re.compile(
-        r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) \| (\w+) \| ([\w.]+) \| (.*?) \| (.*)$"
-    )
 
     @app.get("/api/logs")
     async def get_logs(

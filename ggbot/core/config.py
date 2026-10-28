@@ -104,11 +104,6 @@ class Config:
         return p
 
     @property
-    def persona_path(self) -> Path:
-        """内核人设（owner 定义，AI 只读），位于 db/ 目录。"""
-        return BASE_DIR / "db" / "persona_core.md"
-
-    @property
     def logs_dir(self) -> Path:
         """日志目录：随 storage.temp_dir 走（temp/logs），目录自动创建。"""
         d = self.temp_dir / "logs"

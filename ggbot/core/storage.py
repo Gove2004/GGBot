@@ -1,4 +1,4 @@
-"""SQLite 持久化层：会话、消息、记忆、规则、人设版本。
+"""SQLite 持久化层：会话、消息、记忆、规则。
 
 全部落盘，重启不丢。线程安全：每个操作独立连接 + WAL。
 """
@@ -53,16 +53,6 @@ CREATE TABLE IF NOT EXISTS rules(
     active INTEGER DEFAULT 1,
     ts TEXT
 );
-CREATE TABLE IF NOT EXISTS persona(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    layer TEXT,
-    content TEXT,
-    version INTEGER,
-    operation TEXT,
-    diff TEXT,
-    ts TEXT,
-    source_session TEXT
-);
 """
 
 
@@ -94,8 +84,6 @@ class Storage:
         with self._conn() as c:
             c.executescript(SCHEMA)
             self._ensure_columns(c)
-        # 首次导入内核人设（db/persona_core.md），仅当 persona 表为空
-        self._seed_core_persona()
 
     def _ensure_columns(self, c: sqlite3.Connection) -> None:
         """旧库迁移：messages 表补齐 event_id / is_at 列。"""
@@ -125,32 +113,6 @@ class Storage:
                     pass
             self._open_conns.clear()
 
-    def _seed_core_persona(self) -> None:
-        """将 persona_core.md 导入内核人设层（AI 只读）。
-
-        与当前最新 inner 版本内容不一致时导入新版本（owner 改文件后重启即生效）。
-        """
-        from ggbot.core.config import BASE_DIR
-
-        core_file = BASE_DIR / "db" / "persona_core.md"
-        if not core_file.exists():
-            return
-        content = core_file.read_text(encoding="utf-8")
-        with self._lock, self._conn() as c:
-            latest = c.execute(
-                "SELECT content FROM persona WHERE layer='inner' ORDER BY version DESC LIMIT 1"
-            ).fetchone()
-            if latest is not None and latest["content"] == content:
-                return
-            version = c.execute(
-                "SELECT COALESCE(MAX(version),0) FROM persona WHERE layer='inner'"
-            ).fetchone()[0] + 1
-            c.execute(
-                "INSERT INTO persona(layer, content, version, operation, diff, ts, source_session) "
-                "VALUES(?,?,?,?,?,?,?)",
-                ("inner", content, version, "import", "seed sync", _now(), "system"),
-            )
-
     # ---------- 会话 ----------
 
     def get_or_create_session(self, key: str, scene: str = "group") -> str:
@@ -171,8 +133,8 @@ class Storage:
     def session_target(self, session_id: str) -> tuple[str, str] | None:
         """反查会话的发送目标与场景。
 
-        session_id 只是内部主键（uuid 片段），不能当作 openid 使用；
-        真正的 openid 在 sessions.key（形如 group:<openid> / c2c:<openid>）。
+        session_id 即 sessions.key（group:<openid> / c2c:<openid>），
+        这里统一从库里取，兼容历史数据。
         """
         with self._lock, self._conn() as c:
             row = c.execute("SELECT key FROM sessions WHERE id=?", (session_id,)).fetchone()
@@ -267,8 +229,8 @@ class Storage:
             c.executemany("UPDATE messages SET status=? WHERE msg_id=?", [(status, m) for m in msg_ids])
 
     def reset_chat_data(self) -> dict:
-        """清理会话聊天数据（旧数据污染/翻旧账来源）：清空 messages + sessions。
-        保留：persona（人设）、memory（长期记忆）、config（配置）。
+        """清理会话聊天数据：清空 messages + sessions。
+        保留：memory（长期记忆）、rules（规则）、config（配置）。
         返回清理统计。"""
         with self._lock, self._conn() as c:
             m = c.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
@@ -341,12 +303,20 @@ class Storage:
             rows = c.execute("SELECT * FROM memories").fetchall()
         return [dict(r) for r in rows]
 
-    def update_memory(self, memory_id: str, content: str | None = None, importance: int | None = None) -> None:
+    def update_memory(
+        self,
+        memory_id: str,
+        content: str | None = None,
+        importance: int | None = None,
+        embedding: bytes | None = None,
+    ) -> None:
         with self._lock, self._conn() as c:
             if content is not None:
                 c.execute("UPDATE memories SET content=? WHERE id=?", (content, memory_id))
             if importance is not None:
                 c.execute("UPDATE memories SET importance=? WHERE id=?", (importance, memory_id))
+            if embedding is not None:
+                c.execute("UPDATE memories SET embedding=? WHERE id=?", (embedding, memory_id))
 
     def delete_memory(self, memory_id: str) -> None:
         with self._lock, self._conn() as c:
@@ -384,67 +354,6 @@ class Storage:
     def delete_rule(self, rule_id: int) -> None:
         with self._lock, self._conn() as c:
             c.execute("DELETE FROM rules WHERE id=?", (rule_id,))
-
-    # ---------- 人设 ----------
-
-    def add_persona_version(
-        self,
-        layer: str,
-        content: str,
-        operation: str = "append",
-        diff: str = "",
-        source_session: str | None = None,
-    ) -> int:
-        with self._lock, self._conn() as c:
-            row = c.execute(
-                "SELECT MAX(version) AS v FROM persona WHERE layer=?", (layer,)
-            ).fetchone()
-            version = (row["v"] or 0) + 1
-            c.execute(
-                "INSERT INTO persona(layer, content, version, operation, diff, ts, source_session) "
-                "VALUES(?,?,?,?,?,?,?)",
-                (layer, content, version, operation, diff, _now(), source_session),
-            )
-            return version
-
-    def get_persona(self, layer: str) -> str:
-        """该层最新版本内容。"""
-        with self._lock, self._conn() as c:
-            row = c.execute(
-                "SELECT content FROM persona WHERE layer=? ORDER BY version DESC LIMIT 1",
-                (layer,),
-            ).fetchone()
-            return row["content"] if row else ""
-
-    def list_persona_versions(self, layer: str, limit: int = 20) -> list[dict]:
-        with self._lock, self._conn() as c:
-            rows = c.execute(
-                "SELECT * FROM persona WHERE layer=? ORDER BY version DESC LIMIT ?",
-                (layer, limit),
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    def rollback_persona(self, layer: str, version: int) -> str | None:
-        """回滚到指定版本：新增一个以该版本内容为准的 rewrite 版本。"""
-        with self._lock, self._conn() as c:
-            row = c.execute(
-                "SELECT content FROM persona WHERE layer=? AND version=?", (layer, version)
-            ).fetchone()
-            if not row:
-                return None
-            content = row["content"]
-            current = c.execute(
-                "SELECT content FROM persona WHERE layer=? ORDER BY version DESC LIMIT 1",
-                (layer,),
-            ).fetchone()["content"]
-            diff = f"rollback to v{version}"
-            v = (c.execute("SELECT MAX(version) AS v FROM persona WHERE layer=?", (layer,)).fetchone()["v"] or 0) + 1
-            c.execute(
-                "INSERT INTO persona(layer, content, version, operation, diff, ts, source_session) "
-                "VALUES(?,?,?,?,?,?,?)",
-                (layer, content, v, "rewrite", diff, _now(), "panel"),
-            )
-        return content
 
     # ---------- 面板辅助 ----------
 

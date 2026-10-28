@@ -74,7 +74,7 @@ async def main() -> None:
 
     if getattr(cfg, "_reset_chat", False):
         n = storage.reset_chat_data()
-        log.info("聊天数据已清理: messages=%d sessions=%d（人设/记忆保留）", n["messages"], n["sessions"])
+        log.info("聊天数据已清理: messages=%d sessions=%d（记忆/规则保留）", n["messages"], n["sessions"])
 
     log.info("初始化向量记忆（SiliconFlow Embedding）…")
     memory = MemoryStore(cfg, storage)
@@ -126,7 +126,7 @@ async def main() -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GGBot")
     parser.add_argument("--reset-chat", action="store_true",
-                        help="清理 messages/sessions 聊天数据（保留人设与记忆）后启动")
+                        help="清理 messages/sessions 聊天数据（保留记忆与规则）后启动")
     args = parser.parse_args()
 
     async def _run() -> None:

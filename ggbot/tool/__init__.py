@@ -1,9 +1,9 @@
 """技能工具：DeepSeek function calling 的 schema 定义、执行器与 agent 循环。
 
-技能 = 官方 tools 参数，共 10 个：
+技能 = 官方 tools 参数，共 9 个：
 - 输出：send_text / seed_message / send_image / send_voice / send_video / send_emoji
 - 回合控制：end_call（主动结束本轮，不回复）
-- 认知：memory_search / memory_write / persona_update
+- 认知：memory_search / memory_write
 
 回合语义：LLM 的纯文本输出不会作为回复发送（会被忽略）；必须通过工具调用行动——
 send_text/seed_message 发送消息、end_call 结束本轮（或未调用任何工具时默认视为 end_call）。
@@ -15,7 +15,8 @@ import asyncio
 import json
 import logging
 import time
-from pathlib import Path
+
+from ggbot.util.session import session_label
 
 logger = logging.getLogger("ggbot.tools")
 
@@ -134,21 +135,6 @@ TOOLS: list[dict] = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "persona_update",
-            "description": "自我进化：追加（append）补充自己的动态人设（性格、喜好、说话习惯的调整），或重写（rewrite）整个动态人设。内核人设（owner 定义）只读不可改",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "content": {"type": "string", "description": "更新后的人设文本（rewrite 时是完整新版；append 时是新增片段）"},
-                    "operation": {"type": "string", "enum": ["append", "rewrite"], "description": "append=追加片段，rewrite=整体重写，默认 append"},
-                },
-                "required": ["content"],
-            },
-        },
-    },
 ]
 
 
@@ -172,11 +158,13 @@ class ToolExecutor:
         handler = getattr(self, f"_tool_{name}", None)
         if handler is None:
             return {"ok": False, "error": f"未知工具 {name}"}
-        logger.debug("工具调用 %s args=%s", name, json.dumps(args, ensure_ascii=False)[:200])
+        sid = session_label(ctx.get("session_id"))
+        logger.debug("工具 %s args=%s", name, json.dumps(args, ensure_ascii=False)[:200],
+                     extra={"session": sid})
         try:
             return await handler(args, ctx)
         except Exception as e:  # noqa: BLE001
-            logger.exception("工具 %s 执行失败", name)
+            logger.exception("工具 %s 执行失败", name, extra={"session": sid})
             ctx["send_error"] = str(e)  # 发送类工具失败标记，供回合收尾区分 skipped/failed
             return {"ok": False, "error": str(e)}
 
@@ -191,8 +179,9 @@ class ToolExecutor:
                                  ctx.get("event_id"))
         ctx["msg_seq"] = seq + 1  # 递增 msg_seq，支持同一消息多次回复
         ctx["sent_any"] = True    # 回合内已实际发送 → 收尾标记 replied 而非 skipped
-        logger.info("send_text target=%s scene=%s seq=%d passive=%s: %.80s",
-                    ctx["target"], ctx["scene"], seq, bool(ctx.get("event_id")), content)
+        logger.info("send_text seq=%d passive=%s: %.80s",
+                    seq, bool(ctx.get("event_id")), content,
+                    extra={"session": session_label(ctx.get("session_id"))})
         return {"ok": True, "sent": content}
 
     async def _tool_send_emoji(self, args: dict, ctx: dict) -> dict:
@@ -247,8 +236,9 @@ class ToolExecutor:
         if ok:
             ctx["msg_seq"] = seq + 1
             ctx["sent_any"] = True
-            logger.info("send_media %s target=%s scene=%s seq=%d passive=%s: %s",
-                        label, ctx["target"], ctx["scene"], seq, bool(ctx.get("event_id")), detail)
+            logger.info("send_media %s seq=%d passive=%s: %s",
+                        label, seq, bool(ctx.get("event_id")), detail,
+                        extra={"session": session_label(ctx.get("session_id"))})
             return {"ok": True, "sent": f"{label}已发送: {detail}"}
         return {"ok": False, "error": detail}
 
@@ -257,7 +247,7 @@ class ToolExecutor:
     async def _tool_memory_search(self, args: dict, ctx: dict) -> dict:
         query = args.get("query", "")
         k = int(args.get("k", 3))
-        results = await asyncio.to_thread(self.memory.search, query, k, ctx.get("session_id"))
+        results = await asyncio.to_thread(self.memory.search, query, k, ctx.get("session_id"), 0.35)
         if not results:
             return {"ok": True, "results": [], "note": "没有找到相关记忆"}
         return {"ok": True, "results": results}
@@ -271,24 +261,6 @@ class ToolExecutor:
             self.memory.add, content, "fact", importance, ctx.get("session_id")
         )
         return {"ok": True, "memory_id": mid, "note": "已写入长期记忆"}
-
-    async def _tool_persona_update(self, args: dict, ctx: dict) -> dict:
-        content = _to_str(args.get("content", "")).strip()
-        operation = args.get("operation", "append")
-        if not content:
-            return {"ok": False, "error": "content 为空"}
-        if operation == "rewrite":
-            current = self.storage.get_persona("dynamic")
-            diff = f"rewrite: {current[:50]}... -> {content[:50]}..."
-        else:
-            current = self.storage.get_persona("dynamic")
-            content = (current + "\n" + content).strip() if current else content
-            diff = f"append: {content[:80]}"
-        version = self.storage.add_persona_version(
-            "dynamic", content, operation, diff, ctx.get("session_id")
-        )
-        logger.info("人设进化 %s → v%s", operation, version)
-        return {"ok": True, "version": version, "note": "动态人设已更新（可回滚）"}
 
 
 async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int = 6) -> str:

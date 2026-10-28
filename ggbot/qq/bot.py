@@ -1,9 +1,9 @@
 """QQ 消息收发网关：qq-botpy 事件接收、归一化、去重、富媒体落地、发送能力。
 
-- 事件：群@（on_group_at_message_create）、单聊（on_c2c_message_create）
-- 富媒体附件（图片/语音/视频/文件）下载到 Temp/ 并记录公网 URL（可转发）
+- 事件：群@（on_group_at_message_create）、单聊（on_c2c_message_create）、群全量（on_group_message_create）
+- 富媒体附件（图片/语音/视频/文件）下载到 temp/ 并记录公网 URL（可转发）
 - 发送：文本被动回复（msg_id + 递增 msg_seq）、富媒体上传（post_group_file → file_info → msg_type=7）
-- 可读日志：openid 经 NameResolver 解析为群名/昵称（API 失败降级显示短 id）
+- 日志：openid 只显示前 8 位（不做名称解析，无白名单/网络依赖）
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import aiohttp
 import botpy
 from botpy.message import C2CMessage, GroupMessage
 
-from ggbot.qq.names import NameResolver
+from ggbot.util.session import oid8, session_label
 
 logger = logging.getLogger("ggbot.bot")
 
@@ -33,11 +33,6 @@ class QQBot(botpy.Client):
         self.temp_dir: Path = config.temp_dir
         self._seen: set[str] = set()
         self._max_seen = 5000
-        self.names = NameResolver(
-            str((config.qq or {}).get("appid") or ""),
-            str((config.qq or {}).get("secret") or ""),
-            (config.data or {}).get("names"),
-        )
 
     # ---------- 事件 ----------
 
@@ -48,26 +43,23 @@ class QQBot(botpy.Client):
     async def on_group_at_message_create(self, message: GroupMessage) -> None:
         # GROUP_AT_MESSAGE_CREATE：只有真正被@本机器人时触发（事件通道）
         self._learn_bot_openid(message)
-        gname = await self.names.group_name(message.group_openid)
-        sender = getattr(message.author, "member_openid", None) or "?"
-        sname = await self.names.member_name(message.group_openid, sender)
-        logger.info("群@消息 群=%s sender=%s: %.50s",
-                    f"{gname}({self._short(message.group_openid)})" if gname else self._short(message.group_openid),
-                    f"{sname}({self._short(sender)})" if sname else self._short(sender),
-                    (message.content or "").strip())
+        sid = session_label(f"group:{message.group_openid}")
+        sender = oid8(getattr(message.author, "member_openid", None))
+        logger.info("群@ sender=%s: %.50s", sender, (message.content or "").strip(),
+                    extra={"session": sid})
         await self._route(message, is_at=True, passive_ok=True)
 
     async def on_c2c_message_create(self, message: C2CMessage) -> None:
         # 私聊 = 直接找机器人对话，等价于 @；C2C 事件可被动回复
         openid = getattr(message, "author", None) and getattr(message.author, "user_openid", None)
-        uname = await self.names.user_name(openid) if openid else None
-        logger.info("私聊消息 user=%s: %.50s",
-                    f"{uname}({self._short(openid)})" if uname else self._short(openid),
-                    (message.content or "").strip())
+        sid = session_label(f"c2c:{openid}")
+        logger.info("私聊 sender=%s: %.50s", oid8(openid), (message.content or "").strip(),
+                    extra={"session": sid})
         await self._route(message, is_at=True, passive_ok=True)
 
     async def on_group_add_robot(self, message) -> None:
-        logger.info("机器人加入群聊: %s", getattr(message, "group_openid", None))
+        gid = getattr(message, "group_openid", None)
+        logger.info("机器人入群", extra={"session": session_label(f"group:{gid}")})
 
     # ---------- 消息审核事件（消息被平台审核拦截时推送，用于排查"受理但未展示"） ----------
 
@@ -110,37 +102,36 @@ class QQBot(botpy.Client):
         优先精确匹配 config.qq.bot_openid；未学到时从第一条含 <@> 的消息自动学习
         （测试群机器人唯一），之后切回精确匹配。"""
         me = self._mentioned_self(message)
-        gname = await self.names.group_name(message.group_openid)
-        sender = getattr(message.author, "member_openid", None) or "?"
-        sname = await self.names.member_name(message.group_openid, sender)
-        g = f"{gname}({self._short(message.group_openid)})" if gname else self._short(message.group_openid)
-        s = f"{sname}({self._short(sender)})" if sname else self._short(sender)
-        logger.info("群消息 群=%s sender=%s at=%s: %.50s", g, s, "Y" if me else "N",
-                    (message.content or "").strip())
+        sid = session_label(f"group:{message.group_openid}")
+        sender = oid8(getattr(message.author, "member_openid", None))
+        logger.info("群消息 sender=%s at=%s: %.50s", sender, "Y" if me else "N",
+                    (message.content or "").strip(), extra={"session": sid})
         # passive_ok 固定 False：全量事件的 event_id 不能用于被动回复（40034027），只能主动发送
         await self._route(message, is_at=me, passive_ok=False)
 
     async def _route(self, message, is_at: bool = False, passive_ok: bool = False) -> None:
         msg_id = getattr(message, "id", None)
         if not msg_id or msg_id in self._seen:
-            logger.debug("重复/空消息忽略: id=%s", msg_id)
+            logger.debug("重复/空消息忽略 id=%s", msg_id)
             return
         self._seen.add(msg_id)
         if len(self._seen) > self._max_seen:
             self._seen = set(list(self._seen)[-self._max_seen // 2 :])
         inbound = await self._normalize(message, is_at=is_at, passive_ok=passive_ok)
         if inbound is None:
-            logger.warning("消息归一化失败，跳过: id=%s", msg_id)
+            logger.warning("消息归一化失败，跳过 id=%s", msg_id)
             return
+        sid = session_label(inbound["key"])
         logger.debug(
-            "收到消息 scene=%s target=%s sender=%s at=%s passive_ok=%s content=%.60r attachments=%d",
-            inbound["scene"], inbound["target"], inbound["sender"],
-            inbound["is_at"], inbound["passive_ok"], inbound["content"], len(inbound["attachments"] or []),
+            "归一化 scene=%s target=%s sender=%s at=%s passive=%s att=%d content=%.60r",
+            inbound["scene"], oid8(inbound["target"]), oid8(inbound["sender"]),
+            inbound["is_at"], inbound["passive_ok"], len(inbound["attachments"] or []),
+            inbound["content"], extra={"session": sid},
         )
         if self.presence:
             await self.presence.handle_message(inbound)
         else:
-            logger.info("presence 未注入，消息跳过: %s", msg_id)
+            logger.info("presence 未注入，消息跳过 id=%s", msg_id, extra={"session": sid})
 
     # ---------- 归一化 ----------
 
@@ -160,23 +151,13 @@ class QQBot(botpy.Client):
             sender = "c2c"
             scene = "c2c"
         content = (message.content or "").strip()
-        attachments = await self._download_attachments(message.attachments or [])
+        attachments = await self._download_attachments(message.attachments or [], key=key)
         # is_at：事件来源（group_at/c2c=True）优先；全量消息用 mentions / content <@> 兜底匹配 bot_openid
         # passive_ok：只有 @事件/C2C 事件的消息可用 msg_id+event_id 被动回复；
         #   全量事件（GROUP_MESSAGE_CREATE）的 event_id 平台拒绝用于被动回复（40034027），只能主动
         is_at = bool(is_at or self._mentioned_self(message))
         if passive_ok is None:
             passive_ok = is_at
-        # 可读名称（供日志/面板展示；API 失败返回 None）
-        group_name = sender_name = user_name = None
-        try:
-            if scene == "group":
-                group_name = await self.names.group_name(target)
-                sender_name = await self.names.member_name(target, sender)
-            else:
-                user_name = await self.names.user_name(target)
-        except Exception:  # noqa: BLE001
-            pass
         return {
             "msg_id": message.id,
             "msg_seq": getattr(message, "msg_seq", None),
@@ -190,15 +171,9 @@ class QQBot(botpy.Client):
             "is_at": is_at,
             "passive_ok": bool(passive_ok),
             "timestamp": message.timestamp,
-            "group_name": group_name,
-            "sender_name": sender_name,
-            "user_name": user_name,
         }
 
     # ---------- 辅助 ----------
-
-    def _short(self, s: str | None, n: int = 12) -> str:
-        return (s or "")[:n]
 
     def _mentioned_self(self, message) -> bool:
         """全量消息识别"被@本机器人"。
@@ -225,7 +200,7 @@ class QQBot(botpy.Client):
             for mid in ids:
                 self.cfg.set_by_path("bot_openid", mid)
                 self.cfg.save()
-                logger.info("已学习本机器人 openid=%s（群消息 <@> 识别，写入 config bot_openid）", mid)
+                logger.info("已学习本机器人 openid=%s（群消息 <@> 识别，写入 config bot_openid）", oid8(mid))
                 return True
         return False
 
@@ -240,16 +215,17 @@ class QQBot(botpy.Client):
                 return
             self.cfg.set_by_path("bot_openid", mid)
             self.cfg.save()
-            logger.info("已学习本机器人 openid=%s（写入 config bot_openid）", mid)
+            logger.info("已学习本机器人 openid=%s（写入 config bot_openid）", oid8(mid))
         except Exception as e:  # noqa: BLE001
             logger.warning("学习 bot_openid 失败: %s", e)
 
-    async def _download_attachments(self, attachments) -> list[dict]:
+    async def _download_attachments(self, attachments, key: str | None = None) -> list[dict]:
         """富媒体落地：按类型下载到 temp/<子目录>（emoji/voice/video/other），不平铺。
 
         - storage.download_video=false 时，视频附件不下载不处理，仅保留 url/元信息供上下文引用
         - temp 文件由 cleanup_temp() 按 storage.temp_ttl_hours 定期清理
         """
+        sid = session_label(key)
         download_video = bool((self.cfg.storage_cfg or {}).get("download_video", False))
         out = []
         for a in attachments:
@@ -270,11 +246,12 @@ class QQBot(botpy.Client):
                     p = self.cfg.media_dir(sub) / fname
                     p.write_bytes(data)
                     rec["local_path"] = str(p)
-                    logger.info("富媒体落地: %s (%d bytes)", p, len(data))
+                    logger.info("富媒体落地 %s (%d bytes)", p.name, len(data), extra={"session": sid})
                 except Exception as e:  # noqa: BLE001
-                    logger.warning("富媒体下载失败: %s", e)
+                    logger.warning("富媒体下载失败 %s: %s", a.filename, e, extra={"session": sid})
             elif is_video and not download_video:
-                logger.debug("视频附件不下载（download_video=false），保留 URL: %s", a.filename)
+                logger.debug("视频不下载（download_video=false），保留 URL: %s", a.filename,
+                             extra={"session": sid})
             out.append(rec)
         return out
 
@@ -324,8 +301,9 @@ class QQBot(botpy.Client):
     async def send_text(self, target: str, content: str, scene: str, msg_id: str | None = None,
                         msg_seq: int = 1, event_id: str | None = None):
         """发送文本。携带 msg_id 为被动回复（msg_seq 递增支持同一消息多次回复，event_id 为前置事件 ID）。"""
-        logger.debug("send_text scene=%s target=%s msg_id=%s msg_seq=%d content=%.60r",
-                     scene, target, msg_id, msg_seq, content)
+        logger.debug("send_text target=%s msg_id=%s seq=%d content=%.60r",
+                     oid8(target), msg_id, msg_seq, content,
+                     extra={"session": session_label(f"{scene}:{target}")})
         if scene == "group":
             return await self.api.post_group_message(
                 group_openid=target, msg_type=0, content=content,
@@ -374,8 +352,9 @@ class QQBot(botpy.Client):
                 await self.api.post_c2c_message(
                     openid=target, msg_type=7, media=media, msg_id=msg_id, msg_seq=msg_seq
                 )
-            logger.debug("富媒体发送成功 file_type=%d url=%.80s", file_type, url)
+            logger.debug("富媒体发送成功 file_type=%d url=%.80s", file_type, url,
+                         extra={"session": session_label(f"{scene}:{target}")})
             return True, url
         except Exception as e:  # noqa: BLE001
-            logger.exception("富媒体发送失败")
+            logger.exception("富媒体发送失败", extra={"session": session_label(f"{scene}:{target}")})
             return False, f"富媒体发送失败: {e}"

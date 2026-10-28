@@ -23,7 +23,6 @@
       <a class="nav-item" data-page="messages"><span class="nav-icon">☰</span>最近消息</a>
       <a class="nav-item" data-page="memory"><span class="nav-icon">❖</span>向量记忆</a>
       <a class="nav-item" data-page="rules"><span class="nav-icon">✓</span>规则</a>
-      <a class="nav-item" data-page="persona"><span class="nav-icon">◉</span>人设</a>
       <a class="nav-item" data-page="settings"><span class="nav-icon">⚙</span>设置</a>
       <a class="nav-item" data-page="logs"><span class="nav-icon">▤</span>日志</a>
     </nav>
@@ -137,31 +136,6 @@
               <thead><tr><th>内容</th><th>状态</th><th></th></tr></thead>
               <tbody id="rule-body"><tr><td colspan="3" class="empty">加载中…</td></tr></tbody>
             </table>
-          </div>
-        </div>
-      </section>
-
-      <!-- 人设 -->
-      <section id="page-persona" class="page hidden">
-        <div class="card">
-          <div class="card-head"><h2>人设（双层 + 版本化）</h2></div>
-          <div class="persona">
-            <div class="persona-block">
-              <div class="persona-head">
-                <span class="persona-title">内核人设 <em>（只读 · AI 不可改）</em></span>
-                <span id="p-inner-v" class="badge gray">v?</span>
-                <button class="btn ghost small" data-rollback="inner">回滚</button>
-              </div>
-              <pre id="p-inner" class="persona-pre">（无）</pre>
-            </div>
-            <div class="persona-block">
-              <div class="persona-head">
-                <span class="persona-title">动态人设 <em>（AI 可进化）</em></span>
-                <span id="p-dyn-v" class="badge gray">v?</span>
-                <button class="btn ghost small" data-rollback="dynamic">回滚</button>
-              </div>
-              <pre id="p-dyn" class="persona-pre">（无）</pre>
-            </div>
           </div>
         </div>
       </section>

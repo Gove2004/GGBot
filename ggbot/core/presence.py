@@ -17,34 +17,26 @@ import threading
 import time
 from datetime import datetime
 
-from ggbot.tool import NO_REPLY, agent_loop
+from ggbot.tool import agent_loop
+from ggbot.util.session import oid8, session_label
 
 logger = logging.getLogger("ggbot.presence")
 
-SYSTEM_TEMPLATE = """你是群聊里的一个真实的人，昵称“{name}”，正在和一群朋友聊天。
+SYSTEM_TEMPLATE = """你是 QQ 群/私聊里的聊天伙伴，昵称“{name}”，不是客服也不是助手。
 
-【内核人设】（owner 定义，只读）
-{core}
-
-【动态人设】（你可以通过 persona_update 工具进化的部分）
-{dynamic}
-
-【长期记忆】（与当前话题相关的过往记忆）
-{memory_digest}
-
-【激活规则】（必须遵守）
+【聊天规则】
 {rules}
 
-【行为准则】
-1. 用口语化短句聊天，一条消息别超过 40 字；需要说多句时多次调用 send_text 或一条带换行。
-2. 你的纯文本输出不会发送给任何人，会被忽略——要行动必须调用工具：
-   - 想说话 → send_text（回复）/ seed_message（主动开场、挑起话题）；
-   - 不想回、没话可说 → end_call 结束本轮（或什么都不调用，等同 end_call）。
-3. 被@时必须回应（调用 send_text）。
-4. 群友发来的图片/语音/视频，其下载地址会标注在消息里，你可以转发（send_image 等工具）或点评。
+【相关记忆】（过往片段，可能与当前话题无关，自行判断是否采用）
+{memory_digest}
+
+【行动准则】
+1. 口语化短句，一条不超过 40 字；要多说几句就多次调用 send_text。
+2. 纯文本输出不会发送给任何人，必须调用工具。不想说话就别调用工具，直接结束本轮。
+3. 被@时必须回应。
+4. 图片/语音/视频的地址标注在消息里，可以直接转发（send_image 等）或点评。
 5. 想不起的事用 memory_search 回忆；值得长期记住的用 memory_write。
-6. 说话风格、人设随相处自然进化，必要时用 persona_update 微调自己。
-7. 历史消息只是背景，别主动翻旧账：不重提已过去的旧话题，积压消息没必要回就 end_call。
+6. 只聊当下，不翻旧账；离线积压的旧消息没必要回就不回。
 """
 
 
@@ -61,10 +53,10 @@ def _derive_target(sid: str) -> tuple[str, str]:
 
 
 def _fmt_user_messages(msgs: list[dict]) -> str:
-    """把一条或多条入站消息格式化为模型输入。"""
+    """把一条或多条入站消息格式化为模型输入（发送者只用 8 位 id，省上下文）。"""
     lines = []
     for m in msgs:
-        parts = [f"[{m['sender']}]"]
+        parts = [f"[{oid8(m.get('sender'))}]"]
         if m.get("is_at"):
             parts.append("(艾特了你)")
         content = m.get("content") or ""
@@ -207,22 +199,23 @@ class PresenceManager:
             status="pending",
         )
         st = self._state_of(sid)
-        # 会话显示名：优先群名/用户昵称（bot 归一化时解析），回退短 id
-        disp = inbound.get("group_name") or inbound.get("user_name") or st.label
         if st.state == "offline":
             if inbound.get("is_at") and self.p.get("wake_on_at_message", True):
-                logger.info("会话%s 收到@，唤醒并立即回复: %.40r", disp, inbound["content"])
+                logger.info("收到@，唤醒并立即回复: %.40r", inbound["content"],
+                            extra={"session": st.label})
                 # 先即时被动回复该条（5 分钟窗口内有效、不耗主动消息额度），
                 # 成功后状态标记 replied，之后处理积压不会再重复回复它
                 await self._reply_now(inbound)
                 await st.go_online("wake-on-at")
                 return True
             pending = self.storage.count_pending(sid)
-            logger.info("会话%s 离线积压 +1（pending=%d）: %.40r", disp, pending, inbound["content"])
+            logger.info("离线积压 +1（pending=%d）: %.40r", pending, inbound["content"],
+                        extra={"session": st.label})
             return True
         # 在线：进入本会话 debounce 窗口聚合
         st.debounce.append(inbound)
-        logger.debug("会话%s 在线：进入抖动窗口 %s（当前 %d 条）", disp, inbound["msg_id"], len(st.debounce))
+        logger.debug("在线入窗 msg=%s 窗口=%d", inbound["msg_id"], len(st.debounce),
+                     extra={"session": st.label})
         if st._debounce_task is None or st._debounce_task.done():
             st._debounce_task = asyncio.create_task(self._flush_debounce(st))
         return True
@@ -249,22 +242,18 @@ class PresenceManager:
         return "group:default"
 
     def _session_label(self, sid: str) -> str:
-        prefix, _, rest = (sid or "").partition(":")
-        if prefix in ("group", "c2c"):
-            return ("群" if prefix == "group" else "私聊") + (rest or "")[:12]
-        # 旧格式/未知：退化为短 id
-        return (sid or "")[:12]
+        return session_label(sid)
 
     async def _process_batch(self, msgs: list[dict], st: "_SessionState" | None = None) -> None:
         """在线批次：聚合多条消息一次决策。
 
         平台硬限制：全量消息不能被动回复，主动消息每月仅 4 条/群——
-        在线聚合的普通消息只进上下文/记忆，不实际发送（真人"看到没回"也符合人设）；
+        在线聚合的普通消息只进上下文/记忆，不实际发送（"看到没回"也正常）；
         含被动事件（@/C2C）的批次才走回复。
         """
-        last = msgs[-1]
         if not any(m.get("passive_ok") for m in msgs):
-            logger.debug("在线普通消息批次跳过回复（主动额度限制）: %d 条", len(msgs))
+            logger.debug("在线普通消息批次跳过回复（主动额度限制）%d 条", len(msgs),
+                         extra={"session": st.label if st else session_label(msgs[-1].get("session_id"))})
             return
         if await self._safe_reply(msgs, passive=True, renew_sid=(st.sid if st else None)):
             self._renew_online(st)
@@ -272,10 +261,7 @@ class PresenceManager:
     # ---------- 回复核心 ----------
 
     def _target_of(self, sid: str) -> tuple[str, str]:
-        """会话发送目标：优先反查 sessions.key 里的完整 openid，失败回退旧推导。
-
-        session_id 是内部主键（uuid 片段），不能当 openid 发送（会导致 11255）。
-        """
+        """会话发送目标：从 sessions.key 反查完整 openid，失败回退旧推导。"""
         t = self.storage.session_target(sid)
         if t and t[0]:
             return t
@@ -292,6 +278,7 @@ class PresenceManager:
         """
         ctx_msg = msgs[-1]
         sid = ctx_msg["session_id"]
+        label = session_label(sid)
         ids = [m["msg_id"] for m in msgs if m.get("msg_id")]
 
         def _mark(status: str) -> None:
@@ -301,14 +288,15 @@ class PresenceManager:
         try:
             await self._agent_loop(sid, msgs, ctx_msg, ctx)
         except Exception as e:  # noqa: BLE001
-            logger.warning("回复生成失败 n=%d sid=%s: %s", len(msgs), sid, e)
+            logger.warning("回复生成失败 n=%d: %s", len(msgs), e, extra={"session": label})
             _mark("failed")
             return False
         if ctx.get("sent_any"):
             _mark("replied")
             return True
         if ctx.get("send_error"):
-            logger.warning("回复发送失败 n=%d sid=%s: %s", len(msgs), sid, ctx["send_error"])
+            logger.warning("回复发送失败 n=%d: %s", len(msgs), ctx["send_error"],
+                           extra={"session": label})
             _mark("failed")
             return False
         _mark("skipped")
@@ -385,7 +373,7 @@ class PresenceManager:
                 # 随后积压处理又正式回复一遍（表现为"重复回复旧消息"）
                 continue
             if h["role"] == "user":
-                history_msgs.append({"role": "user", "content": f"[{h['sender']}] {h['content']}"})
+                history_msgs.append({"role": "user", "content": f"[{oid8(h['sender'])}] {h['content']}"})
             else:
                 history_msgs.append({"role": "assistant", "content": h["content"]})
         user_content = _fmt_user_messages(msgs)
@@ -396,8 +384,9 @@ class PresenceManager:
         total = self.llm.estimate_tokens(system) + sum(
             self.llm.estimate_tokens(m.get("content") or "") for m in messages
         )
-        logger.debug("agent 上下文组装: history=%d 估算tokens=%d 预算=%d",
-                     len(history_msgs), total, budget)
+        label = session_label(sid)
+        logger.debug("agent 上下文: history=%d tokens≈%d 预算=%d",
+                     len(history_msgs), total, budget, extra={"session": label})
         if total > budget and history:
             summary = await asyncio.to_thread(self.llm.summarize, _fmt_user_messages(history))
             self.storage.save_summary(sid, summary)
@@ -405,7 +394,7 @@ class PresenceManager:
                 {"role": "system", "content": system},
                 {"role": "user", "content": f"【更早的历史摘要】{summary}\n\n{user_content}"},
             ]
-            logger.info("上下文超限，已压缩历史为摘要（%s tokens）", total)
+            logger.info("上下文超限，历史压缩为摘要（%s tokens）", total, extra={"session": label})
 
         ctx["target"] = ctx_msg.get("target") or self._target_of(sid)[0]
         ctx["scene"] = ctx_msg.get("scene") or self._target_of(sid)[1]
@@ -416,22 +405,22 @@ class PresenceManager:
         return await agent_loop(self.llm, self.executor, messages, ctx)
 
     async def _build_system(self, sid: str, ctx_msg: dict) -> str:
-        core = self.storage.get_persona("inner") or "（无内核人设）"
-        dynamic = self.storage.get_persona("dynamic") or "（暂无）"
         rules = self.storage.list_rules(active_only=True)
         rules_text = "\n".join(f"- {r['content']}" for r in rules) or "（无）"
-        # 记忆注入：用当前消息作为检索 query
+        # 记忆注入：当前消息为 query，检索全局 + 本会话记忆；失败不阻塞回复
         query = (ctx_msg.get("content") or "").strip()
         digest = "（无）"
         if query and self.memory is not None:
             try:
-                hits = await asyncio.to_thread(self.memory.search, query, 4)
-                digest = "\n".join(f"- {h['content']}" for h in hits) or "（无）"
-            except Exception:  # noqa: BLE001
-                digest = "（检索失败）"
+                hits = await asyncio.wait_for(
+                    asyncio.to_thread(self.memory.search, query, 3, sid, 0.35), timeout=5.0
+                )
+                lines = [f"- {(h.get('content') or '')[:80]}" for h in hits]
+                digest = "\n".join(lines) or "（无）"
+            except Exception as e:  # noqa: BLE001
+                logger.debug("记忆检索失败/超时，跳过注入: %s", e)
         return SYSTEM_TEMPLATE.format(
-            name=self._name, core=core, dynamic=dynamic,
-            memory_digest=digest, rules=rules_text, no_reply=NO_REPLY,
+            name=self._name, memory_digest=digest, rules=rules_text,
         )
 
     # ---------- 发送 ----------
@@ -470,15 +459,16 @@ class PresenceManager:
         base_seq = inbound.get("msg_seq")
         for i, seg in enumerate(segments):
             seq = self._next_seq(sid, base_seq)
-            disp = inbound.get("group_name") or inbound.get("user_name") or target
-            logger.info("回复 %s target=%s seg=%d/%d passive=%s: %.60r",
-                        scene, disp, i + 1, len(segments), can_passive, seg)
+            logger.info("回复 seg=%d/%d passive=%s: %.60r",
+                        i + 1, len(segments), can_passive, seg,
+                        extra={"session": session_label(sid)})
             try:
                 await self.bot.send_text(target, seg, scene, msg_id, seq, event_id)
             except Exception as e:  # noqa: BLE001
                 if can_passive and msg_id:
                     # 被动回复失败（msg_id 过期 / 事件不可回复等）→ 降级主动发送，确保送达
-                    logger.warning("被动回复失败，降级主动发送 %s: %s", target, e)
+                    logger.warning("被动回复失败，降级主动 target=%s: %s", oid8(target), e,
+                                   extra={"session": session_label(sid)})
                     await self.bot.send_text(target, seg, scene, None, self._next_seq(sid, None))
                 else:
                     raise
@@ -560,8 +550,8 @@ class _SessionState:
             return
         self.state = "online"
         self._online_deadline = time.monotonic() + float(self._p.get("online_duration_sec", 60))
-        logger.info("会话%s 上线（%s），在线 %.0fs，先处理积压", self.label, reason,
-                    self._p.get("online_duration_sec", 60))
+        logger.info("上线（%s），在线 %.0fs，先处理积压", reason,
+                    self._p.get("online_duration_sec", 60), extra={"session": self.label})
         # 上线先处理本会话积压（唤醒即时回复的那条已标记 replied，不会重复）
         await self.pm._process_backlog_sid(self.sid)
 
@@ -579,8 +569,8 @@ class _SessionState:
                 pass
             self._debounce_task = None
         self.debounce = []
-        logger.info("会话%s 下线（%s），%.0fs 后再次上线", self.label, reason,
-                    self._p.get("offline_interval_sec", 600))
+        logger.info("下线（%s），%.0fs 后再次上线", reason,
+                    self._p.get("offline_interval_sec", 600), extra={"session": self.label})
 
     def renew(self) -> None:
         """每发送一条消息：在线时长 +renew_per_reply_sec（聊得火热）。"""

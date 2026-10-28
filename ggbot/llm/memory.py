@@ -2,6 +2,7 @@
 
 - 嵌入走云端 OpenAI 兼容接口（POST /embeddings），无本地模型依赖
 - 向量存 SQLite（float32 BLOB），检索用余弦相似度（个人机器人记忆量级，暴力检索足够）
+- 写入去重：同会话内余弦 ≥0.95 视为同一条，更新原条目而非新增
 - 整理：合并余弦相似度超过阈值的近似重复记忆
 """
 
@@ -14,6 +15,8 @@ import numpy as np
 
 logger = logging.getLogger("ggbot.memory")
 
+DEDUP_SCORE = 0.95
+
 
 class MemoryStore:
     def __init__(self, cfg, storage):
@@ -24,9 +27,7 @@ class MemoryStore:
         base_url = emb["base_url"]
         api_key = emb["api_key"]
         if not api_key:
-            raise RuntimeError(
-                "缺少 embedding.api_key：请在 config.json 配置，或设置环境变量 EMBEDDING_API_KEY"
-            )
+            raise RuntimeError("缺少 embedding.api_key：请在 db/config.json 的 embedding.api_key 配置")
         from openai import OpenAI
 
         self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=60, max_retries=0)
@@ -48,6 +49,8 @@ class MemoryStore:
             try:
                 resp = self.client.embeddings.create(model=self.model, input=texts)
                 rows = sorted(resp.data, key=lambda d: d.index)
+                if not rows:
+                    raise RuntimeError("embedding 返回为空")
                 logger.debug(
                     "embedding 请求 %d 条，维度 %d (模型 %s)", len(texts), len(rows[0].embedding), self.model
                 )
@@ -59,6 +62,28 @@ class MemoryStore:
                     time.sleep(1.0 * (attempt + 1))
         raise RuntimeError(f"Embedding API 调用失败: {last_err}")
 
+    @staticmethod
+    def _score(q: np.ndarray, qn: float, v: np.ndarray) -> float:
+        denom = qn * float(np.linalg.norm(v))
+        if denom < 1e-9:
+            return 0.0
+        return float(np.dot(q, v)) / denom
+
+    def _nearest(self, vec: np.ndarray, session_id: str | None, min_score: float) -> tuple[dict, float] | None:
+        """同一作用域内最相似的一条（用于写入去重）。"""
+        qn = float(np.linalg.norm(vec))
+        best: tuple[dict, float] | None = None
+        for m in self.storage.get_all_memories():
+            if (m.get("session_id") or None) != (session_id or None):
+                continue
+            blob = m.get("embedding")
+            if not blob:
+                continue
+            sim = self._score(vec, qn, np.frombuffer(blob, dtype=np.float32))
+            if sim >= min_score and (best is None or sim > best[1]):
+                best = (m, sim)
+        return best
+
     def add(
         self,
         content: str,
@@ -66,24 +91,46 @@ class MemoryStore:
         importance: int = 1,
         session_id: str | None = None,
     ) -> str:
-        """写入一条记忆（自动向量化）。"""
-        vec = self.embed(content)
-        return self.storage.add_memory(session_id, content, type_, importance, vec.astype(np.float32).tobytes())
+        """写入一条记忆（自动向量化）；同会话近似重复则更新原条目。"""
+        vec = self.embed(content).astype(np.float32)
+        dup = self._nearest(vec, session_id, DEDUP_SCORE)
+        if dup is not None:
+            m, sim = dup
+            self.storage.update_memory(
+                m["id"], content=content,
+                importance=max(int(m.get("importance") or 1), importance),
+                embedding=vec.tobytes(),
+            )
+            logger.info("记忆去重（相似度 %.3f），更新既有条目 %s", sim, m["id"])
+            return m["id"]
+        return self.storage.add_memory(session_id, content, type_, importance, vec.tobytes())
 
-    def search(self, query: str, k: int = 5, session_id: str | None = None) -> list[dict]:
-        """向量检索：余弦相似度 top-k。"""
+    def search(
+        self,
+        query: str,
+        k: int = 5,
+        session_id: str | None = None,
+        min_score: float | None = None,
+    ) -> list[dict]:
+        """向量检索：余弦相似度 top-k。
+
+        session_id 给定时只取「全局记忆 + 本会话记忆」；为 None 时检索全部（面板/调试）。
+        min_score 过滤低相关结果（None 表示不过滤）。
+        """
         q = self.embed(query).astype(np.float32)
         qn = float(np.linalg.norm(q))
         scored = []
         for m in self.storage.get_all_memories():
+            if session_id is not None:
+                scope = m.get("session_id") or None
+                if scope is not None and scope != session_id:
+                    continue
             blob = m.get("embedding")
             if not blob:
                 continue
-            v = np.frombuffer(blob, dtype=np.float32)
-            denom = qn * float(np.linalg.norm(v))
-            if denom < 1e-9:
+            score = self._score(q, qn, np.frombuffer(blob, dtype=np.float32))
+            if min_score is not None and score < min_score:
                 continue
-            score = float(np.dot(q, v)) / denom
             scored.append((score, m))
         scored.sort(key=lambda x: -x[0])
         return [
@@ -102,16 +149,19 @@ class MemoryStore:
     def tidy(self, threshold: float = 0.95) -> int:
         """整理记忆：合并余弦相似度超过阈值的近似重复，保留更重要（importance 高/更新）的一条。"""
         memories = self.storage.get_all_memories()
-        vecs = [np.frombuffer(m["embedding"], dtype=np.float32) for m in memories if m.get("embedding")]
-        keep = set(range(len(memories)))
+        vecs: dict[int, np.ndarray] = {}
+        for i, m in enumerate(memories):
+            if m.get("embedding"):
+                vecs[i] = np.frombuffer(m["embedding"], dtype=np.float32)
+        keep = set(vecs)
         removed_ids: list[str] = []
-        for i in range(len(memories)):
+        for i in sorted(vecs):
             if i not in keep:
                 continue
             vi = vecs[i]
             ni = float(np.linalg.norm(vi))
-            for j in range(i + 1, len(memories)):
-                if j not in keep:
+            for j in sorted(vecs):
+                if j <= i or j not in keep:
                     continue
                 vj = vecs[j]
                 denom = ni * float(np.linalg.norm(vj))

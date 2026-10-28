@@ -47,7 +47,7 @@ const statusBadge = st => {
 /* ============ 页面导航（后台分栏） ============ */
 const PAGE_TITLES = {
   dash: "仪表盘", messages: "最近消息", memory: "向量记忆",
-  rules: "规则", persona: "人设", settings: "设置", logs: "日志",
+  rules: "规则", settings: "设置", logs: "日志",
 };
 
 function switchPage(name) {
@@ -195,37 +195,6 @@ async function toggleRule(id) {
   try { await api("/api/rules/" + id + "/toggle", { method: "POST" }); refreshRules(); } catch (e) {}
 }
 
-/* ============ 人设 ============ */
-async function refreshPersona() {
-  try {
-    const d = await api("/api/persona");
-    const inner = d.inner || {}, dyn = d.dynamic || {};
-    document.getElementById("p-inner-v").textContent = "v" + (inner.version ?? "?");
-    document.getElementById("p-inner").textContent = inner.content || "（无）";
-    document.getElementById("p-dyn-v").textContent = "v" + (dyn.version ?? "?");
-    document.getElementById("p-dyn").textContent = dyn.content || "（无）";
-    window._personaHistory = { inner: inner.history || [], dynamic: dyn.history || [] };
-  } catch (e) {}
-}
-
-async function rollbackPersona(layer) {
-  const hist = (window._personaHistory || {})[layer] || [];
-  if (!hist.length) { alert("无历史版本可回滚"); return; }
-  const pick = prompt(
-    layer + " 历史版本（输入版本号回滚）：\n" +
-    hist.map(h => `v${h.version}  ${h.ts}  ${(h.diff || "").slice(0, 30)}`).join("\n"),
-    String(hist[0].version)
-  );
-  if (!pick) return;
-  try {
-    const r = await api("/api/persona/rollback", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ layer, version: parseInt(pick) }),
-    });
-    if (r.ok) { showTmp("已回滚 " + layer + " → v" + pick); refreshPersona(); }
-  } catch (e) {}
-}
-
 /* ============ 设置 ============ */
 const CHK = ["s-stream", "s-wake_on_at_message", "s-wake_on_c2c", "s-renew_on_reply"];
 const NUM = ["s-temperature", "s-top_p", "s-max_tokens", "s-online_duration_sec", "s-offline_interval_sec",
@@ -363,14 +332,11 @@ function bind() {
   document.getElementById("mem-q").onkeydown = e => { if (e.key === "Enter") refreshMemories(e.target.value.trim()); };
   document.getElementById("btn-rule-add").onclick = addRule;
   document.getElementById("rule-content").onkeydown = e => { if (e.key === "Enter") addRule(); };
-  document.querySelectorAll("[data-rollback]").forEach(b => {
-    b.onclick = () => rollbackPersona(b.getAttribute("data-rollback"));
-  });
   document.getElementById("btn-save-cfg").onclick = saveConfig;
 }
 
 function fullRefresh() {
-  refreshStatus(); refreshMessages(); refreshMemories(); refreshRules(); refreshPersona(); loadConfig(); loadLogs();
+  refreshStatus(); refreshMessages(); refreshMemories(); refreshRules(); loadConfig(); loadLogs();
 }
 
 /* 启动 */
@@ -383,4 +349,4 @@ setInterval(refreshMessages, 5000);
 setInterval(() => {
   if (document.getElementById("log-auto").checked) loadLogs();
 }, 3000);
-setInterval(() => { refreshMemories(); refreshRules(); refreshPersona(); }, 15000);
+setInterval(() => { refreshMemories(); refreshRules(); }, 15000);

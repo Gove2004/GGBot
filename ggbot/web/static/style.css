@@ -181,21 +181,6 @@ body { background: var(--bg); color: var(--text); font: 14px/1.55 -apple-system,
 }
 .log-view.tall { max-height: calc(100vh - 220px); }
 
-/* 人设 */
-.persona { display: flex; flex-direction: column; gap: 12px; }
-.persona-block { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
-.persona-head {
-  display: flex; align-items: center; gap: 8px;
-  background: var(--card2); padding: 8px 12px; flex-wrap: wrap;
-}
-.persona-title { font-weight: 600; font-size: 13px; }
-.persona-title em { color: var(--muted); font-style: normal; font-weight: 400; font-size: 12px; }
-.persona-pre {
-  padding: 12px 14px; font-family: var(--mono); font-size: 12px; line-height: 1.65;
-  max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all;
-  color: #cdd3de;
-}
-
 /* 设置 */
 .cfg-group { margin-bottom: 14px; }
 .cfg-group h3 {

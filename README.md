@@ -3,10 +3,10 @@
 基于官方 QQ 开放平台 api-v2（qq-botpy 1.2.1）+ DeepSeek（deepseek-flash）+ SiliconFlow 向量记忆的群聊机器人。
 
 **四大模块：**
-1. **消息收发网关**（`ggbot/bot.py`）— 群@/单聊事件接收、归一化、去重，富媒体附件落地 `temp/`
-2. **AI 请求装置**（`ggbot/llm.py`）— DeepSeek Chat Completions，function calling 原生工具
-3. **上下文组织 / 持久化记忆 / 自我进化**（`ggbot/core/storage.py` + `ggbot/llm/memory.py` + `ggbot/tool/__init__.py`）
-4. **Web 控制面板**（`ggbot/web/server.py`）— FastAPI，在线状态 / 消息流 / 记忆检索 / 规则 / 人设管理
+1. **消息收发网关**（`ggbot/qq/bot.py`）— 群@/单聊事件接收、归一化、去重，富媒体附件落地 `temp/`
+2. **AI 请求装置**（`ggbot/llm/llm.py`）— DeepSeek Chat Completions，function calling 原生工具
+3. **上下文组织 / 持久化记忆**（`ggbot/core/storage.py` + `ggbot/llm/memory.py` + `ggbot/tool/__init__.py`）
+4. **Web 控制面板**（`ggbot/web/server.py`）— FastAPI，在线状态 / 消息流 / 记忆检索 / 规则 / 日志
 
 ## 目录结构
 
@@ -14,8 +14,7 @@
 GGBot/
 ├── db/
 │   ├── config.json      # 全部配置（QQ 凭据 / DeepSeek / Embedding / 行为 / 存储 / Web；含密钥，gitignored）
-│   ├── persona_core.md  # 内核人设（owner 定义，AI 只读；文件变化重启自动同步新版本）
-│   └── ggbot.db         # SQLite 持久化：会话/消息/记忆/规则/人设版本（运行时生成，gitignored）
+│   └── ggbot.db         # SQLite 持久化：会话/消息/记忆/规则（运行时生成，gitignored）
 ├── temp/                # 富媒体附件临时落地 + 日志（temp/logs/ggbot.log；附件按类型分 emoji/voice/video/other 子目录，默认保留 24h 自动清理，gitignored）
 ├── requirements.txt
 ├── main.py              # 入口
@@ -24,16 +23,18 @@ GGBot/
 ├── ggbot/
 │   ├── core/             # 核心业务
 │   │   ├── config.py     #   配置加载（纯配置文件驱动 + Web 热更新）
-│   │   ├── storage.py    #   SQLite（会话/消息/记忆/规则/人设版本）
-│   │   ├── presence.py   #   在线/离线状态机（会话级唤醒/积压分流/抖动/分段发送）
-│   │   └── tool/__init__.py #   10 个 function calling 工具 + agent 循环（ggbot.tool）
+│   │   ├── storage.py    #   SQLite（会话/消息/记忆/规则）
+│   │   └── presence.py   #   在线/离线状态机（会话级唤醒/积压分流/抖动/分段发送）
 │   ├── llm/
 │   │   ├── llm.py        #   DeepSeek 请求装置
-│   │   └── memory.py     #   向量记忆（SiliconFlow Embedding + 余弦检索 + 整理）
+│   │   └── memory.py     #   向量记忆（SiliconFlow Embedding + 余弦检索 + 去重/整理）
 │   ├── qq/
 │   │   └── bot.py        #   QQ 网关（botpy 连接 / 事件解析 / 富媒体落地）
+│   ├── tool/
+│   │   └── __init__.py   #   9 个 function calling 工具 + agent 循环（ggbot.tool）
 │   ├── util/
-│   │   └── logging_setup.py  # 日志系统（多等级 / 文件轮转 / 面板 tail）
+│   │   ├── logging_setup.py  # 日志系统（五列格式 / 文件轮转 / 面板 tail）
+│   │   └── session.py        # 会话显示标签（场景 + 8 位 openid）
 │   └── web/              # 控制面板
 │       ├── server.py     #   FastAPI API + WebSocket + 静态托管（不内嵌前端）
 │       └── static/       #   前端（经 /static 托管，改完即热加载）
@@ -52,7 +53,7 @@ flowchart LR
     subgraph GGBot
         GW["① 消息收发网关<br/>qq-botpy 事件驱动"]
         AI["② AI 请求装置<br/>openai SDK + DeepSeek"]
-        CTX["③ 上下文与记忆<br/>组织 / 持久化 / 进化"]
+        CTX["③ 上下文与记忆<br/>组织 / 持久化"]
         WEB["④ Web 控制面板<br/>FastAPI + WebSocket"]
         DB[("SQLite db/ggbot.db")]
     end
@@ -68,7 +69,7 @@ flowchart LR
 
 数据流：QQ 事件 → 网关归一化 → 上下文装置组织会话 → AI 装置请求 DeepSeek → 回复回传网关 → QQ；全链路事件同步推送到 Web 面板。
 
-**核心循环**：`人设（内核+动态）+ 技能（10 工具）+ 上下文（群窗口≤128k，超限摘要压缩） → 工具行动`。工具层（可调用动作）通过 DeepSeek function calling 实现；**回合语义：LLM 纯文本输出不发送、会被忽略，必须通过工具行动——send_text/seed_message 发送消息、end_call（或未调用任何工具）结束回合**；认知层（人设进化、记忆沉淀）由 AI 通过工具触发；基础设施层为 SQLite 持久化。人设双层：内核人设 owner 定义 AI 只读，动态人设 AI 可追加/整理，版本化带 diff 可回滚。
+**核心循环**：`技能（9 工具）+ 上下文（群窗口≤128k，超限摘要压缩）+ 相关记忆 → 工具行动`。工具层（可调用动作）通过 DeepSeek function calling 实现；**回合语义：LLM 纯文本输出不发送、会被忽略，必须通过工具行动——send_text/seed_message 发送消息、end_call（或未调用任何工具）结束回合**；认知状态只有记忆：AI 通过 `memory_write` 沉淀、`memory_search` 回忆，system prompt 只注入规则与当前话题相关的 top-3 记忆（不设固定人设，避免上下文膨胀）。
 
 ## 快速开始
 
@@ -94,9 +95,9 @@ start.bat                    # Windows 前台（Ctrl+C 停止）
 
 ## 日志与 Web 运维
 
-- **日志文件**：`temp/logs/ggbot.log`（RotatingFileHandler，5MB × 5 轮转；目录随 `storage.temp_dir` 自动创建；stderr 同时输出）。格式 `时间 | 等级 | 模块 | 内容`；botpy/openai/httpx 等第三方库默认 WARNING 降噪
+- **日志文件**：`temp/logs/ggbot.log`（RotatingFileHandler，5MB × 5 轮转；目录随 `storage.temp_dir` 自动创建；stderr 同时输出）。格式 `时间 | 等级 | 位置 | 会话 | 内容`——会话列由业务代码显式传入（`群xxxxxxxx` / `私聊xxxxxxxx`，8 位 openid；系统日志为 `System`），控制台、文件、Web 面板三处一致；botpy/openai/httpx 等第三方库默认 WARNING 降噪
 - **等级控制**：`db/config.json → web.log_level`（默认 INFO）；面板保存设置即时热切换。项目**纯配置文件驱动**，不使用环境变量、不设启动参数（Web 面板开关：`web.enable`）
-- **Web 面板查看**：运行状态卡（作息/续期/积压）、最近消息流、向量记忆（检索/写入/整理）、规则、人设（双层+版本回滚）、设置卡（LLM 参数 / Presence / 积压 / 日志等级，白名单热更新并写回 config.json）、日志卡（等级过滤，自动刷新）
+- **Web 面板查看**：运行状态卡（作息/续期/积压）、最近消息流、向量记忆（检索/写入/整理）、规则、设置卡（LLM 参数 / Presence / 积压 / 日志等级，白名单热更新并写回 config.json）、日志卡（等级过滤，自动刷新）
 - **API**：`GET /api/config`（密钥脱敏）、`POST /api/config`（`[{"path": "a.b.c", "value": x}]` 批量，越权路径忽略）、`GET /api/logs?lines=&level=`
 
 ## 关键行为（config.json `behavior`）
@@ -145,7 +146,7 @@ stateDiagram-v2
 
 > **群@识别（三层）**：① 首选 `GROUP_AT_MESSAGE_CREATE` 事件（开放平台需订阅该事件，事件送达时自动学习机器人 openid 写入 config）；② 全量消息 content 内嵌 `<@openid>`——`bot_openid` 为空时自动学习第一条 `<@>` 的 id 写入 config，之后精确匹配（当前生效）；③ `mentions` 精确匹配 `bot_openid`。
 
-> **可读名称（日志显示群名/昵称）**：群名自动走官方 `GET /v2/groups/{group_openid}/info`（实测可用，字段 `group_name`）；群成员信息/成员列表接口为 11253 白名单（官方标注「内邀接入中」），C2C 无用户信息接口，故成员/用户昵称取自 `config.names.users` 本地表（群名也可用 `config.names.groups` 覆盖），未命中时降级显示短 id。
+> **显示用标识（不解析真名）**：不再调用任何名称接口（群成员/用户信息需 11253 白名单，且网络失败会拖慢消息处理）。日志与面板统一显示 `场景 + openid 前 8 位`（如 `群8825F8A7`、`私聊A1B2C3D4`），无白名单依赖、无额外网络请求。
 
 > `temp/` 目录默认只保留 24h（`storage.temp_ttl_hours=24`）：启动时清理一次 + 每小时巡检，超过时限的文件自动删除。
 
@@ -155,7 +156,6 @@ stateDiagram-v2
 {
   "appid": "...", "appsecret": "...",
   "bot_openid": "",                    // 机器人 openid，自动学习（群消息 <@id> / @事件 mentions），也可手动填
-  "names": { "groups": {}, "users": {} },   // 本地名称表：群 openid→群名、用户 openid→昵称（日志可读）
   "deepseek": {
     "base_url": "https://api.deepseek.com", "api_key": "...", "model": "deepseek-flash",
     "request": { "thinking": "disabled", "reasoning_effort": "high", "temperature": 1.0,
@@ -182,28 +182,29 @@ stateDiagram-v2
 
 ## 工具（DeepSeek function calling，`ggbot/tool/__init__.py`）
 
-`send_text` / `seed_message` / `end_call` / `send_image` / `send_voice`(TTS) / `send_video` / `send_emoji` / `memory_search` / `memory_write` / `persona_update`
+`send_text` / `seed_message` / `end_call` / `send_image` / `send_voice`(TTS) / `send_video` / `send_emoji` / `memory_search` / `memory_write`
 
 > 富媒体发送限制：官方 `post_group_file` 上传需要**公网 URL**。转发群友刚发的图片/语音直接用其附件 URL（代码已记录；视频不下载但保留 URL 同样可转发）；本地生成的文件（如 TTS 语音）需配置 `storage.public_base_url` 指向公网可访问的目录，否则该工具返回明确错误。
 
 ## 记忆向量化
 
 - 嵌入：SiliconFlow `Qwen/Qwen3-Embedding-4B`（OpenAI 兼容 `/embeddings`，无本地模型）
-- 写入：AI 调 `memory_write`（importance 1-5）
-- 检索：`memory_search` 余弦相似度 top-k，命中记忆拼入 system prompt
+- 写入：AI 调 `memory_write`（importance 1-5）；同会话内余弦 ≥0.95 视为重复，更新原条目而非新增
+- 检索：`memory_search` 余弦相似度 top-k；system prompt 只注入与当前消息相关度 ≥0.35 的 top-3，作用域为「全局 + 本会话」，避免无关记忆污染低上下文请求
+- 高可用：embedding 调用失败重试 3 次；检索失败仅跳过注入（按无记忆继续回复），不阻塞消息处理
 - 整理：面板「整理」按钮合并近似重复（阈值 0.95）
 
 ## 验证记录（已通过）
 
 ```
 [PASS] import_all        # 全部模块导入
-[PASS] storage_crud      # SQLite 会话/消息/记忆/规则/人设 CRUD + 积压查询 + 回滚
-[PASS] memory_vector     # SiliconFlow embedding 真实调用 + 语义检索 + tidy 合并
+[PASS] storage_crud      # SQLite 会话/消息/记忆/规则 CRUD + 积压查询
+[PASS] memory_vector     # SiliconFlow embedding 真实调用 + 语义检索 + 去重/ tidy 合并
 [PASS] llm_chat          # DeepSeek deepseek-flash 真实调用（thinking=disabled 生效）
-[PASS] tools_schema      # 10 工具 schema 校验
+[PASS] tools_schema      # 9 工具 schema 校验
 [PASS] presence_split    # 分段逻辑（空行/按句/无标点硬切/限段）
 [PASS] tool_loop         # function calling 端到端：AI 调用 memory_write 真实入库
-[PASS] config_read       # 纯配置文件驱动（无环境变量）+ persona/temp/db 路径
+[PASS] config_read       # 纯配置文件驱动（无环境变量）+ temp/db 路径
 [PASS] logging_system    # 多等级写文件 + tail 等级过滤 + set_level 热切换
 [PASS] presence_backlog  # 上线积压处理（wake-on-at 全链路：锁/会话分组/attachments 反序列化/目标派生）
 [PASS] presence_fail     # 发送失败隔离（失效会话标记 failed，不中断其余会话积压）
