@@ -5,9 +5,13 @@ QQ 群/用户 openid 是 32 位十六进制串，日志里不可读。解析顺�
 2. 官方 v2 API（api.sgroup.qq.com，带内存缓存；测试 app 可能无权限，失败降级显示 id）
 
 - token：POST bots.qq.com/app/getAppAccessToken（appId+clientSecret）
-- 群信息：GET /v2/groups/{group_openid}        → {"name": ...}
+- 群信息：GET /v2/groups/{group_openid}/info        → {"name": ...}（注意必须带 /info）
 - 群成员：GET /v2/groups/{group_openid}/members/{member_openid} → {"nickname": ...}
 - 用户：  GET /v2/users/{openid}               → {"nickname": ...}
+
+权限事实（官方文档 2026-10）：群信息/群成员接口为白名单制（11253"仅白名单机器人可用，
+请联系平台运营申请权限"），且官方 FAQ 注明为"内邀接口暂未开放申请"；事件 payload 不携带
+昵称。故本地 config.names 名称表是当前唯一可靠途径，API 仅作尝试（修通后自动生效）。
 """
 
 from __future__ import annotations
@@ -98,7 +102,7 @@ class NameResolver:
             return self._local_groups[gid]
         if gid in self._groups:
             return self._groups[gid]
-        v = await self._get_json(f"/groups/{gid}", f"g:{gid}")
+        v = await self._get_json(f"/groups/{gid}/info", f"g:{gid}")
         if v:
             self._groups[gid] = v
         return v
