@@ -218,16 +218,14 @@ class PresenceManager:
         st.touch()
         if st.state == "offline":
             if inbound.get("is_at") and self.p.get("wake_on_at_message", True):
-                logger.info("收到@，唤醒并立即回复: %.40r", inbound["content"],
-                            extra={"session": st.label})
+                logger.debug("收到@，立即唤醒本会话", extra={"session": st.label})
                 # 先即时被动回复该条（5 分钟窗口内有效、不耗主动消息额度），
                 # 成功后状态标记 replied，之后处理积压不会再重复回复它
                 await self._reply_now(inbound)
                 await st.go_online("wake-on-at")
                 return True
             pending = self.storage.count_pending(sid)
-            logger.info("离线积压 +1（pending=%d）: %.40r", pending, inbound["content"],
-                        extra={"session": st.label})
+            logger.debug("离线消息入库（pending=%d）", pending, extra={"session": st.label})
             return True
         # 在线：进入本会话 debounce 窗口聚合
         st.debounce.append(inbound)
@@ -273,7 +271,8 @@ class PresenceManager:
                          extra={"session": st.label if st else session_label(msgs[-1].get("session_id"))})
             return
         if await self._safe_reply(msgs, passive=True, renew_sid=(st.sid if st else None)):
-            self._renew_online(st)
+            if st is not None:
+                st.renew()
 
     # ---------- 回复核心 ----------
 
@@ -482,9 +481,7 @@ class PresenceManager:
         base_seq = inbound.get("msg_seq")
         for i, seg in enumerate(segments):
             seq = self._next_seq(sid, base_seq)
-            logger.info("回复 seg=%d/%d passive=%s: %.60r",
-                        i + 1, len(segments), can_passive, seg,
-                        extra={"session": session_label(sid)})
+            logger.info("发送: %.60r", seg, extra={"session": session_label(sid)})
             # 模拟打字：按分段长度停顿，避免所有分段同一瞬间发出
             think = typing_delay_sec(seg, self.r)
             if think > 0:

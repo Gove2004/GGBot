@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+SYSTEM_LABEL = "系统00000000"
+
 
 def oid8(oid: str | None) -> str:
     """openid 前 8 位（日志/面板展示用）。"""
@@ -9,10 +11,13 @@ def oid8(oid: str | None) -> str:
 
 
 def session_label(sid: str | None) -> str:
-    """session key（group:<gid> / c2c:<openid>）→ 群xxxxxxxx / 私聊xxxxxxxx。"""
-    prefix, _, rest = (sid or "").partition(":")
-    if prefix == "group":
-        return "群" + oid8(rest)
-    if prefix == "c2c":
+    """session key（group:<gid> / c2c:<openid>）→ 群聊xxxxxxxx / 私聊xxxxxxxx / 系统00000000。"""
+    prefix, sep, rest = (sid or "").partition(":")
+    if sep and prefix == "group":
+        return "群聊" + oid8(rest)
+    if sep and prefix == "c2c":
         return "私聊" + oid8(rest)
-    return oid8(sid)
+    raw = oid8(rest if sep else sid)
+    if not raw or raw.lower() == "system":
+        return SYSTEM_LABEL
+    return "系统" + raw

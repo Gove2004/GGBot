@@ -27,6 +27,16 @@ from ggbot.llm.memory import MemoryStore
 from ggbot.qq.bot import QQBot
 from ggbot.util.logging_setup import setup_logging
 
+ROOT_DIR = Path(__file__).resolve().parent
+
+
+def _rel(p: Path | str) -> str:
+    """项目内路径显示为相对路径，便于日志阅读。"""
+    try:
+        return Path(p).resolve().relative_to(ROOT_DIR).as_posix()
+    except ValueError:
+        return str(p)
+
 
 def _pid_alive(pid: int) -> bool:
     """Windows 下探测进程是否存活（不借用 psutil）。"""
@@ -67,21 +77,20 @@ async def main(cfg: Config | None = None) -> None:
     log_level = (cfg.web_cfg or {}).get("log_level", "INFO")
     setup_logging(cfg.log_file, log_level)
     log = logging.getLogger("ggbot.main")
-    log.info("日志系统就绪: %s (level=%s)", cfg.log_file, log_level)
+    log.info("日志就绪: %s (level=%s)", _rel(cfg.log_file), log_level)
 
     storage = Storage(cfg.db_path)
-    log.info("存储就绪: %s", cfg.db_path)
+    log.info("存储就绪: %s", _rel(cfg.db_path))
 
     if getattr(cfg, "_reset_chat", False):
         n = storage.reset_chat_data()
         log.info("聊天数据已清理: messages=%d sessions=%d（记忆/规则保留）", n["messages"], n["sessions"])
 
-    log.info("初始化向量记忆（SiliconFlow Embedding）…")
     memory = MemoryStore(cfg, storage)
-    log.info("向量记忆就绪: %s", memory.model)
+    log.info("记忆就绪: %s", memory.model)
 
     llm = DeepSeekClient(cfg)
-    log.info("LLM 就绪: %s @ %s", cfg.model, cfg.llm.get("base_url"))
+    log.info("LLM就绪: %s @ %s", cfg.model, cfg.llm.get("base_url"))
 
     intents = botpy.Intents(public_messages=True, public_guild_messages=True, message_audit=True)
     bot = QQBot(cfg, presence=None, intents=intents)
@@ -109,7 +118,7 @@ async def main(cfg: Config | None = None) -> None:
         web_task = asyncio.create_task(start_web(cfg, storage, memory, presence))
 
     try:
-        log.info("连接 QQ gateway（appid=%s）…", cfg.qq.get("appid"))
+        log.debug("连接 QQ gateway（appid=%s）…", cfg.qq.get("appid"))
         await bot.start(cfg.qq["appid"], cfg.qq["secret"])
     finally:
         await presence.stop()

@@ -27,7 +27,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from ggbot.util.session import session_label
+from ggbot.util.session import SYSTEM_LABEL, session_label
 
 logger = logging.getLogger("ggbot.web")
 
@@ -37,7 +37,7 @@ WEB_DIR = Path(__file__).resolve().parent / "static"
 LOG_LINE_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) \| (\w+)\s*\| ([\w.]+)\s*\| (.*?)\s*\| (.*)$"
 )
-# 旧版三列日志（时间 | 等级 | 位置 | 内容）兜底解析，会话记 System
+# 旧版三列日志（时间 | 等级 | 位置 | 内容）兜底解析，会话记系统
 LEGACY_LOG_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) \| (\w+)\s*\| ([\w.]+)\s*\| (.*)$"
 )
@@ -533,10 +533,10 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
             else:
                 m = LEGACY_LOG_RE.match(line)
                 if not m:
-                    logs.append({"ts": "", "level": "-", "module": "-", "session": "System", "content": line})
+                    logs.append({"ts": "", "level": "-", "module": "-", "session": SYSTEM_LABEL, "content": line})
                     continue
                 ts, lv, mod, content = m.groups()
-                sess = "System"
+                sess = SYSTEM_LABEL
             if session and session not in sess:
                 continue
             if q and q not in content:
@@ -591,5 +591,5 @@ async def start_web(cfg, storage, memory, presence) -> None:
             app, host=host, port=port, log_level="warning", access_log=False, server_header=False
         )
     )
-    logger.info("Web 面板启动: http://%s:%s（前端目录 %s）", host, port, WEB_DIR)
+    logger.info("Web就绪: http://%s:%s", host, port)
     await server.serve()

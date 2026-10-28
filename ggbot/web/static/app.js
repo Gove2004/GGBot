@@ -211,12 +211,12 @@ function fmtAgo(sec) {
 function labelFromKey(key) {
   const s = String(key || "");
   const i = s.indexOf(":");
-  if (i < 0) return s.slice(0, 8);
-  const prefix = s.slice(0, i);
-  const rest = s.slice(i + 1);
-  if (prefix === "group") return `群${rest.slice(0, 8)}`;
+  const prefix = i < 0 ? "" : s.slice(0, i);
+  const rest = i < 0 ? s : s.slice(i + 1);
+  if (prefix === "group") return `群聊${rest.slice(0, 8)}`;
   if (prefix === "c2c") return `私聊${rest.slice(0, 8)}`;
-  return rest.slice(0, 8);
+  const raw = rest.slice(0, 8);
+  return raw && raw.toLowerCase() !== "system" ? `系统${raw}` : "系统00000000";
 }
 function reasonLabel(reason) { return REASON[reason] || reason || "—"; }
 function statusBadge(status) {

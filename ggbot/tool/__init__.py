@@ -184,8 +184,7 @@ class ToolExecutor:
                                  ctx.get("event_id"))
         ctx["msg_seq"] = seq + 1  # 递增 msg_seq，支持同一消息多次回复
         ctx["sent_any"] = True    # 回合内已实际发送 → 收尾标记 replied 而非 skipped
-        logger.info("send_text seq=%d passive=%s: %.80s",
-                    seq, bool(ctx.get("event_id")), content,
+        logger.info("发送: %.80s", content,
                     extra={"session": session_label(ctx.get("session_id"))})
         return {"ok": True, "sent": content}
 
@@ -241,8 +240,7 @@ class ToolExecutor:
         if ok:
             ctx["msg_seq"] = seq + 1
             ctx["sent_any"] = True
-            logger.info("send_media %s seq=%d passive=%s: %s",
-                        label, seq, bool(ctx.get("event_id")), detail,
+            logger.info("发送%s: %s", label, detail,
                         extra={"session": session_label(ctx.get("session_id"))})
             return {"ok": True, "sent": f"{label}已发送: {detail}"}
         return {"ok": False, "error": detail}

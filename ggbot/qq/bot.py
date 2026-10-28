@@ -40,7 +40,7 @@ class QQBot(botpy.Client):
 
     async def on_ready(self) -> None:
         self._register_group_message_parser()
-        logger.info("QQBot 已连接 WebSocket gateway")
+        logger.info("QQBot就绪: WebSocket gateway 已连接")
 
     async def on_group_at_message_create(self, message: GroupMessage) -> None:
         # GROUP_AT_MESSAGE_CREATE：只有真正被@本机器人时触发（事件通道）
@@ -93,7 +93,7 @@ class QQBot(botpy.Client):
 
             state.parse_group_message_create = types.MethodType(parse_group_message_create, state)
             state.parsers["group_message_create"] = state.parse_group_message_create
-            logger.info("已注册 group_message_create（群全量消息）事件解析")
+            logger.debug("已注册 group_message_create（群全量消息）事件解析")
         except Exception as e:  # noqa: BLE001
             logger.warning("注册 group_message_create 解析失败: %s", e)
 
