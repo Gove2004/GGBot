@@ -21,7 +21,8 @@ logs/
 *.db-wal
 *.db-shm
 db/.bot.lock
-db/ggbot.db.bak-*   # 数据库备份（含完整对话数据，仅本地保留）
+# 数据库备份（含完整对话数据，仅本地保留，切勿提交）
+db/ggbot.db.bak-*
 
 # 富媒体临时落地目录（图片/语音/视频附件）与本地验证脚本
 temp/
