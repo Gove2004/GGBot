@@ -1,6 +1,6 @@
-"""Web 控制面板：FastAPI + WebSocket + 静态前端（ggbot/web/ 目录）。
+"""Web 控制面板：FastAPI + WebSocket + 静态前端（ggbot/web/static）。
 
-前端与后端分离：ggbot/web/index.html + style.css + app.js，经 /static 托管，可独立修改热加载。
+前端与后端分离：ggbot/web/static/{index.html,style.css,app.js}，经 /static 托管，可独立修改热加载。
 功能：在线状态、消息流、记忆（向量检索/写入/整理）、规则管理、人设查看与回滚、配置热更新、日志查看。
 鉴权：config.web.token，所有 /api 请求需带 ?token= 或 X-Token 头。
 """
@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger("ggbot.web")
 
-WEB_DIR = Path(__file__).resolve().parent / "web"
+WEB_DIR = Path(__file__).resolve().parent / "static"
 
 
 class RuleIn(BaseModel):
@@ -185,7 +185,7 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
             if cfg.set_by_path(item.path, item.value):
                 updated.append(item.path)
         if "web.log_level" in updated:
-            from ggbot.logging_setup import set_level
+            from ggbot.util.logging_setup import set_level
 
             set_level(cfg.data["web"]["log_level"])
         cfg.save()
@@ -200,7 +200,7 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         x_token: str | None = Header(default=None), token: str | None = Query(default=None),
     ):
         _auth(x_token, token)
-        from ggbot.logging_setup import tail_log
+        from ggbot.util.logging_setup import tail_log
 
         n = min(max(lines, 1), 2000)
         return {"level": level, "lines": tail_log(cfg.log_file, n, level)}

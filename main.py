@@ -16,14 +16,14 @@ from pathlib import Path
 
 import botpy
 
-from ggbot.bot import QQBot
-from ggbot.config import Config
-from ggbot.llm import DeepSeekClient
-from ggbot.memory import MemoryStore
-from ggbot.presence import PresenceManager
-from ggbot.storage import Storage
-from ggbot.tools import ToolExecutor
-from ggbot.logging_setup import setup_logging
+from ggbot.core.config import Config
+from ggbot.core.presence import PresenceManager
+from ggbot.core.storage import Storage
+from ggbot.core.tools import ToolExecutor
+from ggbot.llm.llm import DeepSeekClient
+from ggbot.llm.memory import MemoryStore
+from ggbot.qq.bot import QQBot
+from ggbot.util.logging_setup import setup_logging
 
 
 def _pid_alive(pid: int) -> bool:

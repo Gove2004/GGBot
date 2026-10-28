@@ -17,7 +17,7 @@ import threading
 import time
 from datetime import datetime
 
-from ggbot.tools import NO_REPLY, agent_loop
+from ggbot.core.tools import NO_REPLY, agent_loop
 
 logger = logging.getLogger("ggbot.presence")
 

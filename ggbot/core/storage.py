@@ -130,7 +130,7 @@ class Storage:
 
         与当前最新 inner 版本内容不一致时导入新版本（owner 改文件后重启即生效）。
         """
-        from ggbot.config import BASE_DIR
+        from ggbot.core.config import BASE_DIR
 
         core_file = BASE_DIR / "db" / "persona_core.md"
         if not core_file.exists():
