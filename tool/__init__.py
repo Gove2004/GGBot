@@ -84,7 +84,7 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
             content = (msg.content or "").strip()
             # 模型偶尔无视工具协议直接回文本：本轮还没发过就兜底发出去，避免整轮静默
             if content and not ctx.get("sent_any"):
-                logger.debug("模型未调用工具，文本兜底为 send_text: %.60r", content[:60])
+                logger.debug("模型未调用工具，默认 send_text")
                 await executor.execute("send_text", {"content": content}, ctx)
             else:
                 logger.debug("agent 未调用工具，结束本轮")

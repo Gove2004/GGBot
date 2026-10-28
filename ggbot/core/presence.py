@@ -118,6 +118,7 @@ class PresenceManager:
         self._max_input = int(ctx_cfg.get("max_input_tokens", 128000))
         self._budget_tokens = int(ctx_cfg.get("summary_threshold_tokens", 100000))
         self._history_limit = int(ctx_cfg.get("max_history_messages", 50))
+        self._backlog_limit = int(self.b.get("max_scan_messages", 1000))
 
         self.state = "offline"  # 兼容旧字段（面板聚合时不再使用单值）
         self._states: dict[str, _SessionState] = {}  # 每会话独立状态机
@@ -213,11 +214,11 @@ class PresenceManager:
                     st.renew()
                 return True
             pending = self.storage.count_pending(sid)
-            logger.debug("离线消息入库（pending=%d）", pending, extra={"session": st.label})
+            logger.debug("离线积压 %d / %d 条", pending, self._backlog_limit, extra={"session": st.label})
             return True
         # 在线：进入本会话 debounce 窗口聚合
         st.debounce.append(inbound)
-        logger.debug("在线入窗 窗口=%d", len(st.debounce), extra={"session": st.label})
+        logger.debug("在线积压 %d / %d 条", len(st.debounce), self._backlog_limit, extra={"session": st.label})
         if st._debounce_task is None or st._debounce_task.done():
             st._debounce_task = asyncio.create_task(self._flush_debounce(st))
         return True
@@ -360,7 +361,7 @@ class PresenceManager:
         return len(ids)
 
     def _pending_of(self, sid: str) -> list[dict]:
-        return self.storage.get_pending_messages(sid, int(self.b.get("max_scan_messages", 1000)))
+        return self.storage.get_pending_messages(sid, self._backlog_limit)
 
     # ---------- 上下文组装 ----------
 
@@ -387,8 +388,8 @@ class PresenceManager:
             self.llm.estimate_tokens(m.get("content") or "") for m in messages
         )
         label = session_label(sid)
-        logger.debug("agent 上下文: history=%d tokens≈%d 预算=%d",
-                     len(history_msgs), total, budget, extra={"session": label})
+        logger.debug("agent 上下文: history=%d / %d tokens≈%d / %d",
+                     len(history_msgs), self._history_limit, total, budget, extra={"session": label})
         if total > budget and history:
             summary = await asyncio.to_thread(self.llm.summarize, _fmt_history(history))
             self.storage.save_summary(sid, summary)
@@ -534,7 +535,7 @@ class _SessionState:
         if seen is None:
             seen = self.pm._read_backlog_sid(self.sid)
         label = {"scheduled": "自然上线", "wake-on-at": "强制上线"}.get(reason, "上线")
-        logger.info("%s 预计在线 %.0fs, 积压消息 %d 条", label, span, seen,
+        logger.info("%s 预计在线 %.0fs, 积压消息 %d / %d 条", label, span, seen, self.pm._backlog_limit,
                     extra={"session": self.label})
 
     async def go_offline(self, reason: str) -> None:

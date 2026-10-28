@@ -638,7 +638,7 @@ async def start_web(cfg, storage, memory, presence) -> None:
 
     app = create_app(cfg, storage, memory, presence)
     host = (cfg.web_cfg or {}).get("host", "127.0.0.1")
-    port = int((cfg.web_cfg or {}).get("port", 8080))
+    port = int((cfg.web_cfg or {}).get("port", 11028))
     if not (cfg.web_cfg or {}).get("token"):
         logger.warning("web.token 为空：面板未启用鉴权，请仅在本机访问")
     server = uvicorn.Server(

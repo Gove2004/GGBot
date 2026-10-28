@@ -50,14 +50,15 @@ class DeepSeekClient:
     def chat(self, messages: list, tools=None, tool_choice=None, retries: int = 3):
         """单次补全调用。返回 openai response 对象。"""
         kwargs = self._kwargs(messages, tools, tool_choice)
-        logger.debug(
-            "LLM 请求 model=%s messages=%d 估算tokens=%d tools=%s",
-            self.model, len(messages), self.estimate_tokens(str(messages)), bool(tools),
-        )
+        logger.debug("LLM 请求 tokens≈%d", self.estimate_tokens(str(messages)))
         last_err: Exception | None = None
         for attempt in range(retries):
             try:
                 resp = self.client.chat.completions.create(**kwargs)
+                usage = getattr(resp, "usage", None)
+                done = getattr(usage, "completion_tokens", None) if usage else None
+                if done is not None:
+                    logger.debug("LLM 响应 tokens≈%d", int(done))
                 return resp
             except Exception as e:  # noqa: BLE001
                 last_err = e
