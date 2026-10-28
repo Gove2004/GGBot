@@ -2,12 +2,14 @@
 
 - 事件：群@（on_group_at_message_create）、单聊（on_c2c_message_create）、群全量（on_group_message_create）
 - 富媒体附件（图片/语音/视频/文件）下载到 temp/ 并记录公网 URL（可转发）
-- 发送：文本被动回复（msg_id + 递增 msg_seq）、富媒体上传（post_group_file → file_info → msg_type=7）
+- 发送：文本被动回复（msg_id + 递增 msg_seq）、富媒体上传（base64 file_data → file_info → msg_type=7）
 - 日志：openid 只显示前 8 位（不做名称解析，无白名单/网络依赖）
 """
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import re
 import time
@@ -15,6 +17,7 @@ from pathlib import Path
 
 import aiohttp
 import botpy
+from botpy.http import Route
 from botpy.message import C2CMessage, GroupMessage
 
 from ggbot.util.session import oid8, session_label
@@ -23,6 +26,27 @@ logger = logging.getLogger("ggbot.bot")
 
 # QQ 群消息 @ 人/机器人：content 内嵌 <@openid>（openid 为 32 位十六进制）
 AT_RE = re.compile(r"<@([0-9A-Fa-f]{32})>")
+# QQ 表情：<faceType=1,faceId="427",ext="<base64>">，ext 内含表情文字
+FACE_RE = re.compile(r'<faceType=\d+,faceId="[^"]*"(?:,ext="([^"]*)")?\s*/?>')
+MAX_INLINE_UPLOAD = 10 * 1024 * 1024
+
+
+def _face_text(match: re.Match) -> str:
+    text = ""
+    try:
+        data = json.loads(base64.b64decode(match.group(1) or "").decode("utf-8"))
+        if isinstance(data, dict):
+            text = str(data.get("text") or "").strip()
+    except (ValueError, UnicodeDecodeError):
+        pass
+    return f"[表情:{text}]" if text else "[表情]"
+
+
+def clean_content(content: str) -> str:
+    """剥离 QQ 富文本标记：表情还原为文字，@ 标记去掉（是否被@由 is_at 单独标识）。"""
+    text = FACE_RE.sub(_face_text, content or "")
+    text = AT_RE.sub("", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 class QQBot(botpy.Client):
@@ -47,7 +71,7 @@ class QQBot(botpy.Client):
         self._learn_bot_openid(message)
         sid = session_label(f"group:{message.group_openid}")
         sender = oid8(getattr(message.author, "member_openid", None))
-        logger.info("群@[%s] %.50s", sender, (message.content or "").strip(),
+        logger.info("群@[%s] %.50s", sender, clean_content(message.content),
                     extra={"session": sid})
         await self._route(message, is_at=True, passive_ok=True)
 
@@ -55,7 +79,7 @@ class QQBot(botpy.Client):
         # 私聊 = 直接找机器人对话，等价于 @；C2C 事件可被动回复
         openid = getattr(message, "author", None) and getattr(message.author, "user_openid", None)
         sid = session_label(f"c2c:{openid}")
-        logger.info("私聊[%s] %.50s", oid8(openid), (message.content or "").strip(),
+        logger.info("私聊[%s] %.50s", oid8(openid), clean_content(message.content),
                     extra={"session": sid})
         await self._route(message, is_at=True, passive_ok=True)
 
@@ -106,7 +130,7 @@ class QQBot(botpy.Client):
         sid = session_label(f"group:{message.group_openid}")
         sender = oid8(getattr(message.author, "member_openid", None))
         logger.info("群消息[%s] at=%s: %.50s", sender, "Y" if me else "N",
-                    (message.content or "").strip(), extra={"session": sid})
+                    clean_content(message.content), extra={"session": sid})
         # passive_ok 固定 False：全量事件的 event_id 不能用于被动回复（40034027），只能主动发送
         await self._route(message, is_at=me, passive_ok=False)
 
@@ -125,7 +149,7 @@ class QQBot(botpy.Client):
         if self.presence:
             await self.presence.handle_message(inbound)
         else:
-            logger.info("presence 未注入，消息跳过 id=%s", msg_id, extra={"session": sid})
+            logger.warning("presence 未注入，消息跳过 id=%s", msg_id)
 
     # ---------- 归一化 ----------
 
@@ -144,7 +168,7 @@ class QQBot(botpy.Client):
             target = openid
             sender = "c2c"
             scene = "c2c"
-        content = (message.content or "").strip()
+        content = clean_content(message.content)
         attachments = await self._download_attachments(message.attachments or [], key=key)
         # is_at：事件来源（group_at/c2c=True）优先；全量消息用 mentions / content <@> 兜底匹配 bot_openid
         # passive_ok：只有 @事件/C2C 事件的消息可用 msg_id+event_id 被动回复；
@@ -309,40 +333,39 @@ class QQBot(botpy.Client):
         self, target: str, scene: str, file_type: int, source: str,
         msg_id: str | None = None, msg_seq: int = 1,
     ) -> tuple[bool, str]:
-        """富媒体上传并发送。file_type: 1 图片 / 2 视频 / 3 语音 / 4 文件。
+        """富媒体上传并发送。file_type: 1 图片 / 2 视频 / 3 语音(silk) / 4 文件。
 
-        source 支持公网 URL，或 temp/db-tool 下的本地文件（需配置
-        storage.public_base_url 指向 Web 面板公网地址，本地文件经签名 /media URL 暴露）。
+        source 支持公网 URL，或 temp/tool 下的本地文件。本地文件直接以 base64
+        file_data 上传（QQ 官方接口支持，无需公网地址）；超过 10MB 的文件才退回
+        storage.public_base_url 签名链接，避免请求体过大。
         返回 (ok, detail)，detail 只含安全的展示名，不含签名 URL。
         """
-        from ggbot.util.media import public_media_url
-
-        url = source
+        local: Path | None = None
+        url: str | None = None
         display = "公网素材"
-        if not url.startswith(("http://", "https://")):
+        if source.startswith(("http://", "https://")):
+            url = source
+        else:
             p = Path(source)
             if not p.is_absolute():
                 p = self.cfg.temp_dir / p
             if not p.is_file():
                 return False, f"本地文件不存在: {Path(source).name}"
-            url = public_media_url(self.cfg, p) or ""
-            display = p.name
-            if not url:
-                return False, (
-                    "本地文件无法上传：需要公网 URL。请配置 storage.public_base_url "
-                    "指向本 Web 面板的公网地址（本地文件会生成带签名的 /media 临时链接）。"
-                )
+            local, display = p, p.name
+            if p.stat().st_size > MAX_INLINE_UPLOAD:
+                from ggbot.util.media import public_media_url
+
+                local = None
+                url = public_media_url(self.cfg, p)
+                if not url:
+                    return False, (
+                        f"文件超过 {MAX_INLINE_UPLOAD // 1048576}MB，"
+                        "需要配置 storage.public_base_url 才能发送"
+                    )
         try:
-            if scene == "group":
-                media = await self.api.post_group_file(
-                    group_openid=target, file_type=file_type, url=url
-                )
-            else:
-                media = await self.api.post_c2c_file(
-                    openid=target, file_type=file_type, url=url
-                )
-            file_info = media.get("file_info") if isinstance(media, dict) else getattr(media, "file_info", None)
-            if not file_info:
+            media = await self._upload_media(target, scene, file_type, url=url,
+                                             local=local, name=display)
+            if not media.get("file_info"):
                 return False, f"上传未返回 file_info: {media}"
             if scene == "group":
                 await self.api.post_group_message(
@@ -358,3 +381,27 @@ class QQBot(botpy.Client):
         except Exception as e:  # noqa: BLE001
             logger.exception("富媒体发送失败", extra={"session": session_label(f"{scene}:{target}")})
             return False, f"富媒体发送失败: {e}"
+
+    async def _upload_media(self, target: str, scene: str, file_type: int, *,
+                            url: str | None, local: Path | None, name: str) -> dict:
+        """上传富媒体到 QQ，返回 media 对象（file_uuid/file_info/ttl）。"""
+        payload: dict = {"file_type": file_type, "srv_send_msg": False}
+        if local is not None:
+            payload["file_data"] = base64.b64encode(local.read_bytes()).decode()
+            payload["file_name"] = name
+        else:
+            payload["url"] = url
+        if scene == "group":
+            payload["group_openid"] = target
+            route = Route("POST", "/v2/groups/{group_openid}/files", group_openid=target)
+        else:
+            payload["openid"] = target
+            route = Route("POST", "/v2/users/{openid}/files", openid=target)
+        result = await self.api._http.request(route, json=payload)
+        if not isinstance(result, dict):
+            raise RuntimeError(f"上传接口返回异常: {result}")
+        return {
+            "file_uuid": result.get("file_uuid", ""),
+            "file_info": result.get("file_info"),
+            "ttl": result.get("ttl", 0),
+        }

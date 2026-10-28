@@ -15,12 +15,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-import re
 import threading
 import time
 
 from tool import agent_loop
-from ggbot.util.human import jitter, read_delay_sec, sample_duration, typing_delay_sec
+from ggbot.util.human import jitter, read_delay_sec, sample_duration
 from ggbot.util.session import oid8, session_label
 
 logger = logging.getLogger("ggbot.presence")
@@ -37,13 +36,14 @@ SYSTEM_TEMPLATE = """你是 QQ 群/私聊里的聊天伙伴，昵称“{name}”
 {tool_hints}
 
 【行动准则】
-1. 口语化短句，一条不超过 40 字；要多说几句就多次调用 send_text。
+1. 口语化短句，一条不超过 40 字；不要用换行或空行把几句话拼成一条，要说多句就分多次调用 send_text。
 2. 纯文本输出不会发送给任何人，必须调用工具。不想说话就别调用工具，直接结束本轮。
 3. 被@时必须回应。
-4. 图片/语音/视频的地址标注在消息里，可以直接转发（send_image 等）或点评。
-5. 想不起的事用 memory_search 回忆；值得长期记住的用 memory_write。
+4. 图片/语音/视频的地址标注在消息里，可以原样转发（send_image 等）；你看不到图片内容，只能凭上下文回应，不要假装看见了。
+5. 想不起的事先用 memory_search 查；用户让你记住、或出现值得长期留存的信息时，用 memory_write 写进去。
 6. 群里的普通消息（没@你）也可以接话，但只在你有话想说时；不想接就用 end_call。
-7. 只聊当下，不翻旧账；离线积压的消息只是让你知道期间发生了什么，不需要逐条回应。
+7. 用户要求发邮件、语音、表情时直接调用对应工具，不要在调用前就断言做不到；工具失败会返回具体原因。
+8. 只聊当下，不翻旧账；离线积压的消息只是让你知道期间发生了什么，不需要逐条回应。
 """
 
 
@@ -71,14 +71,19 @@ def _fmt_user_messages(msgs: list[dict]) -> str:
         for a in m.get("attachments", []) or []:
             ct = (a.get("content_type") or "").lower()
             url = a.get("url") or ""
+            # 已落地的本地副本可直接作为 send_image/send_voice 的 source 转发
+            local = a.get("local_path") or ""
+            ref = f" url={url}" if url else ""
+            if local:
+                ref += f" local={local}"
             if "image" in ct:
-                parts.append(f"[图片 url={url}]")
+                parts.append(f"[图片{ref}]")
             elif "video" in ct:
-                parts.append(f"[视频 url={url}]")
+                parts.append(f"[视频{ref}]")
             elif "voice" in ct:
-                parts.append(f"[语音 url={url}]")
+                parts.append(f"[语音{ref}]")
             else:
-                parts.append(f"[文件 {a.get('filename')} url={url}]")
+                parts.append(f"[文件 {a.get('filename')}{ref}]")
         lines.append(" ".join(parts))
     return "\n".join(lines)
 
@@ -92,36 +97,6 @@ def _fmt_history(history: list[dict]) -> str:
         else:
             lines.append(f"[{oid8(h.get('sender'))}] {h.get('content') or ''}")
     return "\n".join(lines)
-
-
-def split_reply(text: str, max_chars: int = 80, max_segments: int = 5) -> list[str]:
-    """回复分段：按空行拆段；单段超长按句切，无标点长串按长度硬切；段数超限合并尾部。"""
-    parts = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-    out: list[str] = []
-
-    def hard_cut(s: str) -> list[str]:
-        return [s[i : i + max_chars] for i in range(0, len(s), max_chars)]
-
-    for p in parts:
-        if len(p) <= max_chars:
-            out.append(p)
-            continue
-        segs = [s.strip() for s in re.split(r"(?<=[。！？!?])", p) if s.strip()]
-        if len(segs) <= 1:
-            out.extend(hard_cut(p))
-            continue
-        buf = ""
-        for seg in segs:
-            if buf and len(buf) + len(seg) > max_chars:
-                out.append(buf)
-                buf = seg
-            else:
-                buf += seg
-        if buf:
-            out.extend(hard_cut(buf) if len(buf) > max_chars else [buf])
-    if len(out) > max_segments and max_segments > 0:
-        out = out[: max_segments - 1] + ["\n".join(out[max_segments - 1 :])]
-    return out
 
 
 class PresenceManager:
@@ -148,10 +123,6 @@ class PresenceManager:
         self._states: dict[str, _SessionState] = {}  # 每会话独立状态机
         self._loop_task: asyncio.Task | None = None
         self._lock = threading.RLock()
-        self._recent_reply_ts = 0.0
-        # 回复消息序号：小整数递增（与 msg_id 联合防重；官方默认 1）。
-        # 切勿用毫秒时间戳等 int32 超限值——QQ 服务端会 400「请求数据异常」
-        self._seq_by_sid: dict[str, int] = {}  # 用于面板展示
         self._max_states = 200  # 会话状态对象上限，超出清理离线无积压的
         # 主动消息本地计数：平台群聊硬限制 20 条/分钟、1000 条/天，这里再留余量
         self._active_turns: dict[str, list[float]] = {}
@@ -196,7 +167,6 @@ class PresenceManager:
         """丢弃会话运行态（清空上下文/重置后调用），不影响其他会话。"""
         with self._lock:
             st = self._states.pop(sid, None)
-            self._seq_by_sid.pop(sid, None)
         if st and st._debounce_task:
             st._debounce_task.cancel()
             try:
@@ -256,22 +226,20 @@ class PresenceManager:
         await asyncio.sleep(float(self.r.get("debounce_sec", 5)))
         batch = st.debounce
         st.debounce = []
-        st._debounce_task = None
         if not batch:
+            st._debounce_task = None
             return
-        await self._process_batch(batch, st)
+        st._processing = True
+        try:
+            await self._process_batch(batch, st)
+        finally:
+            st._processing = False
+            st._debounce_task = None
+            # 处理期间又来了新消息：等这一轮结束再开下一轮，避免两轮并发、回复乱序
+            if st.debounce and st.state == "online":
+                st._debounce_task = asyncio.create_task(self._flush_debounce(st))
 
     # ---------- 在线/离线（会话级） ----------
-
-    async def _go_online(self, reason: str) -> None:
-        """兼容入口：作用于当前唯一/默认会话（保留给外部调用，主路径走 _SessionState.go_online）。"""
-        st = self._state_of(self._primary_sid())
-        await st.go_online(reason)
-
-    def _primary_sid(self) -> str:
-        if self._states:
-            return next(iter(self._states))
-        return "group:default"
 
     def _session_label(self, sid: str) -> str:
         return session_label(sid)
@@ -454,70 +422,11 @@ class PresenceManager:
                 lines = [f"- {(h.get('content') or '')[:80]}" for h in hits]
                 digest = "\n".join(lines) or "（无）"
             except Exception as e:  # noqa: BLE001
-                logger.debug("记忆检索失败/超时，跳过注入: %s", e)
+                logger.debug("记忆检索失败/超时，跳过注入: %s: %s", type(e).__name__, e)
         return SYSTEM_TEMPLATE.format(
             name=self._name, memory_digest=digest, rules=rules_text,
             tool_hints=self.executor.hints(),
         )
-
-    # ---------- 发送 ----------
-
-    def _next_seq(self, sid: str, base_seq: int | None = None) -> int:
-        """回复消息序号：会话内单调小递增（不超 int32）。
-
-        - 被动回复：若已知被回复消息的全局序号 base_seq，从 base_seq+1 起，
-          确保大于被回复消息序号且递增；
-        - 主动发送：从 1 起递增即可（官方默认语义）。
-        """
-        prev = self._seq_by_sid.get(sid, 0)
-        floor = int(base_seq or 0)
-        nxt = max(prev + 1, floor + 1)
-        self._seq_by_sid[sid] = nxt
-        return nxt
-
-    async def _send_chunked(self, inbound: dict, reply: str, passive: bool = True) -> bool:
-        """分段发送。返回是否实际发送了内容（空回复返回 False）。
-
-        平台规则：只有 @本机器人事件（GROUP_AT_MESSAGE_CREATE / C2C_MSG_RECEIVE）
-        的消息能用 msg_id+event_id 被动回复；全量消息事件的 event_id 不能用于
-        被动回复（40034027），必须主动发送（不带 msg_id/event_id）。
-        """
-        segments = split_reply(reply, self.r.get("max_chars_per_segment", 80), self.r.get("max_segments", 5))
-        if not segments:
-            logger.debug("回复为空，不发送")
-            return False
-        target = inbound.get("target") or self._target_of(inbound.get("session_id") or "")[0]
-        scene = inbound.get("scene") or self._target_of(inbound.get("session_id") or "")[1]
-        can_passive = bool(passive and inbound.get("passive_ok"))
-        gap = float(self.r.get("segment_gap_sec", 2))
-        msg_id = inbound.get("msg_id") if can_passive else None
-        event_id = inbound.get("event_id") if can_passive else None
-        sid = inbound.get("session_id") or ""
-        base_seq = inbound.get("msg_seq")
-        for i, seg in enumerate(segments):
-            seq = self._next_seq(sid, base_seq)
-            # 模拟打字：按分段长度停顿，避免所有分段同一瞬间发出
-            think = typing_delay_sec(seg, self.r)
-            if think > 0:
-                await asyncio.sleep(think)
-            try:
-                await self.bot.send_text(target, seg, scene, msg_id, seq, event_id)
-            except Exception as e:  # noqa: BLE001
-                if can_passive and msg_id:
-                    # 被动回复失败（msg_id 过期 / 事件不可回复等）→ 降级主动发送，确保送达
-                    logger.warning("被动回复失败，降级主动 target=%s: %s", oid8(target), e,
-                                   extra={"session": session_label(sid)})
-                    await self.bot.send_text(target, seg, scene, None, self._next_seq(sid, None))
-                else:
-                    raise
-            # 每发送一条消息：会话在线时长 +renew_per_reply_sec（聊得火热）
-            st = self._states.get(sid)
-            if st is not None:
-                st.renew()
-            if i < len(segments) - 1:
-                await asyncio.sleep(gap)
-        self._recent_reply_ts = time.monotonic()
-        return True
 
     # ---------- 面板状态 ----------
 
@@ -589,6 +498,7 @@ class _SessionState:
         self._next_online = time.monotonic() + self._offline_span() * random.uniform(0.4, 1.0)
         self.debounce: list[dict] = []
         self._debounce_task: asyncio.Task | None = None
+        self._processing = False  # 本轮批次是否仍在跑 LLM/工具（防并发两轮）
 
     @property
     def _p(self) -> dict:
@@ -634,8 +544,9 @@ class _SessionState:
         self.reason = reason
         wait = self._offline_span()
         self._next_online = time.monotonic() + wait
-        # 清理本会话未发送的抖动批次（下线即停，避免残留任务/消息堆积）
-        if self._debounce_task:
+        # 清理本会话未发送的抖动批次（下线即停，避免残留任务/消息堆积）；
+        # 正在处理中的批次不打断，避免回复发到一半被取消
+        if self._debounce_task and not self._processing:
             self._debounce_task.cancel()
             try:
                 await self._debounce_task

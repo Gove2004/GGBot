@@ -1,6 +1,7 @@
-"""本地媒体的签名 URL：把 temp/ 与 tool/ 下的文件临时暴露给 QQ 服务端下载。
+"""本地媒体的签名 URL：把 temp/ 与 tool/ 下的文件临时暴露到公网。
 
-QQ 富媒体上传只接受公网 URL，本地生成的表情/语音必须先能被公网访问。
+QQ 富媒体上传优先走 base64 file_data 直传，本地文件一般不需要公网地址；
+只有超过 10MB 的本地文件才退回公网 URL（QQ 单请求体过大）。
 这里生成带 HMAC 签名与有效期的路径，由 Web 面板的 /media/ 路由读取；
 只允许媒体扩展名，绝不暴露 config.json、数据库或日志。
 """
@@ -106,7 +107,7 @@ def verify_path(cfg, exp: int, sig: str, rel: str) -> Path | None:
 
 
 def public_media_url(cfg, path: Path | str, ttl: int = DEFAULT_TTL) -> str | None:
-    """把本地文件转成公网可下载的签名 URL（需配置 storage.public_base_url）。"""
+    """把本地文件转成公网可下载的签名 URL（需配置 storage.public_base_url；仅大文件回退用）。"""
     base = str((cfg.storage_cfg or {}).get("public_base_url") or "").strip()
     if not base:
         return None

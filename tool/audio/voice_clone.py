@@ -1,7 +1,7 @@
 """MiMo 语音克隆 Tool：用参考音色把文本合成为语音并发送。
 
 配置/数据：tool/audio/config.json + voice_ref.wav（与代码同目录）
-运行产物：temp/tool/audio/*.wav（随 temp TTL 清理）
+运行产物：temp/tool/audio/*.wav → *.silk（随 temp TTL 清理）
 """
 
 from __future__ import annotations
@@ -18,6 +18,24 @@ from pathlib import Path
 from ..base import Tool
 
 logger = logging.getLogger("ggbot.tools.voice_clone")
+
+
+def _to_silk(path: Path) -> Path:
+    """QQ 语音富媒体要求 SILK：MiMo 输出 24kHz/单声道/16bit WAV，取 PCM 直接编码。"""
+    import wave
+
+    import pysilk
+
+    with wave.open(str(path), "rb") as w:
+        fmt = (w.getframerate(), w.getnchannels(), w.getsampwidth())
+        if fmt != (24000, 1, 2):
+            raise RuntimeError(
+                f"语音需为 24kHz/单声道/16bit，实际 {fmt[0]}Hz/{fmt[1]}ch/{fmt[2] * 8}bit"
+            )
+        pcm = w.readframes(w.getnframes())
+    out = path.with_suffix(".silk")
+    out.write_bytes(pysilk.encode(pcm, 24000, sample_rate=24000))
+    return out
 
 
 class VoiceClone(Tool):
@@ -119,9 +137,10 @@ class VoiceClone(Tool):
             return {"ok": False, "error": f"语音文本过长（{len(text)} 字），请控制在 {limit} 字以内"}
         try:
             path = await asyncio.to_thread(self._synth, text)
+            path = await asyncio.to_thread(_to_silk, path)
         except Exception as e:  # noqa: BLE001
             logger.warning("语音克隆失败: %s", e)
-            return {"ok": False, "error": f"语音合成失败: {e}"}
+            return {"ok": False, "error": f"语音生成失败: {e}"}
         return await self.rt.send_media(ctx, 3, str(path), "语音克隆")
 
 

@@ -19,6 +19,7 @@ import importlib
 import json
 import logging
 import pkgutil
+import re
 import threading
 from pathlib import Path
 
@@ -129,18 +130,34 @@ class ToolRuntime:
         content = to_str(content).strip()
         if not content:
             return {"ok": False, "error": "content 为空"}
-        think = typing_delay_sec(content, getattr(self.cfg, "reply", {}) or {})
-        if think > 0:
-            await asyncio.sleep(think)
-        seq = ctx.get("msg_seq", 1)
-        await self.bot.send_text(
-            ctx["target"], content, ctx["scene"], ctx.get("msg_id"), seq, ctx.get("event_id")
-        )
-        ctx["msg_seq"] = seq + 1
-        ctx["sent_any"] = True
+        # 模型偶尔用换行/空行把多句拼进一条，这里拆成多条依次发送，
+        # 避免出现"A 空行 B"式的整段回复
+        segments = [s.strip() for s in re.split(r"\n+", content) if s.strip()] or [content]
+        reply_cfg = getattr(self.cfg, "reply", {}) or {}
+        gap = max(0.0, float(reply_cfg.get("segment_gap_sec", 2) or 0))
         sid = ctx.get("session_id")
-        if sid:
-            self.storage.add_message(sid, "assistant", "bot", content, status="sent")
+        for i, seg in enumerate(segments):
+            think = typing_delay_sec(seg, reply_cfg)
+            if think > 0:
+                await asyncio.sleep(think)
+            seq = ctx.get("msg_seq", 1)
+            try:
+                await self.bot.send_text(
+                    ctx["target"], seg, ctx["scene"], ctx.get("msg_id"), seq, ctx.get("event_id")
+                )
+            except Exception as e:  # noqa: BLE001
+                if not ctx.get("msg_id"):
+                    raise
+                # 被动回复失败（msg_id 过期等）→ 降级主动发送，确保送达
+                logger.warning("被动回复失败，降级主动发送: %s", e,
+                               extra={"session": session_label(ctx.get("session_id"))})
+                await self.bot.send_text(ctx["target"], seg, ctx["scene"], None, seq)
+            ctx["msg_seq"] = seq + 1
+            ctx["sent_any"] = True
+            if sid:
+                self.storage.add_message(sid, "assistant", "bot", seg, status="sent")
+            if gap and i < len(segments) - 1:
+                await asyncio.sleep(gap)
         return {"ok": True, "sent": content}
 
     async def send_media(self, ctx: dict, file_type: int, source: str, label: str) -> dict:
@@ -157,6 +174,8 @@ class ToolRuntime:
             logger.info("发送%s: %s", label, detail,
                         extra={"session": session_label(ctx.get("session_id"))})
             return {"ok": True, "sent": f"{label}已发送: {detail}"}
+        logger.warning("发送%s失败: %s", label, detail,
+                       extra={"session": session_label(ctx.get("session_id"))})
         return {"ok": False, "error": detail}
 
 

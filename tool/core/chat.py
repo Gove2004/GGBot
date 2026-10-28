@@ -9,7 +9,7 @@ class SendText(Tool):
     name = "send_text"
     description = (
         "向当前会话发送一条文本消息（你回复的主要方式；主动开场、接话也用它）。"
-        "同一条回复想说多句可多次调用，或用一条带换行"
+        "一条消息只说一句话，不要用换行或空行把多句拼在一起；想连发多条就多次调用本工具"
     )
     parameters = {
         "type": "object",

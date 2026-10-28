@@ -122,7 +122,7 @@ start.bat                    # Windows 前台（Ctrl+C 停止）
 | 回复续期 | `presence.renew_on_reply` + `renew_per_reply_sec`（默认 30）/ `renew_max_sec`（默认 600） | 每成功回复一轮固定续期 30s（带抖动），单次封顶 600s；不随连聊轮数递增 |
 | 积压只读 | `backlog.max_scan_messages`（默认 1000） | 上线把离线 pending（≤上限）标记为 `seen` 读入上下文，**不回复、不触发 LLM**；下次回复时能看到期间发生了什么 |
 | 抖动聚合 | `reply.debounce_sec`（默认 5） | 在线消息 5s 窗口聚合，LLM 选择性回复（非每条必回） |
-| 分段发送 | `reply.max_segments` / `max_chars_per_segment` / `segment_gap_sec` | 回复拆短句逐条发送（msg_seq 递增，官方支持同一消息多次回复） |
+| 分段发送 | `reply.segment_gap_sec` | send_text 遇到换行自动拆成多条，按间隔逐条发送（msg_seq 递增） |
 | 作息抖动 | `presence.online_duration_jitter` / `offline_interval_jitter` / `renew_jitter` | 上下线时长、续期时长按 ±比例随机，避免机械整点；每会话首次上线时间也随机错开 |
 | 阅读停顿 | `reply.read_delay_min_sec` / `read_delay_max_sec` | 被动回复前随机"看一眼"停顿（仅被动且消息 ≤3 条时加，避免拖过 5 分钟窗口；默认 0.4–1.6s） |
 | 打字速度 | `reply.typing_chars_per_sec` / `typing_min_sec` / `typing_max_sec` / `typing_jitter` | 按文本长度估算打字耗时再发送（受最短/最长限制与随机抖动；默认 0 关闭） |
@@ -149,8 +149,8 @@ stateDiagram-v2
 | 消息形式 | 接收依据 | 处理策略 |
 |---|---|---|
 | 文本 | `content` | 直接进入上下文 |
-| 图片 | attachments content_type=image/* | 下载存 temp/ → base64 → DeepSeek 视觉输入（单图≤32MiB） |
-| 语音 | content_type=voice + `asr_refer_text` | 下载存 temp/；优先用平台 ASR 参考文本 |
+| 图片 | attachments content_type=image/* | 下载存 temp/ → 上下文标注 `url`/`local`，可直接转发；模型本身看不到图片内容 |
+| 语音 | content_type=voice | 下载存 temp/ → 上下文标注 `url`/`local`；无平台转写文本，模型不能“听”，可原样转发 |
 | 视频 | content_type=video/* | **不下载不处理**（`storage.download_video=false`），仅保留 URL/元信息供引用转发 |
 | 文件 | content_type=file | 元信息描述，可选存 temp/ |
 | 艾特 | content 去@前缀 + mentions[] | 作为对话触发信号（离线可唤醒） |
@@ -190,8 +190,7 @@ stateDiagram-v2
                   "proactive_enabled": true, "proactive_per_minute": 6,
                   "proactive_per_day": 1000 },
     "backlog": { "max_scan_messages": 1000 },
-    "reply": { "max_segments": 5, "max_chars_per_segment": 80,
-               "segment_gap_sec": 2, "debounce_sec": 10,
+    "reply": { "segment_gap_sec": 2, "debounce_sec": 5,
                "read_delay_min_sec": 0.4, "read_delay_max_sec": 1.6,
                "typing_chars_per_sec": 10, "typing_min_sec": 0.4,
                "typing_max_sec": 4.0, "typing_jitter": 0.25 }
@@ -205,7 +204,7 @@ stateDiagram-v2
 
 参数口径（按 DeepSeek 官方文档核实）：`thinking` 仅 `enabled`/`disabled`（disabled 经 `extra_body` 生效）；`temperature` 仅非思考模式生效、`top_p` 仅思考模式生效；`reasoning_effort` 仅思考模式；`top_k` 官方不支持、`presence/frequency_penalty` 已废弃，均不入配置；base_url 不带 `/v1`。
 
-`storage.public_base_url` 是**签名媒体的公网入口**——填 Web 面板对外地址（如 `https://bot.example.com`），QQ 才能下载本地生成的图片/语音/表情；留空则仅能转发群友附件自带的 URL。Tool 私有配置不在 `db/config.json` 里，见下一节。
+`storage.public_base_url` 是**签名媒体的公网入口**——填 Web 面板对外地址（如 `https://bot.example.com`）。本地图片/表情/语音默认走 QQ 的 base64 `file_data` 直传（不需要公网地址）；只有超过 10MB 的本地文件才退回签名链接，此时未配置 `public_base_url` 会明确报错。Tool 私有配置不在 `db/config.json` 里，见下一节。
 
 ## Tool 管理（一切皆 Tool）
 
@@ -215,13 +214,13 @@ stateDiagram-v2
 
 | 分类 | Tool | 作用 | 配置/数据（`tool/<分类>/`） |
 |---|---|---|---|
-| core | `send_text` | 发送一条聊天消息（回应、主动开场、分段接话都用它） | 无（首次停用才生成 config） |
+| core | `send_text` | 发送一条聊天消息（回应、主动开场、分段接话都用它；一条一句，换行会自动拆成多条） | 无（首次停用才生成 config） |
 | core | `end_call` | 结束本回合 | 无 |
 | memory | `memory_search` / `memory_write` | 向量记忆检索 / 沉淀 | 无 |
 | emoji | `send_sticker` | 按情绪/场景从素材库挑图发送 | `config.json`、`index.json`、`stickers/`、`user/` |
 | emoji | `sticker_list` / `sticker_save` | 查看可用素材 / 收藏用户投喂的图 | 与 `send_sticker` 同组（不单独启停） |
 | audio | `send_voice_clone` | MiMo 声音克隆 TTS（参考音频克隆音色） | `config.json`、`voice_ref.wav` |
-| media | `send_image` / `send_video` | 发送图片 / 视频（URL 或本地文件） | 无 |
+| media | `send_image` / `send_video` | 发送图片 / 视频（URL 或本地文件，本地走 base64 直传） | 无 |
 | mail | `send_email` | SMTP 发邮件（文本/HTML + 附件） | `config.json` |
 
 ### 一个 Tool 由什么组成
@@ -251,8 +250,8 @@ stateDiagram-v2
 ### 语音（audio）
 
 - `tool/audio/config.json`：`api_key` / `base_url` / `model`（默认 `mimo-v2.5-tts-voiceclone`）/ `reference_voice_path` / `timeout` / `max_retries` / `max_chars`（默认 60）
-- `voice_ref.wav` 为参考音频；`send_voice_clone` 把文本合成 wav 到 `temp/tool/audio/`，再以 file_type=3 发送；`api_key` 或参考音频缺失时工具自动视为未启用
-- 语气约束走 prompt 提示：短句、口语化、情绪随内容变化
+- `voice_ref.wav` 为参考音频；`send_voice_clone` 把文本合成 wav 到 `temp/tool/audio/`，再用 `pysilk` 转成带 `#!SILK_V3` 头的 24kHz silk 并以 file_type=3 发送；`api_key` 或参考音频缺失时工具自动视为未启用
+- 语气约束走 prompt 提示：短句、口语化、情绪随内容变化；`pysilk-mod` 已在 `requirements.txt` 中
 
 ### 邮件（mail）
 
@@ -261,7 +260,7 @@ stateDiagram-v2
 - **附件白名单**：只允许 `temp/` 下的运行时文件，拒绝 `logs/`、`config.json`、`.env`、数据库、脚本等；默认最多 3 个、单个 ≤10MB
 - 仅当用户明确要求发邮件时由模型调用（prompt 提示约束），避免被当作外发通道
 
-> **本地媒体如何变成公网 URL**：QQ 富媒体上传只接受公网 URL。`ggbot/util/media.py` 为 `temp/` 与 `tool/` 下的媒体文件生成带 HMAC 签名与有效期的链接 `/media/<exp>/<sig>/<rel>`，由 Web 面板的签名路由提供（无需 Cookie，仅限媒体扩展名，禁止目录穿越与日志）。`storage.public_base_url` 应配置为 **Web 面板的公网地址**（如 `https://bot.example.com`，不带结尾 `/`）；为空时本地生成的图片/语音/表情无法实发，工具会返回明确错误。签名密钥取自 `web.token`（或 `appsecret`），有效期默认 1 小时。
+> **本地媒体上传**：本地文件（`temp/`、`tool/` 下的图片/表情/语音/视频）直接以 base64 `file_data` 调 `POST /v2/groups/{group_openid}/files`（或 `/v2/users/{openid}/files`）上传，再用返回的 `file_info` 发 `msg_type=7`，不依赖公网地址；超过 10MB 的本地文件改用 `ggbot/util/media.py` 生成的 HMAC 签名链接 `/media/<exp>/<sig>/<rel>`（由 Web 面板提供，无需 Cookie，仅限媒体扩展名，禁止目录穿越与日志），此时需配置 `storage.public_base_url`。签名密钥取自 `web.token`（或 `appsecret`），有效期默认 1 小时。
 
 > **版本库边界**：`tool/*/config.json` 含 MiMo key / SMTP 授权码，由全局 `config.json` 规则忽略；`tool/emoji/{stickers,user}/` 与 `tool/audio/*.wav` 体积大或含个人音频同样忽略；`tool/emoji/index.json` 入库（仅含义索引，不含素材本体）。换机重建时把素材放回 `tool/emoji/stickers/`、参考音频放回 `tool/audio/voice_ref.wav` 即可，索引与配置会自动补齐缺失字段。
 
@@ -305,7 +304,10 @@ stateDiagram-v2
 [PASS] sticker_tool      # 66 条索引加载 + 情绪匹配 + 单回合/间隔限流 + temp 投喂入库与索引原子更新
 [PASS] voice_clone       # MiMo 真实合成（mimo-v2.5-tts-voiceclone）产出 wav
 [PASS] email_tool        # SMTP 真实自测发送 + 收件人白名单 + 附件仅限 temp/并拦截敏感文件
-[PASS] presence_split    # 分段逻辑（空行/按句/无标点硬切/限段）
+[PASS] text_split        # send_text 把带换行的内容拆成多条依次发送（msg_seq 递增、每条单独入库）
+[PASS] media_upload      # 本地媒体 base64 file_data 直传（群/私聊路由、file_name、msg_type=7）+ 公网 URL 上传
+[PASS] voice_silk        # MiMo wav 24kHz/单声道 → pysilk 编码出 #!SILK_V3 头（207KB→9.5KB）
+[PASS] qq_face_clean     # QQ 表情富文本还原为 [表情:文字] + @标记剥离
 [PASS] tool_loop         # function calling 端到端：AI 调用 memory_write 真实入库
 [PASS] config_read       # 纯配置文件驱动（无环境变量）+ temp/db 路径
 [PASS] logging_system    # 多等级写文件 + tail 等级过滤 + set_level 热切换；根目录不产生 botpy.log
@@ -314,7 +316,7 @@ stateDiagram-v2
 [PASS] renew_flat        # 每轮续期固定 30s（带抖动）、不随轮数递增、renew_max_sec 封顶
 [PASS] presence_fail     # 发送失败隔离（失效会话标记 failed，不中断其余会话积压）
 [PASS] target_derive     # 发送目标反查（session_id 内部主键 ≠ openid，从 sessions.key 取完整 openid；c2c/group 双场景）
-[PASS] msg_seq           # 回复序号会话内小整数递增（被动 base+1 / 主动 1 起，int32 内防 400），失败自动降级主动发送
+[PASS] msg_seq           # 回复序号每轮从 1 递增（同一 msg_id+msg_seq 不可重复），被动失败自动降级主动发送
 [PASS] at_persist        # @标志/事件ID 持久化入库（积压读回恢复 is_at/event_id/msg_seq）+ 旧库自动迁移补列
 [PASS] audit            # 订阅 message_audit intent；审核通过/拦截事件均记日志（排查"平台受理但未展示"）
 [PASS] singleton_lock    # 单实例锁（僵尸锁清理 / 存活 pid 探测，防双进程双写 db）
@@ -324,7 +326,7 @@ stateDiagram-v2
 [PASS] temp_video_policy # 视频附件不下载 + temp 过期文件清理
 ```
 
-> 未覆盖：QQ 真实收发（需机器人上线 + 群内实测）；`send_image/video/voice` 与表情/克隆语音的富媒体实发（需真实群 + 公网 `storage.public_base_url`）。
+> 未覆盖：QQ 真实收发（需机器人上线 + 群内实测）；`send_image/video/voice` 与表情/克隆语音的富媒体实发（需真实群；本地文件走 base64 直传）。
 
 ## QQ 平台侧配置要求（发送失败的常见原因）
 
@@ -340,7 +342,7 @@ stateDiagram-v2
 ## 已知限制
 
 - qq-botpy 1.2.1（2024-03 停更）但内置新鉴权（appId+clientSecret → access_token 自动缓存刷新），实测可用
-- `send_voice_clone` 产出 wav，QQ 语音富媒体为 silk 格式，能否直发取决于平台转码支持（转发收到的语音不受影响）
-- 表情包以图片富媒体发送（非 QQ 商城表情）；本地素材需 `storage.public_base_url` 公网可达
+- `send_voice_clone` 产出 wav 后由 `pysilk` 转成 24kHz silk 再发送；QQ 语音富媒体只接受 silk
+- 表情包以图片富媒体发送（非 QQ 商城表情）；本地素材走 base64 直传，不需要公网地址
 - 工具目录 `tool/*/config.json` 含第三方密钥/授权码，已在 `.gitignore` 中排除，部署时需自行创建或从备份恢复
 - Web 面板为单令牌 + HttpOnly Cookie 鉴权，适合本机/内网；公网暴露请加 HTTPS 反向代理并设 `web.cookie_secure=true`

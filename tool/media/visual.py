@@ -9,7 +9,7 @@ class SendImage(Tool):
     name = "send_image"
     description = (
         "发送一张图片。source 传公网可访问的图片 URL（可直接使用群友刚发的图片 URL，"
-        "即上下文中的 [图片 url=...]），或本地 Temp/ 目录下的图片文件路径"
+        "即上下文中的 [图片 url=...]），或本地图片文件路径（temp/tool 下的文件直接上传，无需公网地址）"
     )
     parameters = {
         "type": "object",

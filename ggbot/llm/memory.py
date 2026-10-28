@@ -138,18 +138,21 @@ class MemoryStore:
         session_id 给定时只取「全局记忆 + 本会话记忆」；为 None 时检索全部（面板/调试）。
         min_score 过滤低相关结果（None 表示不过滤）。
         """
-        q = self.embed(query).astype(np.float32)
-        qn = float(np.linalg.norm(q))
-        scored = []
+        candidates = []
         for m in self.storage.get_all_memories():
             if session_id is not None:
                 scope = m.get("session_id") or None
                 if scope is not None and scope != session_id:
                     continue
-            blob = m.get("embedding")
-            if not blob:
-                continue
-            score = self._score(q, qn, np.frombuffer(blob, dtype=np.float32))
+            if m.get("embedding"):
+                candidates.append(m)
+        if not candidates:
+            return []  # 作用域内没有记忆：省掉一次 embedding 请求
+        q = self.embed(query).astype(np.float32)
+        qn = float(np.linalg.norm(q))
+        scored = []
+        for m in candidates:
+            score = self._score(q, qn, np.frombuffer(m["embedding"], dtype=np.float32))
             if min_score is not None and score < min_score:
                 continue
             scored.append((score, m))

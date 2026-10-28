@@ -3,3 +3,4 @@ openai>=1.0
 fastapi
 uvicorn
 numpy
+pysilk-mod
