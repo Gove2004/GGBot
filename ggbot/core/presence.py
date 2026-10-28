@@ -232,9 +232,10 @@ class PresenceManager:
             if inbound.get("is_at") and self.p.get("wake_on_at_message", True):
                 # 先读入离线积压（不含本条），让本次回复能看到期间发生了什么；
                 # 旧消息只标记 seen 不回复，本条@仍走即时被动回复
-                self._read_backlog_sid(sid, exclude_msg_id=inbound.get("msg_id"))
-                await self._reply_now(inbound)
-                await st.go_online("wake-on-at")
+                seen = self._read_backlog_sid(sid, exclude_msg_id=inbound.get("msg_id"))
+                await st.go_online("wake-on-at", seen=seen)
+                if await self._reply_now(inbound):
+                    st.renew()
                 return True
             pending = self.storage.count_pending(sid)
             logger.debug("离线消息入库（pending=%d）", pending, extra={"session": st.label})
@@ -281,7 +282,7 @@ class PresenceManager:
             logger.debug("在线普通消息批次跳过回复（主动额度限制）%d 条", len(msgs),
                          extra={"session": st.label if st else session_label(msgs[-1].get("session_id"))})
             return
-        if await self._safe_reply(msgs, passive=True, renew_sid=(st.sid if st else None)):
+        if await self._safe_reply(msgs, passive=True):
             if st is not None:
                 st.renew()
 
@@ -294,7 +295,7 @@ class PresenceManager:
             return t
         return _derive_target(sid)
 
-    async def _safe_reply(self, msgs: list[dict], passive: bool, renew_sid: str | None = None) -> bool:
+    async def _safe_reply(self, msgs: list[dict], passive: bool) -> bool:
         """工具制回合：LLM 通过 send_text 等工具实际发送消息。
 
         状态判定：
@@ -335,9 +336,9 @@ class PresenceManager:
         _mark("skipped")
         return False
 
-    async def _reply_now(self, inbound: dict) -> None:
-        """唤醒即时回复：单条消息直接走 agent 循环（发送成功即续期）。"""
-        await self._safe_reply([inbound], passive=True)
+    async def _reply_now(self, inbound: dict) -> bool:
+        """唤醒即时回复：单条消息直接走 agent 循环；返回是否实际发送。"""
+        return await self._safe_reply([inbound], passive=True)
 
     def _read_backlog_sid(self, sid: str, exclude_msg_id: str | None = None) -> int:
         """上线只读积压：本会话 pending 标记为 seen 读入上下文，绝不回复。
@@ -575,7 +576,7 @@ class _SessionState:
     def touch(self) -> None:
         self._last_active = time.monotonic()
 
-    async def go_online(self, reason: str) -> None:
+    async def go_online(self, reason: str, seen: int | None = None) -> None:
         if self.state == "online":
             return
         self.state = "online"
@@ -584,7 +585,8 @@ class _SessionState:
         span = self._online_span()
         self._online_deadline = time.monotonic() + span
         self.touch()
-        seen = self.pm._read_backlog_sid(self.sid)
+        if seen is None:
+            seen = self.pm._read_backlog_sid(self.sid)
         label = {"scheduled": "自然上线", "wake-on-at": "强制上线"}.get(reason, "上线")
         logger.info("%s 预计在线 %.0fs, 积压消息 %d 条", label, span, seen,
                     extra={"session": self.label})
