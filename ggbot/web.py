@@ -1,6 +1,6 @@
-"""Web 控制面板：FastAPI + WebSocket + 静态前端（项目根 web/ 目录）。
+"""Web 控制面板：FastAPI + WebSocket + 静态前端（ggbot/web/ 目录）。
 
-前端与后端分离：web/index.html + web/style.css + web/app.js，经 /static 托管，可独立修改热加载。
+前端与后端分离：ggbot/web/index.html + style.css + app.js，经 /static 托管，可独立修改热加载。
 功能：在线状态、消息流、记忆（向量检索/写入/整理）、规则管理、人设查看与回滚、配置热更新、日志查看。
 鉴权：config.web.token，所有 /api 请求需带 ?token= 或 X-Token 头。
 """
@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger("ggbot.web")
 
-WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
 class RuleIn(BaseModel):

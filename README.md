@@ -16,16 +16,16 @@ GGBot/
 │   ├── config.json      # 全部配置（QQ 凭据 / DeepSeek / Embedding / 行为 / 存储 / Web；含密钥，gitignored）
 │   ├── persona_core.md  # 内核人设（owner 定义，AI 只读；文件变化重启自动同步新版本）
 │   └── ggbot.db         # SQLite 持久化：会话/消息/记忆/规则/人设版本（运行时生成，gitignored）
-├── temp/                # 富媒体附件临时落地 + 日志（temp/logs/ggbot.log；附件默认保留 24h 自动清理，gitignored）
+├── temp/                # 富媒体附件临时落地 + 日志（temp/logs/ggbot.log；附件按类型分 emoji/voice/video/other 子目录，默认保留 24h 自动清理，gitignored）
 ├── requirements.txt
 ├── main.py              # 入口
 ├── start.bat            # Windows 前台启动（Ctrl+C 停止）
 ├── start.sh             # Linux 后台启动（nohup，kill <PID> 停止）
-├── web/                 # Web 前端（与后端分离，经 /static 托管，改完即热加载）
-│   ├── index.html
-│   ├── style.css
-│   └── app.js
 ├── ggbot/
+│   ├── web/             # Web 前端（与后端分离，经 /static 托管，改完即热加载）
+│   │   ├── index.html
+│   │   ├── style.css
+│   │   └── app.js
 │   ├── config.py        # 配置加载（纯配置文件驱动 + Web 热更新）
 │   ├── logging_setup.py # 日志系统（多等级 / 文件轮转 / 面板 tail）
 │   ├── storage.py       # SQLite（会话/消息/记忆/规则/人设版本）
