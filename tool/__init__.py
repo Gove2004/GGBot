@@ -2,8 +2,8 @@
 
 一切能力都是 Tool：插件按能力域放在项目根 tool/{core,memory,emoji,audio,media,mail}/，
 启动时自动发现并按配置挂载 schema。每个 toolset 目录自包含代码、config.json 与持久化数据。
-回合语义：LLM 的纯文本输出不会作为回复发送（会被忽略）；必须通过工具调用行动——
-send_text 发送消息、end_call 结束本轮（或未调用任何工具时默认视为 end_call）。
+回合语义：优先通过工具行动——send_text 发送消息、end_call 结束本轮（或未调用任何工具时
+默认视为 end_call）；模型无视协议直接回文本且本轮尚未发送时，自动按 send_text 兜底。
 """
 
 from __future__ import annotations
@@ -65,10 +65,11 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
     """function calling 循环：LLM 决策 → 执行工具 → 结果回传 → 继续，直到结束回合。
 
     回合结束条件（返回 NO_REPLY，调用方不会把文本当回复发送）：
-    - LLM 某轮未调用任何工具 → 默认 end_call，该轮纯文本被忽略；
+    - LLM 未调用工具但有文本，且本轮尚未发送过 → 按 send_text 兜底发送；
+    - LLM 未调用工具且无文本（或已有发送）→ 默认 end_call，文本忽略；
     - LLM 显式调用 end_call → 立即结束；
     - 达到 max_rounds。
-    回复内容由工具发送（send_text / send_image 等），不依赖返回文本。
+    回复内容优先由工具发送（send_text / send_image 等），不依赖返回文本。
     """
     tools = executor.schemas
     if not tools:
@@ -80,8 +81,13 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
         msg = resp.choices[0].message
         calls = msg.tool_calls or []
         if not calls:
-            # 未调用工具 = 默认 end_call；纯文本内容忽略（不发送）
-            logger.debug("agent 未调用工具，默认 end_call（文本忽略）: %.60r", (msg.content or "")[:60])
+            content = (msg.content or "").strip()
+            # 模型偶尔无视工具协议直接回文本：本轮还没发过就兜底发出去，避免整轮静默
+            if content and not ctx.get("sent_any"):
+                logger.debug("模型未调用工具，文本兜底为 send_text: %.60r", content[:60])
+                await executor.execute("send_text", {"content": content}, ctx)
+            else:
+                logger.debug("agent 未调用工具，结束本轮")
             return NO_REPLY
         names = [tc.function.name for tc in calls]
         history.append({"role": "assistant", "content": msg.content or "", "tool_calls": [
