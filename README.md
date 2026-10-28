@@ -140,9 +140,9 @@ stateDiagram-v2
     online --> offline: 在线计时器到期(默认60s, 未续)
 ```
 
-**消息处理路径**：收到消息 → 归属会话 → 该会话离线？→ 入库标记 pending（不调 LLM）；若被@且 `wake_on_at_message` → 先把旧积压标记 `seen` 读入上下文，再**立即被动回复本条** → 本会话上线。定时上线：把本会话积压（≤1000）标记 `seen` 后**直接进入在线状态，不回复任何积压消息**（`seen` 历史会参与之后生成，所以 AI 知道离线期间聊了什么）。在线：5s 抖动窗口聚合 → 仅含 `passive_ok`（群@/C2C）的批次才走 LLM 与回复 → 每成功回复一轮按连聊轮数递增续期（60/90/120… 封顶 600s）。
+**消息处理路径**：收到消息 → 归属会话 → 该会话离线？→ 入库标记 pending（不调 LLM）；若被@且 `wake_on_at_message` → 先把旧积压标记 `seen` 读入上下文，再**立即被动回复本条** → 本会话上线。定时上线：把本会话积压（≤1000）标记 `seen` 后**直接进入在线状态，不回复任何积压消息**（`seen` 历史会参与之后生成，所以 AI 知道离线期间聊了什么）。在线：5s 抖动窗口聚合 → 走 LLM 决策是否接话（@/私聊用被动回复，普通群消息用主动消息）→ 每成功回复一轮按连聊轮数递增续期（60/90/120… 封顶 600s）。
 
-> **平台被动回复硬规则**：只有 `GROUP_AT_MESSAGE_CREATE`（群@本机器人）与 `C2C_MSG_RECEIVE`（私聊）事件的消息能带 `msg_id+event_id` 被动回复（不限额度）；`GROUP_MESSAGE_CREATE`（群全量）事件的 `event_id` 平台拒绝用于被动回复（400 40034027），只能主动发送（额度每月 4 条/群）。代码按事件来源持久化 `passive_ok` 标记并据此选通道。
+> **平台发送通道**：只有 `GROUP_AT_MESSAGE_CREATE`（群@本机器人）与 `C2C_MSG_RECEIVE`（私聊）事件能用 `msg_id+event_id` 被动回复（5 分钟内至多 5 次，不占主动额度）；`GROUP_MESSAGE_CREATE`（群全量）事件只能主动发送（2026-06-22 起全量开放，群主需开启「机器人主动在群聊内发言」，20 条/分钟、1000 条/天）。代码按事件来源持久化 `passive_ok` 标记并据此选通道，另加 `proactive_per_minute`（默认 6）/`proactive_per_day`（默认 1000）本地闸门。
 
 ## 消息全形式矩阵
 
@@ -186,7 +186,9 @@ stateDiagram-v2
                   "online_duration_jitter": 0.3, "offline_interval_jitter": 0.4,
                   "renew_jitter": 0.3, "wake_on_at_message": true, "wake_on_c2c": false,
                   "renew_on_reply": true, "renew_per_reply_sec": 60,
-                  "renew_streak_step": 0.5, "renew_max_sec": 600 },
+                  "renew_streak_step": 0.5, "renew_max_sec": 600,
+                  "proactive_enabled": true, "proactive_per_minute": 6,
+                  "proactive_per_day": 1000 },
     "backlog": { "max_scan_messages": 1000 },
     "reply": { "max_segments": 5, "max_chars_per_segment": 80,
                "segment_gap_sec": 2, "debounce_sec": 10,
@@ -308,6 +310,7 @@ stateDiagram-v2
 [PASS] config_read       # 纯配置文件驱动（无环境变量）+ temp/db 路径
 [PASS] logging_system    # 多等级写文件 + tail 等级过滤 + set_level 热切换；根目录不产生 botpy.log
 [PASS] presence_backlog  # 上线积压只读：pending→seen、零 LLM 调用/零发送；唤醒先读旧积压再回本条
+[PASS] presence_proactive # 在线普通消息可主动接话（不带 msg_id/event_id）、开关与每分钟/每日闸门、混合批次取被动锚点
 [PASS] renew_streak      # 连聊续期递增 60→90→120…、renew_max_sec 封顶、下线归零
 [PASS] presence_fail     # 发送失败隔离（失效会话标记 failed，不中断其余会话积压）
 [PASS] target_derive     # 发送目标反查（session_id 内部主键 ≠ openid，从 sessions.key 取完整 openid；c2c/group 双场景）
@@ -328,10 +331,10 @@ stateDiagram-v2
 代码能**收**到群全量消息 ≠ 机器人能**发**消息。以下为 QQ 开放平台侧硬性要求，缺任一项都会出现「群里显示：该机器人的服务异常，暂时无法响应」而本地日志无 ERROR（HTTP 200 但未投递）：
 
 1. **机器人必须已加入目标群**（未认证开发者仅能添加自己是群主/管理员身份的群；机器人进群能力在管理后台/客户端添加）
-2. **群主需在 QQ 客户端打开【机器人主动在群聊内发言】**——2026-06-22 起主动推送能力全量开放；未打开则主动消息全部失败（本版本正常回复走被动通道，只有被动回复降级时才用到主动）
+2. **群主需在 QQ 客户端打开【机器人主动在群聊内发言】**——2026-06-22 起主动推送能力全量开放；未打开则普通消息（没@机器人）的接话会失败，@/私聊的被动回复不受影响
 3. **开放平台需订阅群@事件（`GROUP_AT_MESSAGE_CREATE`）**：未订阅则@本机器人的消息不推该事件（只有群全量流），机器人无法识别被@；可用 config `bot_openid` 兜底
 4. 被动回复（@ 消息）依赖前置事件 ID `event_id`（代码已随消息事件透传）
-5. 频控硬限制：群被动消息每条消息 5 分钟内最多回复 5 次；**群主动消息每月 4 条/群**（仅在被动回复降级时兜底，正常路径不消耗）
+5. 频控硬限制：群被动消息每条消息 5 分钟内最多回复 5 次；群主动消息单群 20 条/分钟、1000 条/天（本地默认再限 6 轮/分钟）
 6. 消息内容含 URL 需在 q.qq.com 后台「开发设置 → 消息URL配置」预先配置，否则发送失败
 
 ## 已知限制

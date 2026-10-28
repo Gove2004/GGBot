@@ -3,8 +3,9 @@
 离线（默认 10 分钟，带 ±40% 抖动）：普通消息仅入库积压（≤1000）；收到@（本会话）
 或倒计时结束 → 本会话上线。
 在线（默认 1 分钟，带 ±30% 抖动）：上线只把积压标记为 seen 读入上下文、不回复；
-消息进入 5s 抖动窗口聚合 → 选择性回复；每成功回复一轮按 renew_per_reply_sec 递增续期
-（连续聊得越久奖励越多，直到 renew_max_sec 上限）；倒计时结束 → 下线。
+消息进入 5s 抖动窗口聚合 → 选择性回复（@/私聊走被动回复；普通群消息走主动消息，
+受平台每分钟/每日频控与本地 proactive_* 上限约束）；每成功回复一轮按 renew_per_reply_sec
+递增续期（连续聊得越久奖励越多，直到 renew_max_sec 上限）；倒计时结束 → 下线。
 拟人化：回复前有阅读停顿，发送前按内容长度模拟打字耗时（可用 behavior.reply 关闭）。
 会话相互独立：私聊唤醒不会让群聊上线，A 群唤醒不影响 B 群。
 """
@@ -41,7 +42,8 @@ SYSTEM_TEMPLATE = """你是 QQ 群/私聊里的聊天伙伴，昵称“{name}”
 3. 被@时必须回应。
 4. 图片/语音/视频的地址标注在消息里，可以直接转发（send_image 等）或点评。
 5. 想不起的事用 memory_search 回忆；值得长期记住的用 memory_write。
-6. 只聊当下，不翻旧账；离线积压的消息只是让你知道期间发生了什么，不需要逐条回应。
+6. 群里的普通消息（没@你）也可以接话，但只在你有话想说时；不想接就用 end_call。
+7. 只聊当下，不翻旧账；离线积压的消息只是让你知道期间发生了什么，不需要逐条回应。
 """
 
 
@@ -151,6 +153,9 @@ class PresenceManager:
         # 切勿用毫秒时间戳等 int32 超限值——QQ 服务端会 400「请求数据异常」
         self._seq_by_sid: dict[str, int] = {}  # 用于面板展示
         self._max_states = 200  # 会话状态对象上限，超出清理离线无积压的
+        # 主动消息本地计数：平台群聊硬限制 20 条/分钟、1000 条/天，这里再留余量
+        self._active_turns: dict[str, list[float]] = {}
+        self._active_day: dict[str, tuple[str, int]] = {}
 
     def _state_of(self, sid: str) -> "_SessionState":
         """获取（或创建）会话状态机；超上限时清理最久未活动的离线会话。"""
@@ -272,19 +277,48 @@ class PresenceManager:
         return session_label(sid)
 
     async def _process_batch(self, msgs: list[dict], st: "_SessionState" | None = None) -> None:
-        """在线批次：聚合多条消息一次决策。
+        """在线批次：聚合多条消息一次决策并选择性回复。
 
-        平台硬限制：全量消息不能被动回复，主动消息每月仅 4 条/群——
-        在线聚合的普通消息只进上下文/记忆，不实际发送（"看到没回"也正常）；
-        含被动事件（@/C2C）的批次才走回复。
+        @/C2C 批次带 msg_id+event_id 走被动回复（不耗额度）；
+        普通群消息批次只能走主动消息（2026-06-22 起群主动推送已全量开放，
+        群主需开启「机器人主动在群聊内发言」），受平台 20 条/分钟、1000 条/天
+        与本地 proactive_per_minute/proactive_per_day 约束，超限则本轮不回复。
         """
-        if not any(m.get("passive_ok") for m in msgs):
-            logger.debug("在线普通消息批次跳过回复（主动额度限制）%d 条", len(msgs),
-                         extra={"session": st.label if st else session_label(msgs[-1].get("session_id"))})
-            return
-        if await self._safe_reply(msgs, passive=True):
+        passive = any(m.get("passive_ok") for m in msgs)
+        sid = msgs[-1].get("session_id") or ""
+        label = st.label if st else session_label(sid)
+        if not passive:
+            blocked = self._active_block_reason(sid)
+            if blocked:
+                logger.debug("在线普通消息批次跳过回复（%s）%d 条", blocked, len(msgs),
+                             extra={"session": label})
+                return
+        if await self._safe_reply(msgs, passive=passive):
+            if not passive:
+                self._note_active(sid)
             if st is not None:
                 st.renew()
+
+    def _active_block_reason(self, sid: str) -> str | None:
+        """主动消息本地闸门：返回拦截原因，None 表示可发。"""
+        if not self.p.get("proactive_enabled", True):
+            return "主动消息已关闭"
+        now = time.monotonic()
+        window = [t for t in self._active_turns.get(sid, []) if now - t < 60]
+        self._active_turns[sid] = window
+        if len(window) >= int(self.p.get("proactive_per_minute", 6)):
+            return "主动消息每分钟上限"
+        day = time.strftime("%Y-%m-%d")
+        d, n = self._active_day.get(sid, (day, 0))
+        if n >= int(self.p.get("proactive_per_day", 1000)) and d == day:
+            return "主动消息每日上限"
+        return None
+
+    def _note_active(self, sid: str) -> None:
+        self._active_turns.setdefault(sid, []).append(time.monotonic())
+        day = time.strftime("%Y-%m-%d")
+        d, n = self._active_day.get(sid, (day, 0))
+        self._active_day[sid] = (day, n + 1 if d == day else 1)
 
     # ---------- 回复核心 ----------
 
@@ -329,8 +363,12 @@ class PresenceManager:
             _mark("replied")
             return True
         if ctx.get("tool_error"):
-            logger.warning("工具执行失败 n=%d: %s", len(msgs), ctx["tool_error"],
-                           extra={"session": label})
+            if passive:
+                logger.warning("工具执行失败 n=%d: %s", len(msgs), ctx["tool_error"],
+                               extra={"session": label})
+            else:
+                logger.warning("主动回复失败 n=%d（群主需开启「机器人主动在群聊内发言」）: %s",
+                               len(msgs), ctx["tool_error"], extra={"session": label})
             _mark("failed")
             return False
         _mark("skipped")
@@ -394,8 +432,10 @@ class PresenceManager:
 
         ctx["target"] = ctx_msg.get("target") or self._target_of(sid)[0]
         ctx["scene"] = ctx_msg.get("scene") or self._target_of(sid)[1]
-        ctx["msg_id"] = ctx_msg.get("msg_id")
-        ctx["event_id"] = ctx_msg.get("event_id")  # 工具回复携带，可走被动通道不耗主动额度
+        # 被动回复锚点：批次里最后一条可被动回复的消息；没有（纯普通消息批次）则主动发送
+        anchor = next((m for m in reversed(msgs) if m.get("passive_ok")), None)
+        ctx["msg_id"] = anchor.get("msg_id") if anchor else None
+        ctx["event_id"] = anchor.get("event_id") if anchor else None
         ctx["msg_seq"] = 1
         ctx["session_id"] = sid
         return await agent_loop(self.llm, self.executor, messages, ctx)
