@@ -86,7 +86,7 @@ async def main() -> None:
     intents = botpy.Intents(public_messages=True, public_guild_messages=True, message_audit=True)
     bot = QQBot(cfg, presence=None, intents=intents)
     executor = ToolExecutor(cfg, storage, memory, bot)
-    presence = PresenceManager(cfg, storage, llm, executor, bot)
+    presence = PresenceManager(cfg, storage, llm, executor, bot, memory)
     bot.presence = presence
 
     await presence.start()
@@ -106,7 +106,7 @@ async def main() -> None:
     if (cfg.web_cfg or {}).get("enable", True):
         from ggbot.web import start_web
 
-        web_task = asyncio.create_task(start_web(cfg, storage, memory, presence, bot.names))
+        web_task = asyncio.create_task(start_web(cfg, storage, memory, presence))
 
     try:
         log.info("连接 QQ gateway（appid=%s）…", cfg.qq.get("appid"))

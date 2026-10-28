@@ -43,12 +43,6 @@ class SettingIn(BaseModel):
     value: object
 
 
-class NameIn(BaseModel):
-    openid: str
-    kind: str  # "group" | "user"
-    name: str
-
-
 # 允许通过 Web 热更新的配置路径（其余只读，避免误改关键结构）
 ALLOWED_SETTINGS = [
     "deepseek.request.temperature",
@@ -83,7 +77,7 @@ def mask_secrets(node):
     return node
 
 
-def create_app(cfg, storage, memory, presence, names=None) -> FastAPI:
+def create_app(cfg, storage, memory, presence) -> FastAPI:
     app = FastAPI(title="GGBot Panel")
     token = (cfg.web_cfg or {}).get("token", "")
 
@@ -228,43 +222,6 @@ def create_app(cfg, storage, memory, presence, names=None) -> FastAPI:
                          "session": sess, "content": content})
         return {"level": level, "logs": logs}
 
-    # ---------- 名称管理（11253 白名单的真正出路：本地名称表） ----------
-
-    @app.get("/api/names")
-    async def get_names(x_token: str | None = Header(default=None), token: str | None = Query(default=None)):
-        _auth(x_token, token)
-        local = cfg.data.get("names") or {}
-        # 自动收集出现过的 openid（用户/群）+ 当前本地表已命名项
-        collected = storage.collect_openids()
-        items = []
-        for it in collected:
-            oid, kind = it["openid"], it["kind"]
-            table = local.get("groups" if kind == "group" else "users", {})
-            items.append({"openid": oid, "kind": kind, "name": table.get(oid, "")})
-        return {"items": items, "local": local}
-
-    @app.post("/api/names")
-    async def set_name(body: NameIn, x_token: str | None = Header(default=None), token: str | None = Query(default=None)):
-        _auth(x_token, token)
-        oid = body.openid.strip()
-        name = body.name.strip()
-        if not oid or not name or body.kind not in ("group", "user"):
-            raise HTTPException(status_code=400, detail="openid/kind/name 必填，kind 仅 group|user")
-        key = f"names.{'groups' if body.kind == 'group' else 'users'}"
-        table = cfg.data.get("names") or {}
-        sub = table.get("groups" if body.kind == "group" else "users") or {}
-        sub[oid] = name
-        if not cfg.set_by_path(key, sub):
-            raise HTTPException(status_code=400, detail="config.names 结构缺失")
-        cfg.save()
-        if names is not None:
-            if body.kind == "group":
-                names.update_local(sub, None)
-            else:
-                names.update_local(None, sub)
-        logger.info("名称已命名 kind=%s openid=%s -> %s", body.kind, oid, name)
-        return {"ok": True}
-
     @app.websocket("/ws")
     async def ws(websocket: WebSocket):
         await websocket.accept()
@@ -278,11 +235,11 @@ def create_app(cfg, storage, memory, presence, names=None) -> FastAPI:
     return app
 
 
-async def start_web(cfg, storage, memory, presence, names=None) -> None:
+async def start_web(cfg, storage, memory, presence) -> None:
     """以独立任务启动 uvicorn。"""
     import uvicorn
 
-    app = create_app(cfg, storage, memory, presence, names)
+    app = create_app(cfg, storage, memory, presence)
     host = (cfg.web_cfg or {}).get("host", "127.0.0.1")
     port = int((cfg.web_cfg or {}).get("port", 8080))
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))

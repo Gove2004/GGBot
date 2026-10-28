@@ -117,12 +117,13 @@ def split_reply(text: str, max_chars: int = 80, max_segments: int = 5) -> list[s
 class PresenceManager:
     """在线/离线调度 + 消息处理主循环。"""
 
-    def __init__(self, cfg, storage, llm, executor, bot):
+    def __init__(self, cfg, storage, llm, executor, bot, memory=None):
         self.cfg = cfg
         self.storage = storage
         self.llm = llm
         self.executor = executor
         self.bot = bot
+        self.memory = memory
 
         self.p = cfg.presence
         self.r = cfg.reply
@@ -422,7 +423,7 @@ class PresenceManager:
         # 记忆注入：用当前消息作为检索 query
         query = (ctx_msg.get("content") or "").strip()
         digest = "（无）"
-        if query:
+        if query and self.memory is not None:
             try:
                 hits = await asyncio.to_thread(self.memory.search, query, 4)
                 digest = "\n".join(f"- {h['content']}" for h in hits) or "（无）"

@@ -47,7 +47,7 @@ const statusBadge = st => {
 /* ============ 页面导航（后台分栏） ============ */
 const PAGE_TITLES = {
   dash: "仪表盘", messages: "最近消息", memory: "向量记忆",
-  rules: "规则", persona: "人设", settings: "设置", names: "名称管理", logs: "日志",
+  rules: "规则", persona: "人设", settings: "设置", logs: "日志",
 };
 
 function switchPage(name) {
@@ -60,7 +60,6 @@ function switchPage(name) {
   document.getElementById("sidebar").classList.remove("open");
   if (name === "logs") loadLogs();
   if (name === "messages") refreshMessages();
-  if (name === "names") loadNames();
 }
 
 /* ============ 运行状态 ============ */
@@ -328,43 +327,6 @@ async function loadLogs() {
   } catch (e) {}
 }
 
-/* ============ 名称管理 ============ */
-async function loadNames() {
-  try {
-    const d = await api("/api/names");
-    const items = d.items || [];
-    const body = document.getElementById("names-body");
-    if (!items.length) {
-      body.innerHTML = '<tr><td colspan="4" class="empty">（暂无出现过的 openid，来消息后会自动收集）</td></tr>';
-      return;
-    }
-    const esc2 = (s) => (s == null ? "" : String(s)).replace(/[&<>"']/g,
-      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-    body.innerHTML = items.map((it) => {
-      const kind = it.kind === "group" ? "群" : "用户";
-      return `<tr data-oid="${esc2(it.openid)}" data-kind="${it.kind}">
-        <td><span class="badge ${it.kind === "group" ? "on" : "gray"}">${kind}</span></td>
-        <td class="mono muted">${esc2(it.openid)}</td>
-        <td><input class="input name-input" value="${esc2(it.name)}" placeholder="填昵称…"></td>
-        <td><button class="btn primary small btn-name-save">保存</button></td>
-      </tr>`;
-    }).join("");
-    body.querySelectorAll(".btn-name-save").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const tr = btn.closest("tr");
-        const oid = tr.dataset.oid, kind = tr.dataset.kind;
-        const name = tr.querySelector(".name-input").value.trim();
-        if (!name) { showErr("昵称不能为空"); return; }
-        try {
-          await api("/api/names", { method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ openid: oid, kind, name }) });
-          showErr("已保存，立即生效");
-        } catch (e) {}
-      });
-    });
-  } catch (e) {}
-}
-
 /* ============ 杂项 ============ */
 let _tmpTimer = null;
 function showTmp(msg) {
@@ -393,7 +355,6 @@ function bind() {
   document.getElementById("msg-limit").onchange = refreshMessages;
   document.getElementById("btn-log-refresh").onclick = loadLogs;
   document.getElementById("log-level").onchange = loadLogs;
-  document.getElementById("btn-names-refresh").onclick = loadNames;
   document.getElementById("btn-tidy").onclick = tidyMem;
   document.getElementById("btn-mem-add").onclick = addMem;
   document.getElementById("btn-mem-search").onclick = () => refreshMemories(document.getElementById("mem-q").value.trim());

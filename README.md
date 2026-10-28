@@ -5,7 +5,7 @@
 **四大模块：**
 1. **消息收发网关**（`ggbot/bot.py`）— 群@/单聊事件接收、归一化、去重，富媒体附件落地 `temp/`
 2. **AI 请求装置**（`ggbot/llm.py`）— DeepSeek Chat Completions，function calling 原生工具
-3. **上下文组织 / 持久化记忆 / 自我进化**（`ggbot/storage.py` + `ggbot/memory.py` + `ggbot/tools.py`）
+3. **上下文组织 / 持久化记忆 / 自我进化**（`ggbot/core/storage.py` + `ggbot/llm/memory.py` + `ggbot/tool/__init__.py`）
 4. **Web 控制面板**（`ggbot/web/server.py`）— FastAPI，在线状态 / 消息流 / 记忆检索 / 规则 / 人设管理
 
 ## 目录结构
@@ -145,7 +145,7 @@ stateDiagram-v2
 
 > **群@识别（三层）**：① 首选 `GROUP_AT_MESSAGE_CREATE` 事件（开放平台需订阅该事件，事件送达时自动学习机器人 openid 写入 config）；② 全量消息 content 内嵌 `<@openid>`——`bot_openid` 为空时自动学习第一条 `<@>` 的 id 写入 config，之后精确匹配（当前生效）；③ `mentions` 精确匹配 `bot_openid`。
 
-> **可读名称（日志显示群名/昵称）**：`config.names.groups`（群 openid→群名）/ `config.names.users`（用户 openid→昵称）本地名称表优先；未配置时尝试官方 v2 API（测试 app 多无权限，失败降级显示短 id，并在日志提示一次）。
+> **可读名称（日志显示群名/昵称）**：群名自动走官方 `GET /v2/groups/{group_openid}/info`（实测可用，字段 `group_name`）；群成员信息/成员列表接口为 11253 白名单（官方标注「内邀接入中」），C2C 无用户信息接口，故成员/用户昵称取自 `config.names.users` 本地表（群名也可用 `config.names.groups` 覆盖），未命中时降级显示短 id。
 
 > `temp/` 目录默认只保留 24h（`storage.temp_ttl_hours=24`）：启动时清理一次 + 每小时巡检，超过时限的文件自动删除。
 
@@ -180,9 +180,9 @@ stateDiagram-v2
 
 参数口径（按 DeepSeek 官方文档核实）：`thinking` 仅 `enabled`/`disabled`（disabled 经 `extra_body` 生效）；`temperature` 仅非思考模式生效、`top_p` 仅思考模式生效；`reasoning_effort` 仅思考模式；`top_k` 官方不支持、`presence/frequency_penalty` 已废弃，均不入配置；base_url 不带 `/v1`。
 
-## 工具（DeepSeek function calling，`ggbot/tools.py`）
+## 工具（DeepSeek function calling，`ggbot/tool/__init__.py`）
 
-`send_text` / `send_image` / `send_voice`(TTS) / `send_video` / `send_emoji` / `memory_search` / `memory_write` / `persona_update`
+`send_text` / `seed_message` / `end_call` / `send_image` / `send_voice`(TTS) / `send_video` / `send_emoji` / `memory_search` / `memory_write` / `persona_update`
 
 > 富媒体发送限制：官方 `post_group_file` 上传需要**公网 URL**。转发群友刚发的图片/语音直接用其附件 URL（代码已记录；视频不下载但保留 URL 同样可转发）；本地生成的文件（如 TTS 语音）需配置 `storage.public_base_url` 指向公网可访问的目录，否则该工具返回明确错误。
 
@@ -200,7 +200,7 @@ stateDiagram-v2
 [PASS] storage_crud      # SQLite 会话/消息/记忆/规则/人设 CRUD + 积压查询 + 回滚
 [PASS] memory_vector     # SiliconFlow embedding 真实调用 + 语义检索 + tidy 合并
 [PASS] llm_chat          # DeepSeek deepseek-flash 真实调用（thinking=disabled 生效）
-[PASS] tools_schema      # 8 工具 schema 校验
+[PASS] tools_schema      # 10 工具 schema 校验
 [PASS] presence_split    # 分段逻辑（空行/按句/无标点硬切/限段）
 [PASS] tool_loop         # function calling 端到端：AI 调用 memory_write 真实入库
 [PASS] config_read       # 纯配置文件驱动（无环境变量）+ persona/temp/db 路径
