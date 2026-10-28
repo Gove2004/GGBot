@@ -5,7 +5,7 @@
 - 附件只能引用 temp/ 下的运行时文件，禁止配置、数据库、日志与密钥文件；
 - 数量/大小受限，避免被当作外发通道滥用。
 
-配置：db/tool/email/config.json（含授权码，gitignored）
+配置：db/tool/mail/config.json（含授权码，gitignored）
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ def _as_list(v) -> list[str]:
 
 class SendEmail(Tool):
     name = "send_email"
-    data_name = "email"
+    data_name = "mail"
     description = (
         "通过 SMTP 发送邮件。仅当用户明确要求发邮件时使用；收件人必须在配置的白名单内。"
         "支持纯文本/HTML 正文与多个附件（附件只能是 temp 目录下已生成的文件）"

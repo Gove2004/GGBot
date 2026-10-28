@@ -1,6 +1,6 @@
 """表情包 Tool：按情绪/场景从素材库挑图发送，支持用户授权投喂入库。
 
-素材与索引持久化在 db/tool/sticker/：
+素材与索引持久化在 db/tool/emoji/：
 - stickers/  内置素材（clean_*.gif/jpg/png）
 - user/      用户明确投喂并同意收藏的素材
 - index.json 含义索引（文件名 -> 含义 -> 场景）
@@ -29,7 +29,7 @@ IMAGE_EXTS = {".gif", ".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 
 class _StickerBase(Tool):
-    data_name = "sticker"
+    data_name = "emoji"
     default_config = {
         "enabled": True,
         "max_per_turn": 1,
@@ -49,7 +49,7 @@ class _StickerBase(Tool):
 
     @property
     def root(self) -> Path:
-        return self.rt.data_dir("sticker")
+        return self.rt.data_dir("emoji")
 
     @property
     def index_path(self) -> Path:
@@ -124,7 +124,7 @@ class SendSticker(_StickerBase):
     async def run(self, args: dict, ctx: dict) -> dict:
         items = self._available()
         if not items:
-            return {"ok": False, "error": "表情库为空（db/tool/sticker/stickers 未放入素材）"}
+            return {"ok": False, "error": "表情库为空（db/tool/emoji/stickers 未放入素材）"}
         sid = str(ctx.get("session_id") or "")
         now = time.monotonic()
         limit = max(1, int(self.config.get("max_per_turn", 1) or 1))

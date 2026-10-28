@@ -1,6 +1,7 @@
 """Tool 执行器与 agent 循环。
 
-一切能力都是 Tool：插件位于 ggbot/tool/plugins/，启动时自动发现并按配置挂载 schema。
+一切能力都是 Tool：插件按能力域放在 ggbot/tool/{core,memory,emoji,audio,media,mail}/，
+启动时自动发现并按配置挂载 schema。
 回合语义：LLM 的纯文本输出不会作为回复发送（会被忽略）；必须通过工具调用行动——
 send_text/seed_message 发送消息、end_call 结束本轮（或未调用任何工具时默认视为 end_call）。
 """

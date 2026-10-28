@@ -1,7 +1,7 @@
 """MiMo 语音克隆 Tool：用参考音色把文本合成为语音并发送。
 
-配置/数据：db/tool/voice_clone/config.json + voice_ref.wav
-运行产物：temp/tool/voice_clone/*.wav（随 temp TTL 清理）
+配置/数据：db/tool/audio/config.json + voice_ref.wav
+运行产物：temp/tool/audio/*.wav（随 temp TTL 清理）
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ logger = logging.getLogger("ggbot.tools.voice_clone")
 
 class VoiceClone(Tool):
     name = "send_voice_clone"
-    data_name = "voice_clone"
+    data_name = "audio"
     description = (
         "用固定参考音色把一段话合成语音并发送（比文字更有温度）。"
         "适合安抚、问候、分享开心事等场景；一次聊天一条就够，正事不要用语音。"
@@ -54,7 +54,7 @@ class VoiceClone(Tool):
     def _ref_path(self) -> Path:
         raw = str(self.config.get("reference_voice_path") or "voice_ref.wav")
         p = Path(raw)
-        return p if p.is_absolute() else self.rt.data_dir("voice_clone") / p
+        return p if p.is_absolute() else self.rt.data_dir("audio") / p
 
     def is_enabled(self) -> bool:
         if not super().is_enabled():
@@ -81,7 +81,7 @@ class VoiceClone(Tool):
         timeout = max(5, int(cfg.get("timeout") or 60))
         retries = max(1, int(cfg.get("max_retries") or 2))
         fmt = str(cfg.get("output_format") or "wav").lower()
-        out = self.rt.temp_dir("voice_clone") / f"mimo_{int(time.time() * 1000)}.{fmt}"
+        out = self.rt.temp_dir("audio") / f"mimo_{int(time.time() * 1000)}.{fmt}"
 
         last_error: Exception | None = None
         for attempt in range(1, retries + 1):

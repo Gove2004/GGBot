@@ -660,16 +660,24 @@ async function saveConfig() {
 }
 
 /* ================= 工具 ================= */
+const TOOL_CATS = { core: "核心", memory: "记忆", emoji: "表情", audio: "语音", media: "媒体", mail: "邮件" };
+const TOOL_CAT_ORDER = ["core", "memory", "emoji", "audio", "media", "mail"];
+function toolCat(cat) { return TOOL_CATS[cat] || cat || "其他"; }
 async function refreshTools() {
   const d = await api("/api/tools");
-  const rows = (d.tools || []).map((t) => {
+  const tools = (d.tools || []).slice().sort((a, b) => {
+    const ia = TOOL_CAT_ORDER.indexOf(a.category);
+    const ib = TOOL_CAT_ORDER.indexOf(b.category);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.name.localeCompare(b.name);
+  });
+  const rows = tools.map((t) => {
     const cfg = Object.entries(t.config || {})
       .filter(([k]) => k !== "enabled")
       .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(",") : v}`)
       .join(" · ");
     return `<div class="tool-card ${t.enabled ? "" : "off"}">
       <div class="tool-head">
-        <div><div class="tool-name">${esc(t.name)}</div>
+        <div><div class="tool-name">${esc(t.name)} <span class="badge gray">${esc(toolCat(t.category))}</span></div>
         <div class="tool-desc muted small">${esc(t.description)}</div></div>
         <button class="btn ${t.enabled ? "ghost" : "primary"} small"
           data-action="tool-toggle" data-tool="${esc(t.name)}" data-enabled="${t.enabled ? 1 : 0}"

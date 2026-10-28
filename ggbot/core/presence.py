@@ -81,6 +81,17 @@ def _fmt_user_messages(msgs: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _fmt_history(history: list[dict]) -> str:
+    """历史对话纯文本（摘要用）：用户按 8 位 id，助手按“我”。"""
+    lines = []
+    for h in history:
+        if h.get("role") == "assistant":
+            lines.append(f"[我] {h.get('content') or ''}")
+        else:
+            lines.append(f"[{oid8(h.get('sender'))}] {h.get('content') or ''}")
+    return "\n".join(lines)
+
+
 def split_reply(text: str, max_chars: int = 80, max_segments: int = 5) -> list[str]:
     """回复分段：按空行拆段；单段超长按句切，无标点长串按长度硬切；段数超限合并尾部。"""
     parts = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
@@ -362,7 +373,7 @@ class PresenceManager:
                 history_msgs.append({"role": "user", "content": f"[{oid8(h['sender'])}] {h['content']}"})
             else:
                 history_msgs.append({"role": "assistant", "content": h["content"]})
-        user_content = _fmt_user_messages(msgs)
+        user_content = "【本轮消息】（只回应这里的内容）\n" + _fmt_user_messages(msgs)
         messages = [{"role": "system", "content": system}, *history_msgs, {"role": "user", "content": user_content}]
 
         # 上下文预算：超过 summary_threshold_tokens 用 LLM 摘要压缩历史
@@ -374,7 +385,7 @@ class PresenceManager:
         logger.debug("agent 上下文: history=%d tokens≈%d 预算=%d",
                      len(history_msgs), total, budget, extra={"session": label})
         if total > budget and history:
-            summary = await asyncio.to_thread(self.llm.summarize, _fmt_user_messages(history))
+            summary = await asyncio.to_thread(self.llm.summarize, _fmt_history(history))
             self.storage.save_summary(sid, summary)
             messages = [
                 {"role": "system", "content": system},

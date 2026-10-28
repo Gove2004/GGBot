@@ -2,7 +2,10 @@
 
 - Tool：一个可被 LLM 调用的能力（schema + 执行逻辑 + 自己的配置/数据目录）
 - ToolRuntime：给 Tool 提供配置、持久化目录、发送能力等公共依赖
-- ToolRegistry：自动发现 ggbot/tool/plugins/ 下的插件，按配置开关动态挂载 schema
+- ToolRegistry：自动发现 ggbot/tool/<分类>/ 下的插件，按配置开关动态挂载 schema
+
+分类即能力域：core（对话）/ memory（记忆）/ emoji（表情）/ audio（语音）/
+media（图文视频）/ mail（邮件）。新增分类 = 新建一个含插件模块的子包。
 
 每个 Tool 的持久化数据在 db/tool/<name>/，运行产物在 temp/tool/<name>/。
 含密钥的 config.json 由 .gitignore 排除，绝不入版本库。
@@ -55,14 +58,20 @@ class ToolRuntime:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def config_path(self, name: str) -> Path:
+        """配置文件路径（不建目录；无配置的工具不应留下空目录）。"""
+        return Path(self.cfg.db_path).parent / "tool" / name / "config.json"
+
     # ---------- 配置 ----------
 
     def load_config(self, name: str, defaults: dict | None = None) -> dict:
-        """读取 db/tool/<name>/config.json；缺失时按 defaults 创建并补齐新字段。"""
+        """读取 db/tool/<name>/config.json；缺失时按 defaults 创建并补齐新字段。
+
+        无默认配置的工具只在文件已存在时读取（首次 toggle 才落盘），
+        避免启动时给每个工具都写一份空配置。
+        """
         defaults = dict(defaults or {})
-        if not defaults:
-            return {"enabled": True}
-        path = self.data_dir(name) / "config.json"
+        path = self.config_path(name)
         with self._lock:
             try:
                 mtime = path.stat().st_mtime_ns
@@ -79,8 +88,9 @@ class ToolRuntime:
                     logger.warning("工具 %s 配置解析失败，使用默认值: %s", name, e)
                     data = {}
             merged = {**defaults, **data}
-            if not path.exists() or set(defaults) - set(data):
+            if defaults and (not path.exists() or set(defaults) - set(data)):
                 try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(
                         json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
                         encoding="utf-8",
@@ -91,8 +101,9 @@ class ToolRuntime:
             return merged
 
     def save_config(self, name: str, data: dict) -> Path:
-        path = self.data_dir(name) / "config.json"
+        path = self.config_path(name)
         with self._lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
             )
@@ -120,6 +131,9 @@ class ToolRuntime:
         )
         ctx["msg_seq"] = seq + 1
         ctx["sent_any"] = True
+        sid = ctx.get("session_id")
+        if sid:
+            self.storage.add_message(sid, "assistant", "bot", content, status="sent")
         logger.info("发送: %.80s", content, extra={"session": session_label(ctx.get("session_id"))})
         return {"ok": True, "sent": content}
 
@@ -131,6 +145,9 @@ class ToolRuntime:
         if ok:
             ctx["msg_seq"] = seq + 1
             ctx["sent_any"] = True
+            sid = ctx.get("session_id")
+            if sid:
+                self.storage.add_message(sid, "assistant", "bot", f"[{label}]", status="sent")
             logger.info("发送%s: %s", label, detail,
                         extra={"session": session_label(ctx.get("session_id"))})
             return {"ok": True, "sent": f"{label}已发送: {detail}"}
@@ -141,7 +158,8 @@ class Tool:
     """一个 Tool = 一份 schema + 一个执行器；配置/数据目录由 runtime 提供。"""
 
     name: str = ""
-    data_name: str = ""  # 数据/配置目录名，默认与工具名一致（send_email -> email 时可覆盖）
+    category: str = ""  # 所属能力域（由注册表按所在子包填充：core/memory/emoji/audio/media/mail）
+    data_name: str = ""  # 数据/配置目录名，默认与工具名一致（send_email -> mail 时可覆盖）
     description: str = ""
     parameters: dict = {"type": "object", "properties": {}}
     default_config: dict = {}
@@ -159,8 +177,6 @@ class Tool:
 
     @property
     def config(self) -> dict:
-        if not self.default_config:
-            return {"enabled": self.enabled_by_default}
         return self.rt.load_config(self.key, self.default_config)
 
     def is_enabled(self) -> bool:
@@ -189,20 +205,33 @@ class ToolRegistry:
         self._discover()
 
     def _discover(self) -> None:
-        from ggbot.tool import plugins
-
-        for info in pkgutil.iter_modules(plugins.__path__):
-            if info.name.startswith("_"):
+        """扫描 ggbot/tool/<分类>/ 下的插件模块（每个模块导出 get_tools(rt)）。"""
+        root = importlib.import_module("ggbot.tool")
+        for info in pkgutil.iter_modules(root.__path__):
+            if info.name.startswith("_") or info.name == "base" or not info.ispkg:
                 continue
             try:
-                mod = importlib.import_module(f"{plugins.__name__}.{info.name}")
-                factory = getattr(mod, "get_tools", None)
-                if factory is None:
-                    continue
-                for tool in factory(self.rt):
-                    self.register(tool)
+                pkg = importlib.import_module(f"ggbot.tool.{info.name}")
             except Exception as e:  # noqa: BLE001
-                logger.warning("工具插件 %s 加载失败: %s", info.name, e, exc_info=True)
+                logger.warning("工具分类 %s 加载失败: %s", info.name, e, exc_info=True)
+                continue
+            for mod in pkgutil.iter_modules(pkg.__path__):
+                if mod.name.startswith("_"):
+                    continue
+                self._load_module(f"ggbot.tool.{info.name}.{mod.name}", info.name)
+
+    def _load_module(self, dotted: str, category: str) -> None:
+        try:
+            module = importlib.import_module(dotted)
+            factory = getattr(module, "get_tools", None)
+            if factory is None:
+                return
+            for tool in factory(self.rt):
+                if not tool.category:
+                    tool.category = category
+                self.register(tool)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("工具插件 %s 加载失败: %s", dotted, e, exc_info=True)
 
     def register(self, tool: Tool) -> None:
         if not tool.name:
@@ -233,10 +262,11 @@ class ToolRegistry:
         for t in self.tools.values():
             out.append({
                 "name": t.name,
+                "category": t.category,
                 "description": t.description,
                 "enabled": t.is_enabled(),
                 "toggleable": t.toggleable,
-                "config": t.config if t.default_config and t.config_owner else {},
+                "config": t.config if t.config_owner else {},
             })
         return out
 
