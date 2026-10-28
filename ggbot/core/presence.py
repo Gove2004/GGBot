@@ -381,6 +381,10 @@ class PresenceManager:
         history = self.storage.get_recent_messages(sid, self._history_limit)
         history_msgs = []
         for h in history:
+            if (h.get("status") or "") == "pending":
+                # 未处理的积压消息不进历史：即时回复时避免 LLM 顺带回答积压、
+                # 随后积压处理又正式回复一遍（表现为"重复回复旧消息"）
+                continue
             if h["role"] == "user":
                 history_msgs.append({"role": "user", "content": f"[{h['sender']}] {h['content']}"})
             else:
