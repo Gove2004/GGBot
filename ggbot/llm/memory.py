@@ -24,13 +24,13 @@ class MemoryStore:
         self.storage = storage
         emb = cfg.embedding
         self.model = emb["model"]
-        base_url = emb["base_url"]
+        self.base_url = emb["base_url"]
         api_key = emb["api_key"]
         if not api_key:
             raise RuntimeError("缺少 embedding.api_key：请在 db/config.json 的 embedding.api_key 配置")
         from openai import OpenAI
 
-        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=60, max_retries=0)
+        self.client = OpenAI(api_key=api_key, base_url=self.base_url, timeout=60, max_retries=0)
         self.batch_size = emb["batch_size"]
 
     def embed(self, text: str) -> np.ndarray:

@@ -99,9 +99,9 @@ python -m venv .venv
 #    deepseek.api_key           → DeepSeek key
 #    embedding.api_key          → SiliconFlow key（Qwen3-Embedding-4B）
 
-# 3. 启动（脚本自动创建 .venv + 安装依赖，无需手动准备）
+# 3. 启动（脚本自动创建 .venv + 安装依赖，无需手动准备；脚本默认 --log-level DEBUG）
 start.bat                    # Windows 前台（Ctrl+C 停止）
-# 或直接运行（无命令行参数，全部行为由 db/config.json 驱动）：
+# 或直接运行（无参数时全部行为由 db/config.json 驱动，日志等级取 web.log_level）：
 .\.venv\Scripts\python.exe main.py
 # Linux 后台：
 ./start.sh
@@ -112,8 +112,8 @@ start.bat                    # Windows 前台（Ctrl+C 停止）
 ## 日志与 Web 运维
 
 - **日志文件**：只写 `temp/logs/ggbot.log`（RotatingFileHandler，5MB × 5 轮转；目录随 `storage.temp_dir` 自动创建；stderr 同时输出）。项目根目录不再产生 `botpy.log` / `logs/`——botpy 的文件 handler 已关闭（`bot_log=None, ext_handlers=False`）。格式 `时间 | 等级 | 位置 | 会话 | 内容`——会话列统一为 `群聊xxxxxxxx` / `私聊xxxxxxxx` / `系统00000000`（8 位 openid），控制台、文件、Web 面板三处一致；第三方库默认 WARNING 降噪
-- **启动日志**：仅六条就绪信息——`日志就绪`（相对路径）/ `存储就绪`（相对路径）/ `记忆就绪`（模型）/ `LLM就绪`（模型 + 地址）/ `Web就绪`（地址）/ `QQBot就绪`（gateway）；收发消息只保留一条入站日志和一条发送内容，不再重复打印 `seq/passive` 等内部字段
-- **等级控制**：`db/config.json → web.log_level`（默认 INFO）；面板保存设置即时热切换。项目**纯配置文件驱动**，不使用环境变量、不设启动参数（Web 面板开关：`web.enable`）
+- **启动日志**：仅六条就绪信息——`日志就绪`（相对路径 + 等级）/ `存储就绪`（相对路径）/ `记忆就绪`（模型 + 地址）/ `LLM就绪`（模型 + 地址）/ `Web就绪`（地址）/ `QQBot就绪`（gateway）；收发消息只保留一条入站日志（`私聊[54019C24] 内容` / `群@[54019C24] 内容`）和一条发送内容；上下线只打 `自然上线 预计在线 53s, 积压消息 0 条` / `强制上线 …` / `下线 预计离线 438s`
+- **等级控制**：`db/config.json → web.log_level`（默认 INFO）；面板保存设置即时热切换。`start.bat` / `start.sh` 默认带 `--log-level DEBUG`，直接 `python main.py` 则用配置值；项目不使用环境变量（Web 面板开关：`web.enable`）
 - **Web 面板**：分组导航 + 响应式布局。仪表盘（在线状态 / 会话倒计时 / 指标 / 最近消息）、会话与上下文（历史摘要、消息气泡、单独清空）、消息流、向量记忆（语义检索 / 写入 / 编辑 / 整理）、规则启停、工具（13 个 Tool 的启停与脱敏配置概览）、设置分组（LLM / 在线作息 / 拟人回复 / 积压读取与日志，白名单热更新并写回 config.json）、日志（等级 / 会话 / 内容过滤，自动刷新）
 - **运维 CLI**：`python tools/manage.py stats|sessions|context|clear|reset-chat|memory ...`，可直接查看统计、导出会话上下文、清空单个会话、检索/增改/整理记忆（`--yes` 跳过确认）
 - **API**：登录 `POST /api/login`（HttpOnly Cookie，失败限流 8 次/60s）、`GET /api/auth`、`POST /api/logout`；业务 `GET /api/stats|sessions|messages|memories|rules|tools|config|logs`，`POST /api/config`（`[{"path": "a.b.c", "value": x}]` 批量，白名单 + 类型校验，越权拒绝）、`POST /api/tools/{name}/toggle`（共享配置的 Tool 返回 400）；`GET /api/config|tools` 密钥脱敏；`GET /media/{exp}/{sig}/{rel}` 为 QQ 提供签名媒体，不参与 Cookie 鉴权

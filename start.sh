@@ -2,7 +2,7 @@
 # ============================================================
 #  GGBot launcher - Linux BACKGROUND mode
 #  Auto: create .venv if missing, pip install if deps missing
-#  Logs: logs/ggbot.log (nohup, rotating 5x5MB)
+#  Logs: temp/logs/ggbot.log (rotating 5x5MB)
 #  Stop: kill <PID>   (PID printed below)
 # ============================================================
 set -euo pipefail
@@ -22,7 +22,7 @@ if ! "$PY" -c "import botpy, openai, edge_tts, fastapi, uvicorn, numpy" >/dev/nu
 fi
 
 mkdir -p temp/logs
-nohup "$PY" main.py >> temp/logs/stdout.log 2>&1 &
+nohup "$PY" main.py --log-level DEBUG >> temp/logs/stdout.log 2>&1 &
 PID=$!
 echo "[GGBot] started in background, PID=${PID}"
 echo "[GGBot] logs: temp/logs/ggbot.log (rotating) + temp/logs/stdout.log (console)"

@@ -33,9 +33,9 @@ if errorlevel 1 (
 
 if not exist "temp" mkdir "temp"
 
-echo [GGBot] starting ... log file: temp\logs\ggbot.log
+echo [GGBot] starting ...
 echo [GGBot] press Ctrl+C to stop
-".venv\Scripts\python.exe" main.py
+".venv\Scripts\python.exe" main.py --log-level DEBUG
 set "EXIT_CODE=%ERRORLEVEL%"
 echo [GGBot] exited with code %EXIT_CODE%
 pause

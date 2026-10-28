@@ -587,7 +587,8 @@ class _SessionState:
         self._online_deadline = time.monotonic() + span
         self.touch()
         seen = self.pm._read_backlog_sid(self.sid)
-        logger.info("上线（%s），预计在线 %.0fs，读到积压 %d 条（不回复）", reason, span, seen,
+        label = {"scheduled": "自然上线", "wake-on-at": "强制上线"}.get(reason, "上线")
+        logger.info("%s 预计在线 %.0fs, 积压消息 %d 条", label, span, seen,
                     extra={"session": self.label})
 
     async def go_offline(self, reason: str) -> None:
@@ -607,7 +608,7 @@ class _SessionState:
                 pass
             self._debounce_task = None
         self.debounce = []
-        logger.info("下线（%s），%.0fs 后再次上线", reason, wait, extra={"session": self.label})
+        logger.info("下线 预计离线 %.0fs", wait, extra={"session": self.label})
 
     def renew(self) -> None:
         """每成功回复一轮：在线时长按连续对话轮数递增（聊得越久越火热，封顶续期上限）。"""

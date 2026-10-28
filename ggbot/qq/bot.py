@@ -47,7 +47,7 @@ class QQBot(botpy.Client):
         self._learn_bot_openid(message)
         sid = session_label(f"group:{message.group_openid}")
         sender = oid8(getattr(message.author, "member_openid", None))
-        logger.info("群@ sender=%s: %.50s", sender, (message.content or "").strip(),
+        logger.info("群@[%s] %.50s", sender, (message.content or "").strip(),
                     extra={"session": sid})
         await self._route(message, is_at=True, passive_ok=True)
 
@@ -55,7 +55,7 @@ class QQBot(botpy.Client):
         # 私聊 = 直接找机器人对话，等价于 @；C2C 事件可被动回复
         openid = getattr(message, "author", None) and getattr(message.author, "user_openid", None)
         sid = session_label(f"c2c:{openid}")
-        logger.info("私聊 sender=%s: %.50s", oid8(openid), (message.content or "").strip(),
+        logger.info("私聊[%s] %.50s", oid8(openid), (message.content or "").strip(),
                     extra={"session": sid})
         await self._route(message, is_at=True, passive_ok=True)
 
@@ -106,7 +106,7 @@ class QQBot(botpy.Client):
         me = self._mentioned_self(message)
         sid = session_label(f"group:{message.group_openid}")
         sender = oid8(getattr(message.author, "member_openid", None))
-        logger.info("群消息 sender=%s at=%s: %.50s", sender, "Y" if me else "N",
+        logger.info("群消息[%s] at=%s: %.50s", sender, "Y" if me else "N",
                     (message.content or "").strip(), extra={"session": sid})
         # passive_ok 固定 False：全量事件的 event_id 不能用于被动回复（40034027），只能主动发送
         await self._route(message, is_at=me, passive_ok=False)
@@ -125,8 +125,8 @@ class QQBot(botpy.Client):
             return
         sid = session_label(inbound["key"])
         logger.debug(
-            "归一化 scene=%s target=%s sender=%s at=%s passive=%s att=%d content=%.60r",
-            inbound["scene"], oid8(inbound["target"]), oid8(inbound["sender"]),
+            "归一化 [%s] scene=%s target=%s at=%s passive=%s att=%d content=%.60r",
+            oid8(inbound["sender"]), inbound["scene"], oid8(inbound["target"]),
             inbound["is_at"], inbound["passive_ok"], len(inbound["attachments"] or []),
             inbound["content"], extra={"session": sid},
         )

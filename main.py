@@ -74,7 +74,7 @@ async def main(cfg: Config | None = None) -> None:
     cfg = cfg or Config()
     lock_path = Path(cfg.db_path).parent / ".bot.lock"
     _acquire_singleton(lock_path)
-    log_level = (cfg.web_cfg or {}).get("log_level", "INFO")
+    log_level = getattr(cfg, "_log_level", None) or (cfg.web_cfg or {}).get("log_level", "INFO")
     setup_logging(cfg.log_file, log_level)
     log = logging.getLogger("ggbot.main")
     log.info("日志就绪: %s (level=%s)", _rel(cfg.log_file), log_level)
@@ -87,7 +87,7 @@ async def main(cfg: Config | None = None) -> None:
         log.info("聊天数据已清理: messages=%d sessions=%d（记忆/规则保留）", n["messages"], n["sessions"])
 
     memory = MemoryStore(cfg, storage)
-    log.info("记忆就绪: %s", memory.model)
+    log.info("记忆就绪: %s @ %s", memory.model, memory.base_url)
 
     llm = DeepSeekClient(cfg)
     log.info("LLM就绪: %s @ %s", cfg.model, cfg.llm.get("base_url"))
@@ -136,11 +136,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GGBot")
     parser.add_argument("--reset-chat", action="store_true",
                         help="清理 messages/sessions 聊天数据（保留记忆与规则）后启动")
+    parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default=None,
+                        help="覆盖 config web.log_level（start 脚本默认 DEBUG）")
     args = parser.parse_args()
 
     async def _run() -> None:
         cfg = Config()
         cfg._reset_chat = args.reset_chat
+        cfg._log_level = args.log_level
         await main(cfg)
 
     asyncio.run(_run())
