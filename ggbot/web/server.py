@@ -114,6 +114,7 @@ ALLOWED_SETTINGS = [
     "behavior.presence.renew_jitter",
     "behavior.reply.segment_gap_sec",
     "behavior.reply.debounce_sec",
+    "behavior.reply.debounce_max_sec",
     "behavior.reply.read_delay_min_sec",
     "behavior.reply.read_delay_max_sec",
     "behavior.reply.typing_chars_per_sec",

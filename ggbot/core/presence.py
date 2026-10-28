@@ -3,7 +3,7 @@
 离线（默认 10 分钟，带 ±40% 抖动）：普通消息仅入库积压（≤1000）；收到@（本会话）
 或倒计时结束 → 本会话上线。
 在线（默认 1 分钟，带 ±30% 抖动）：上线只把积压标记为 seen 读入上下文、不回复；
-消息进入 5s 抖动窗口聚合 → 选择性回复（@/私聊走被动回复；普通群消息走主动消息，
+消息进入 5–10s 随机抖动窗口聚合 → 选择性回复（@/私聊走被动回复；普通群消息走主动消息，
 受平台每分钟/每日频控与本地 proactive_* 上限约束）；每成功回复一轮固定续期
 renew_per_reply_sec（默认 30s，封顶 renew_max_sec）；倒计时结束 → 下线。
 拟人化：回复前有阅读停顿，发送前按内容长度模拟打字耗时（可用 behavior.reply 关闭）。
@@ -59,11 +59,16 @@ def _derive_target(sid: str) -> tuple[str, str]:
     return sid, "group"
 
 
+def _sender_label(m: dict) -> str:
+    """发送者展示名：优先 QQ 昵称，缺失时退回 8 位 openid。"""
+    return (m.get("sender_name") or "").strip() or oid8(m.get("sender")) or "unknown"
+
+
 def _fmt_user_messages(msgs: list[dict]) -> str:
-    """把一条或多条入站消息格式化为模型输入（发送者只用 8 位 id，省上下文）。"""
+    """把一条或多条入站消息格式化为模型输入（优先昵称，缺失用 8 位 id）。"""
     lines = []
     for m in msgs:
-        parts = [f"[{oid8(m.get('sender'))}]"]
+        parts = [f"[{_sender_label(m)}]"]
         if m.get("is_at"):
             parts.append("(艾特了你)")
         content = m.get("content") or ""
@@ -89,13 +94,13 @@ def _fmt_user_messages(msgs: list[dict]) -> str:
 
 
 def _fmt_history(history: list[dict]) -> str:
-    """历史对话纯文本（摘要用）：用户按 8 位 id，助手按“我”。"""
+    """历史对话纯文本（摘要用）：用户按昵称/8 位 id，助手按“我”。"""
     lines = []
     for h in history:
         if h.get("role") == "assistant":
             lines.append(f"[我] {h.get('content') or ''}")
         else:
-            lines.append(f"[{oid8(h.get('sender'))}] {h.get('content') or ''}")
+            lines.append(f"[{_sender_label(h)}] {h.get('content') or ''}")
     return "\n".join(lines)
 
 
@@ -200,7 +205,7 @@ class PresenceManager:
             sid, "user", inbound["sender"], inbound["content"],
             inbound.get("attachments"), inbound["msg_id"], inbound.get("msg_seq"),
             inbound.get("event_id"), inbound.get("is_at", False), inbound.get("passive_ok", False),
-            status="pending",
+            status="pending", sender_name=inbound.get("sender_name"),
         )
         st = self._state_of(sid)
         st.touch()
@@ -224,7 +229,9 @@ class PresenceManager:
         return True
 
     async def _flush_debounce(self, st: "_SessionState") -> None:
-        await asyncio.sleep(float(self.r.get("debounce_sec", 5)))
+        lo = float(self.r.get("debounce_sec", 5))
+        hi = float(self.r.get("debounce_max_sec", 10))
+        await asyncio.sleep(random.uniform(min(lo, hi), max(lo, hi)))
         batch = st.debounce
         st.debounce = []
         if not batch:
@@ -368,7 +375,8 @@ class PresenceManager:
     async def _agent_loop(self, sid: str, msgs: list[dict], ctx_msg: dict, ctx: dict | None = None) -> str:
         ctx = ctx if ctx is not None else {}
         system = await self._build_system(sid, msgs[-1] if msgs else ctx_msg)
-        history = self.storage.get_recent_messages(sid, self._history_limit)
+        # 多取一些候选，剔除本轮 pending 后再截到窗口上限，保证窗口真正装满
+        history = self.storage.get_recent_messages(sid, self._history_limit + max(10, len(msgs)))
         history_msgs = []
         for h in history:
             if (h.get("status") or "") == "pending":
@@ -376,9 +384,10 @@ class PresenceManager:
                 # 随后积压处理又正式回复一遍（表现为"重复回复旧消息"）
                 continue
             if h["role"] == "user":
-                history_msgs.append({"role": "user", "content": f"[{oid8(h['sender'])}] {h['content']}"})
+                history_msgs.append({"role": "user", "content": f"[{_sender_label(h)}] {h['content']}"})
             else:
                 history_msgs.append({"role": "assistant", "content": h["content"]})
+        history_msgs = history_msgs[-self._history_limit:] if self._history_limit > 0 else []
         user_content = "【本轮消息】（只回应这里的内容）\n" + _fmt_user_messages(msgs)
         messages = [{"role": "system", "content": system}, *history_msgs, {"role": "user", "content": user_content}]
 
@@ -388,7 +397,7 @@ class PresenceManager:
             self.llm.estimate_tokens(m.get("content") or "") for m in messages
         )
         label = session_label(sid)
-        logger.debug("agent 上下文: history=%d / %d tokens≈%d / %d",
+        logger.debug("agent 上下文: history = %d / %d tokens ≈ %d / %d",
                      len(history_msgs), self._history_limit, total, budget, extra={"session": label})
         if total > budget and history:
             summary = await asyncio.to_thread(self.llm.summarize, _fmt_history(history))
@@ -484,7 +493,7 @@ class _SessionState:
     """单会话 在线/离线 状态机。
 
     离线：普通消息积压；收到@或倒计时结束 → 上线（只读积压，不回复）。
-    在线：消息进 5s 抖动窗口；每成功回复一轮续期固定时长；倒计时结束下线。
+    在线：消息进 5–10s 随机抖动窗口；每成功回复一轮续期固定时长；倒计时结束下线。
     """
 
     def __init__(self, pm: "PresenceManager", sid: str):

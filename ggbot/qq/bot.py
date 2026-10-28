@@ -3,7 +3,8 @@
 - 事件：群@（on_group_at_message_create）、单聊（on_c2c_message_create）、群全量（on_group_message_create）
 - 富媒体附件（图片/语音/视频/文件）下载到 temp/ 并记录公网 URL（可转发）
 - 发送：文本被动回复（msg_id + 递增 msg_seq）、富媒体上传（base64 file_data → file_info → msg_type=7）
-- 日志：openid 只显示前 8 位（不做名称解析，无白名单/网络依赖）
+- 日志：发送者显示 QQ 昵称 + openid 前 8 位（事件未带昵称时只显示 8 位 id），引用消息显示为
+  [引用 被引内容] 正文；不调用名称解析接口，无白名单/网络依赖
 """
 
 from __future__ import annotations
@@ -49,6 +50,51 @@ def clean_content(content: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def extract_quote(elements) -> str:
+    """从 msg_elements 取被引用消息的文本（message_type=103，可嵌套）。"""
+    for el in elements or []:
+        if not isinstance(el, dict):
+            continue
+        try:
+            kind = int(el.get("message_type") or 0)
+        except (TypeError, ValueError):
+            kind = 0
+        if kind == 103:
+            text = clean_content(el.get("content") or "")
+            if text:
+                return text[:200] + ("…" if len(text) > 200 else "")
+        nested = extract_quote(el.get("msg_elements"))
+        if nested:
+            return nested
+    return ""
+
+
+class _RichGroupMessage(GroupMessage):
+    """保留 botpy 丢弃的 author.username / message_type / msg_elements 字段。"""
+
+    __slots__ = ("username", "msg_elements", "message_type", "message_scene", "quote_text")
+
+    def __init__(self, api, event_id, data: dict):
+        super().__init__(api, event_id, data)
+        self.username = ((data.get("author") or {}).get("username") or "").strip()
+        self.msg_elements = data.get("msg_elements") or []
+        self.message_type = data.get("message_type")
+        self.message_scene = data.get("message_scene") or {}
+        self.quote_text = extract_quote(self.msg_elements)
+
+
+class _RichC2CMessage(C2CMessage):
+    __slots__ = ("username", "msg_elements", "message_type", "message_scene", "quote_text")
+
+    def __init__(self, api, event_id, data: dict):
+        super().__init__(api, event_id, data)
+        self.username = ((data.get("author") or {}).get("username") or "").strip()
+        self.msg_elements = data.get("msg_elements") or []
+        self.message_type = data.get("message_type")
+        self.message_scene = data.get("message_scene") or {}
+        self.quote_text = extract_quote(self.msg_elements)
+
+
 class QQBot(botpy.Client):
     def __init__(self, config, presence=None, intents=None):
         # bot_log=None 保留 botpy 日志向根 logger 传播；ext_handlers=False 关闭
@@ -63,15 +109,14 @@ class QQBot(botpy.Client):
     # ---------- 事件 ----------
 
     async def on_ready(self) -> None:
-        self._register_group_message_parser()
+        self._register_message_parsers()
         logger.info("QQBot就绪: WebSocket gateway 已连接")
 
     async def on_group_at_message_create(self, message: GroupMessage) -> None:
         # GROUP_AT_MESSAGE_CREATE：只有真正被@本机器人时触发（事件通道）
         self._learn_bot_openid(message)
         sid = session_label(f"group:{message.group_openid}")
-        sender = oid8(getattr(message.author, "member_openid", None))
-        logger.info("群@[%s] %.50s", sender, clean_content(message.content),
+        logger.info("群@[%s] %.80s", self._who(message), self._message_text(message),
                     extra={"session": sid})
         await self._route(message, is_at=True, passive_ok=True)
 
@@ -79,7 +124,7 @@ class QQBot(botpy.Client):
         # 私聊 = 直接找机器人对话，等价于 @；C2C 事件可被动回复
         openid = getattr(message, "author", None) and getattr(message.author, "user_openid", None)
         sid = session_label(f"c2c:{openid}")
-        logger.info("私聊[%s] %.50s", oid8(openid), clean_content(message.content),
+        logger.info("私聊[%s] %.80s", self._who(message), self._message_text(message),
                     extra={"session": sid})
         await self._route(message, is_at=True, passive_ok=True)
 
@@ -99,26 +144,31 @@ class QQBot(botpy.Client):
                      getattr(audit, "message_id", None), getattr(audit, "audit_id", None),
                      getattr(audit, "guild_id", None), getattr(audit, "channel_id", None))
 
-    def _register_group_message_parser(self) -> None:
-        """注册群全量消息事件（GROUP_MESSAGE_CREATE，私域群全量消息）。
+    def _register_message_parsers(self) -> None:
+        """注入群聊/私聊事件解析器，保留 botpy 丢弃的昵称与引用消息字段。
 
-        botpy 1.2.1 未内置该事件 parser（收到即报 unknown event 并丢弃），
-        这里在运行时向 ConnectionState.parsers 注入同名解析器，使普通（非@）群消息进入统一路由。
+        botpy 1.2.1 未内置 GROUP_MESSAGE_CREATE parser（收到即 unknown event），
+        且三个群/私聊消息模型都只取 openid，丢掉 author.username / msg_elements。
+        这里统一换成 _Rich*Message 子类，原始字段在 _normalize 中落库与入上下文。
         """
         try:
             state = self._connection.state
-            if "group_message_create" in state.parsers:
-                return
             import types
 
-            def parse_group_message_create(self, payload):
-                _message = GroupMessage(self.api, payload.get("id", None), payload.get("d", {}))
-                self._dispatch("group_message_create", _message)
+            def make_parser(event: str, cls):
+                def parse(_state, payload):
+                    data = payload.get("d", {}) or {}
+                    _state._dispatch(event, cls(_state.api, payload.get("id"), data))
+                return parse
 
-            state.parse_group_message_create = types.MethodType(parse_group_message_create, state)
-            state.parsers["group_message_create"] = state.parse_group_message_create
+            for event, cls in (
+                ("group_at_message_create", _RichGroupMessage),
+                ("group_message_create", _RichGroupMessage),
+                ("c2c_message_create", _RichC2CMessage),
+            ):
+                state.parsers[event] = types.MethodType(make_parser(event, cls), state)
         except Exception as e:  # noqa: BLE001
-            logger.warning("注册 group_message_create 解析失败: %s", e)
+            logger.warning("注册消息解析器失败: %s", e)
 
     async def on_group_message_create(self, message: GroupMessage) -> None:
         """群全量消息（私域权限，所有普通消息；含@别人的消息，不含对本机器人的@）。
@@ -128,9 +178,8 @@ class QQBot(botpy.Client):
         （测试群机器人唯一），之后切回精确匹配。"""
         me = self._mentioned_self(message)
         sid = session_label(f"group:{message.group_openid}")
-        sender = oid8(getattr(message.author, "member_openid", None))
-        logger.info("群消息[%s] at=%s: %.50s", sender, "Y" if me else "N",
-                    clean_content(message.content), extra={"session": sid})
+        logger.info("群消息[%s] at=%s: %.80s", self._who(message), "Y" if me else "N",
+                    self._message_text(message), extra={"session": sid})
         # passive_ok 固定 False：全量事件的 event_id 不能用于被动回复（40034027），只能主动发送
         await self._route(message, is_at=me, passive_ok=False)
 
@@ -166,9 +215,9 @@ class QQBot(botpy.Client):
                 return None
             key = f"c2c:{openid}"
             target = openid
-            sender = "c2c"
+            sender = openid
             scene = "c2c"
-        content = clean_content(message.content)
+        content = self._message_text(message)
         attachments = await self._download_attachments(message.attachments or [], key=key)
         # is_at：事件来源（group_at/c2c=True）优先；全量消息用 mentions / content <@> 兜底匹配 bot_openid
         # passive_ok：只有 @事件/C2C 事件的消息可用 msg_id+event_id 被动回复；
@@ -184,6 +233,7 @@ class QQBot(botpy.Client):
             "scene": scene,
             "target": target,
             "sender": sender,
+            "sender_name": (getattr(message, "username", "") or "").strip() or None,
             "content": content,
             "attachments": attachments,
             "is_at": is_at,
@@ -192,6 +242,21 @@ class QQBot(botpy.Client):
         }
 
     # ---------- 辅助 ----------
+
+    @staticmethod
+    def _who(message) -> str:
+        """日志里的发送者：昵称/8 位 openid（没有昵称时只显示 openid）。"""
+        uid = oid8(getattr(message.author, "member_openid", None)
+                   or getattr(message.author, "user_openid", None))
+        name = (getattr(message, "username", "") or "").strip()
+        return f"{name}/{uid}" if name and uid else (name or uid or "unknown")
+
+    @staticmethod
+    def _message_text(message) -> str:
+        """清洗正文；引用消息前置 [引用 被引用内容]。"""
+        text = clean_content(message.content)
+        quote = (getattr(message, "quote_text", "") or "").strip()
+        return f"[引用 {quote}] {text}" if quote else text
 
     def _mentioned_self(self, message) -> bool:
         """全量消息识别"被@本机器人"。

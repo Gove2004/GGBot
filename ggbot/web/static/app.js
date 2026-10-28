@@ -209,6 +209,17 @@ function fmtLogTs(ts) {
   const s = String(ts || "");
   return s.length >= 19 ? s.slice(5, 19) : (s || "—");
 }
+function shortId(id) {
+  const s = String(id || "");
+  return s ? s.slice(0, 8) : "—";
+}
+function senderCell(m) {
+  if (m.role === "assistant") return '<span class="role-assistant">机器人</span>';
+  const name = (m.sender_name || "").trim();
+  const head = name ? esc(name) : `<span class="mono">${esc(shortId(m.sender))}</span>`;
+  const tail = name ? ` <span class="mono muted">${esc(shortId(m.sender))}</span>` : "";
+  return `<span class="role-user">${head}${tail}</span>`;
+}
 function fmtAgo(sec) {
   if (sec == null) return "—";
   const n = Number(sec);
@@ -427,7 +438,7 @@ async function openSessionDetail(sid) {
     const chats = (d.messages || []).map((m) => {
       const role = m.role === "assistant" ? "assistant" : "user";
       const pending = m.status === "pending" ? " · 待处理" : "";
-      return `<div class="chat ${role}"><div class="chat-meta">${role === "assistant" ? "机器人" : "成员"} · ${esc(fmtTs(m.ts))}${pending}</div>${esc(m.content || "（无文本）")}</div>`;
+      return `<div class="chat ${role}"><div class="chat-meta">${senderCell(m)} · ${esc(fmtTs(m.ts))}${pending}</div>${esc(m.content || "（无文本）")}</div>`;
     }).join("");
     openModal(
       `会话 ${s.label || labelFromKey(s.id)}`,
@@ -467,7 +478,7 @@ async function refreshMessages() {
   body.innerHTML = (rows || []).map((m) => `<tr>
     <td class="mono muted">${esc(fmtTs(m.ts))}</td>
     <td>${sessChip(m.skey || m.session_id)}</td>
-    <td class="col-sm-hide ${m.role === "assistant" ? "role-assistant" : "role-user"}">${m.role === "assistant" ? "机器人" : "成员"}</td>
+    <td class="col-sm-hide">${senderCell(m)}</td>
     <td class="msg" title="${esc(m.content)}">${esc(m.content || "（无文本）")}</td>
     <td class="col-sm-hide">${statusBadge(m.status)}</td>
   </tr>`).join("");

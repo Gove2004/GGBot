@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS messages(
     session_id TEXT,
     role TEXT,
     sender TEXT,
+    sender_name TEXT,
     content TEXT,
     attachments TEXT,
     msg_id TEXT,
@@ -86,7 +87,7 @@ class Storage:
             self._ensure_columns(c)
 
     def _ensure_columns(self, c: sqlite3.Connection) -> None:
-        """旧库迁移：messages 表补齐 event_id / is_at 列。"""
+        """旧库迁移：messages 表补齐 event_id / is_at / sender_name 列。"""
         cols = {r[1] for r in c.execute("PRAGMA table_info(messages)").fetchall()}
         if "event_id" not in cols:
             c.execute("ALTER TABLE messages ADD COLUMN event_id TEXT")
@@ -94,6 +95,8 @@ class Storage:
             c.execute("ALTER TABLE messages ADD COLUMN is_at INTEGER DEFAULT 0")
         if "passive_ok" not in cols:
             c.execute("ALTER TABLE messages ADD COLUMN passive_ok INTEGER DEFAULT 0")
+        if "sender_name" not in cols:
+            c.execute("ALTER TABLE messages ADD COLUMN sender_name TEXT")
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30)
@@ -211,17 +214,19 @@ class Storage:
         is_at: bool = False,
         passive_ok: bool | None = None,
         status: str = "received",
+        sender_name: str | None = None,
     ) -> int:
         if passive_ok is None:
             passive_ok = is_at
         with self._lock, self._conn() as c:
             cur = c.execute(
-                "INSERT INTO messages(session_id, role, sender, content, attachments, msg_id, msg_seq, "
-                "event_id, is_at, passive_ok, status, ts) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO messages(session_id, role, sender, sender_name, content, attachments, msg_id, "
+                "msg_seq, event_id, is_at, passive_ok, status, ts) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     session_id,
                     role,
                     sender,
+                    sender_name,
                     content,
                     json.dumps(attachments or [], ensure_ascii=False),
                     msg_id,

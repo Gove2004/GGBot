@@ -212,7 +212,7 @@
           </div>
           <div class="table-wrap tall">
             <table class="table">
-              <thead><tr><th>时间</th><th>会话</th><th class="col-sm-hide">角色</th><th>内容</th><th class="col-sm-hide">状态</th></tr></thead>
+              <thead><tr><th>时间</th><th>会话</th><th class="col-sm-hide">发送者</th><th>内容</th><th class="col-sm-hide">状态</th></tr></thead>
               <tbody id="msg-body"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
             </table>
           </div>
@@ -318,7 +318,8 @@
               <label class="field"><span>打字最长 (s)</span><input class="input" data-path="behavior.reply.typing_max_sec" data-kind="float" type="number" step="0.5" min="0"></label>
               <label class="field"><span>打字抖动 (±)</span><input class="input" data-path="behavior.reply.typing_jitter" data-kind="float" type="number" step="0.05" min="0"></label>
               <label class="field"><span>换行分条间隔 (s)</span><input class="input" data-path="behavior.reply.segment_gap_sec" data-kind="float" type="number" step="0.5"></label>
-              <label class="field"><span>抖动窗口 (s)</span><input class="input" data-path="behavior.reply.debounce_sec" data-kind="float" type="number" step="1"></label>
+              <label class="field"><span>抖动窗口下限 (s)</span><input class="input" data-path="behavior.reply.debounce_sec" data-kind="float" type="number" step="1" min="0"></label>
+              <label class="field"><span>抖动窗口上限 (s)</span><input class="input" data-path="behavior.reply.debounce_max_sec" data-kind="float" type="number" step="1" min="0"></label>
             </div>
           </div>
 
