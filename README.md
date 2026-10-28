@@ -6,7 +6,7 @@
 1. **消息收发网关**（`ggbot/bot.py`）— 群@/单聊事件接收、归一化、去重，富媒体附件落地 `temp/`
 2. **AI 请求装置**（`ggbot/llm.py`）— DeepSeek Chat Completions，function calling 原生工具
 3. **上下文组织 / 持久化记忆 / 自我进化**（`ggbot/storage.py` + `ggbot/memory.py` + `ggbot/tools.py`）
-4. **Web 控制面板**（`ggbot/web.py`）— FastAPI，在线状态 / 消息流 / 记忆检索 / 规则 / 人设管理
+4. **Web 控制面板**（`ggbot/web/server.py`）— FastAPI，在线状态 / 消息流 / 记忆检索 / 规则 / 人设管理
 
 ## 目录结构
 
@@ -143,7 +143,9 @@ stateDiagram-v2
 
 > 已注册**群全量消息**事件（私域 `GROUP_MESSAGE_CREATE`，botpy 1.2.1 未内置，运行时注入 parser）：普通消息（非@）进入 Presence 积压/抖动路径，与@消息共用去重与统一路由。机器人需在开放平台/群内开启"接收群内全部消息"权限。
 
-> **群@识别（两层）**：① 首选 `GROUP_AT_MESSAGE_CREATE` 事件（开放平台需订阅该事件，事件送达时自动学习机器人 openid 写入 config）；② 兜底 `bot_openid`（config 顶层，开放平台后台可查）——全量消息 `mentions` 匹配到该 id 即视为"被@本机器人"。未配置且事件未订阅时，群内@将只能走全量流、无法唤醒。
+> **群@识别（三层）**：① 首选 `GROUP_AT_MESSAGE_CREATE` 事件（开放平台需订阅该事件，事件送达时自动学习机器人 openid 写入 config）；② 全量消息 content 内嵌 `<@openid>`——`bot_openid` 为空时自动学习第一条 `<@>` 的 id 写入 config，之后精确匹配（当前生效）；③ `mentions` 精确匹配 `bot_openid`。
+
+> **可读名称（日志显示群名/昵称）**：`config.names.groups`（群 openid→群名）/ `config.names.users`（用户 openid→昵称）本地名称表优先；未配置时尝试官方 v2 API（测试 app 多无权限，失败降级显示短 id，并在日志提示一次）。
 
 > `temp/` 目录默认只保留 24h（`storage.temp_ttl_hours=24`）：启动时清理一次 + 每小时巡检，超过时限的文件自动删除。
 
@@ -152,6 +154,8 @@ stateDiagram-v2
 ```json
 {
   "appid": "...", "appsecret": "...",
+  "bot_openid": "",                    // 机器人 openid，自动学习（群消息 <@id> / @事件 mentions），也可手动填
+  "names": { "groups": {}, "users": {} },   // 本地名称表：群 openid→群名、用户 openid→昵称（日志可读）
   "deepseek": {
     "base_url": "https://api.deepseek.com", "api_key": "...", "model": "deepseek-flash",
     "request": { "thinking": "disabled", "reasoning_effort": "high", "temperature": 1.0,

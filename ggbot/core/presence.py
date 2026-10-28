@@ -472,21 +472,12 @@ class PresenceManager:
             logger.info("回复 %s target=%s seg=%d/%d passive=%s: %.60r",
                         scene, disp, i + 1, len(segments), can_passive, seg)
             try:
-                resp = await self.bot.send_text(target, seg, scene, msg_id, seq, event_id)
-                if resp is not None:
-                    # botpy 解析 QQ 返回（含新消息 id）；有 id 说明平台已受理并生成消息
-                    rid, ts = (resp.get("id"), resp.get("timestamp")) if isinstance(resp, dict) \
-                        else (getattr(resp, "id", None), getattr(resp, "timestamp", None))
-                    logger.info("已受理 seq=%d resp=%.24s ts=%s", seq, rid or "", ts)
+                await self.bot.send_text(target, seg, scene, msg_id, seq, event_id)
             except Exception as e:  # noqa: BLE001
                 if can_passive and msg_id:
                     # 被动回复失败（msg_id 过期 / 事件不可回复等）→ 降级主动发送，确保送达
                     logger.warning("被动回复失败，降级主动发送 %s: %s", target, e)
-                    resp = await self.bot.send_text(target, seg, scene, None, self._next_seq(sid, None))
-                    if resp is not None:
-                        rid, ts = (resp.get("id"), resp.get("timestamp")) if isinstance(resp, dict) \
-                            else (getattr(resp, "id", None), getattr(resp, "timestamp", None))
-                        logger.info("已受理(降级主动) seq=%d resp=%.24s ts=%s", seq, rid or "", ts)
+                    await self.bot.send_text(target, seg, scene, None, self._next_seq(sid, None))
                 else:
                     raise
             # 每发送一条消息：会话在线时长 +renew_per_reply_sec（聊得火热）

@@ -1,11 +1,10 @@
-"""QQ 开放平台名称解析：openid → 可读名称（群名 / 成员昵称 / 用户昵称）。
+"""QQ 名称解析：openid → 可读名称（群名 / 成员昵称 / 用户昵称）。
 
-QQ 群/用户 openid 是 32 位十六进制串，日志里不可读。本模块调用官方 v2 API
-（api.sgroup.qq.com）把 openid 解析成名称，带内存缓存；接口无权限或失败时
-静默降级返回 None（调用方回退显示短 id），不影响主流程。
+QQ 群/用户 openid 是 32 位十六进制串，日志里不可读。解析顺序：
+1. 本地名称表（config.names.groups / config.names.users，纯配置驱动、可控）
+2. 官方 v2 API（api.sgroup.qq.com，带内存缓存；测试 app 可能无权限，失败降级显示 id）
 
-- token：POST bots.qq.com/app/getAppAccessToken（appId+clientSecret），
-  沙箱 token 有效期短，缓存并提前刷新
+- token：POST bots.qq.com/app/getAppAccessToken（appId+clientSecret）
 - 群信息：GET /v2/groups/{group_openid}        → {"name": ...}
 - 群成员：GET /v2/groups/{group_openid}/members/{member_openid} → {"nickname": ...}
 - 用户：  GET /v2/users/{openid}               → {"nickname": ...}
@@ -25,18 +24,21 @@ API_BASE = "https://api.sgroup.qq.com/v2"
 
 
 class NameResolver:
-    """openid → 可读名称。线程安全（事件循环内调用即可）；失败静默降级。"""
+    """openid → 可读名称。本地表优先，API 补充；失败静默降级（回退显示短 id）。"""
 
-    def __init__(self, appid: str, secret: str):
+    def __init__(self, appid: str, secret: str, local: dict | None = None):
         self._appid = appid
         self._secret = secret
+        self._local_groups: dict[str, str] = (local or {}).get("groups", {}) or {}
+        self._local_users: dict[str, str] = (local or {}).get("users", {}) or {}
         self._token = ""
         self._token_exp = 0.0
-        self._groups: dict[str, str] = {}    # group_openid -> name
+        self._groups: dict[str, str] = {}    # group_openid -> name（API 缓存）
         self._members: dict[str, str] = {}   # "gid:uid" -> nickname
         self._users: dict[str, str] = {}     # user_openid -> nickname
         self._miss: set[str] = set()         # 解析失败过的 key，短期不再重试
         self._miss_until: dict[str, float] = {}
+        self._diag_done: set[str] = set()    # 首次失败已诊断打印（避免刷屏）
 
     async def _get_token(self) -> str:
         now = time.monotonic()
@@ -72,10 +74,14 @@ class NameResolver:
                 async with s.get(f"{API_BASE}{path}", headers={"Authorization": f"Bearer {token}"},
                                  timeout=aiohttp.ClientTimeout(total=10)) as r:
                     if r.status != 200:
+                        if key not in self._diag_done:
+                            self._diag_done.add(key)
+                            body = (await r.text())[:200]
+                            logger.warning("名称解析失败 %s status=%s body=%.200s（如需真实名称：开放平台开通权限，或在 config.names 配置本地名称表）",
+                                           path, r.status, body)
                         if r.status in (401, 403, 404, 400):
                             self._miss.add(key)
                             self._miss_until[key] = now + 3600  # 权限/不存在，1h 内不再试
-                            logger.debug("名称解析 %s status=%s（降级显示 id）", path, r.status)
                         return None
                     d = await r.json()
             if "name" in d:
@@ -88,6 +94,8 @@ class NameResolver:
             return None
 
     async def group_name(self, gid: str) -> str | None:
+        if gid in self._local_groups:
+            return self._local_groups[gid]
         if gid in self._groups:
             return self._groups[gid]
         v = await self._get_json(f"/groups/{gid}", f"g:{gid}")
@@ -96,6 +104,9 @@ class NameResolver:
         return v
 
     async def member_name(self, gid: str, uid: str) -> str | None:
+        # 成员昵称：本地 users 表（用户 openid 按 app 维度唯一）优先，再 API
+        if uid in self._local_users:
+            return self._local_users[uid]
         key = f"m:{gid}:{uid}"
         if key in self._members:
             return self._members[key]
@@ -105,6 +116,8 @@ class NameResolver:
         return v
 
     async def user_name(self, uid: str) -> str | None:
+        if uid in self._local_users:
+            return self._local_users[uid]
         if uid in self._users:
             return self._users[uid]
         v = await self._get_json(f"/users/{uid}", f"u:{uid}")

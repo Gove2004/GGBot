@@ -36,6 +36,7 @@ class QQBot(botpy.Client):
         self.names = NameResolver(
             str((config.qq or {}).get("appid") or ""),
             str((config.qq or {}).get("secret") or ""),
+            (config.data or {}).get("names"),
         )
 
     # ---------- 事件 ----------
