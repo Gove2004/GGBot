@@ -187,7 +187,7 @@ class QQBot(botpy.Client):
             logger.warning("学习 bot_openid 失败: %s", e)
 
     async def _download_attachments(self, attachments) -> list[dict]:
-        """富媒体落地：下载到 temp/（视频默认不下载），保留公网 URL（可转发）。
+        """富媒体落地：按类型下载到 temp/<子目录>（emoji/voice/video/other），不平铺。
 
         - storage.download_video=false 时，视频附件不下载不处理，仅保留 url/元信息供上下文引用
         - temp 文件由 cleanup_temp() 按 storage.temp_ttl_hours 定期清理
@@ -207,8 +207,9 @@ class QQBot(botpy.Client):
             if a.url and not (is_video and not download_video):
                 try:
                     fname = f"{int(time.time() * 1000)}_{Path(a.filename or 'file').name}"
+                    sub = self._media_kind(ctype)
                     data = await self._http_get(a.url)
-                    p = self.temp_dir / fname
+                    p = self.cfg.media_dir(sub) / fname
                     p.write_bytes(data)
                     rec["local_path"] = str(p)
                     logger.info("富媒体落地: %s (%d bytes)", p, len(data))
@@ -219,16 +220,30 @@ class QQBot(botpy.Client):
             out.append(rec)
         return out
 
+    @staticmethod
+    def _media_kind(ctype: str) -> str:
+        """按 content_type 归类：表情包/图片→emoji，语音→voice，视频→video，其余→other。"""
+        c = (ctype or "").lower()
+        if any(k in c for k in ("voice", "audio", "silk")):
+            return "voice"
+        if any(k in c for k in ("video",)):
+            return "video"
+        if any(k in c for k in ("image", "emoji", "face", "gif", "png", "jpeg", "jpg", "webp")):
+            return "emoji"
+        return "other"
+
     def cleanup_temp(self) -> int:
-        """清理 temp/ 下超过 storage.temp_ttl_hours 小时的文件，返回移除数。"""
+        """清理 temp/ 下超过 storage.temp_ttl_hours 小时的文件（递归，保留 logs/），返回移除数。"""
         ttl_hours = float((self.cfg.storage_cfg or {}).get("temp_ttl_hours", 24))
         cutoff = time.time() - ttl_hours * 3600
         removed = 0
         if not self.temp_dir.exists():
             return 0
-        for p in self.temp_dir.iterdir():
+        for p in self.temp_dir.rglob("*"):
             if not p.is_file():
                 continue
+            if "logs" in p.parts:
+                continue  # 日志不属于媒体 TTL 清理
             try:
                 if p.stat().st_mtime < cutoff:
                     p.unlink()

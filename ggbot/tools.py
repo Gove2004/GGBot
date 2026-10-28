@@ -192,7 +192,7 @@ class ToolExecutor:
         try:
             import edge_tts
 
-            out = self.temp_dir / f"voice_{int(time.time() * 1000)}.mp3"
+            out = self.cfg.media_dir("voice") / f"voice_{int(time.time() * 1000)}.mp3"
             com = edge_tts.Communicate(text, voice="zh-CN-XiaoxiaoNeural")
             await com.save(str(out))
             return await self._send_media(ctx, 3, str(out), "语音(TTS)")

@@ -82,6 +82,18 @@ class Config:
         p.mkdir(parents=True, exist_ok=True)
         return p
 
+    def media_dir(self, kind: str) -> Path:
+        """媒体子目录（收到的表情包/语音/其他附件分目录存放，不平铺）。
+
+        kind 取值：emoji / voice / video / other。目录名可由
+        storage.media_dirs.<kind> 覆盖，缺省与 kind 同名。
+        """
+        m = self.storage_cfg.get("media_dirs", {}) or {}
+        sub = m.get(kind, kind) or kind
+        d = self.temp_dir / sub
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
     @property
     def db_path(self) -> Path:
         d = self.storage_cfg.get("db_path", "db/ggbot.db")
