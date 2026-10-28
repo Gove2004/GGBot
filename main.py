@@ -106,7 +106,7 @@ async def main() -> None:
     if (cfg.web_cfg or {}).get("enable", True):
         from ggbot.web import start_web
 
-        web_task = asyncio.create_task(start_web(cfg, storage, memory, presence))
+        web_task = asyncio.create_task(start_web(cfg, storage, memory, presence, bot.names))
 
     try:
         log.info("连接 QQ gateway（appid=%s）…", cfg.qq.get("appid"))

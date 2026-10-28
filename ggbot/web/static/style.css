@@ -161,6 +161,10 @@ body { background: var(--bg); color: var(--text); font: 14px/1.55 -apple-system,
 .role-user { color: var(--accent2); }
 .role-assistant { color: var(--green); }
 
+/* 名称管理 */
+.hint { color: var(--muted); font-size: 12px; line-height: 1.7; margin: 0 0 10px; }
+.name-input { width: 100%; min-width: 180px; }
+
 /* 日志表格 */
 .log-table .col-ts { width: 150px; white-space: nowrap; }
 .log-table th:nth-child(2) { width: 64px; }

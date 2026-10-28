@@ -278,6 +278,7 @@ class Storage:
             return {"messages": m, "sessions": s}
 
     def count_pending(self, session_id: str | None = None) -> int:
+        with self._lock, self._conn() as c:
             if session_id:
                 return c.execute(
                     "SELECT COUNT(*) FROM messages WHERE status='pending' AND session_id=?",
@@ -294,6 +295,29 @@ class Storage:
                 (limit,),
             ).fetchall()
         return [_row_to_dict(r) for r in rows]
+
+    def collect_openids(self, limit: int = 500) -> list[dict]:
+        """收集出现过的 openid（供 Web 名称管理页）：用户消息 sender + 群会话 target 去重。"""
+        with self._lock, self._conn() as c:
+            rows = c.execute(
+                "SELECT sender FROM messages WHERE role='user' AND sender<>'' "
+                "GROUP BY sender ORDER BY MAX(id) DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            tg = c.execute(
+                "SELECT key FROM sessions WHERE key LIKE 'group:%' "
+                "GROUP BY key ORDER BY MAX(updated_at) DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        out = []
+        for (oid,) in rows:
+            if oid and oid.lower() not in {r["openid"].lower() for r in out}:
+                out.append({"openid": oid, "kind": "user"})
+        for (key,) in tg:
+            gid = key.split(":", 1)[1]
+            if gid and gid.lower() not in {r["openid"].lower() for r in out}:
+                out.append({"openid": gid, "kind": "group"})
+        return out
 
     # ---------- 记忆 ----------
 

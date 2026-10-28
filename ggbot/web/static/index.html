@@ -25,6 +25,7 @@
       <a class="nav-item" data-page="rules"><span class="nav-icon">✓</span>规则</a>
       <a class="nav-item" data-page="persona"><span class="nav-icon">◉</span>人设</a>
       <a class="nav-item" data-page="settings"><span class="nav-icon">⚙</span>设置</a>
+      <a class="nav-item" data-page="names"><span class="nav-icon">✎</span>名称管理</a>
       <a class="nav-item" data-page="logs"><span class="nav-icon">▤</span>日志</a>
     </nav>
     <div class="side-foot muted small">v0.1 · 纯配置文件驱动</div>
@@ -219,6 +220,23 @@
 
           <div class="row end">
             <button id="btn-save-cfg" class="btn primary">保存设置</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 名称管理 -->
+      <section id="page-names" class="page hidden">
+        <div class="card">
+          <div class="card-head">
+            <h2>名称管理 <span class="muted small">（自动收集出现的 openid，填昵称写回 config.names 热生效）</span></h2>
+            <button id="btn-names-refresh" class="btn ghost small">刷新</button>
+          </div>
+          <p class="hint">群名已由官方接口自动解析；成员/用户昵称接口为平台白名单（11253，暂无法申请），在下方给出现的 id 填一次昵称即可，日志和回复都会用。保存后立即生效，无需重启。</p>
+          <div class="table-wrap tall">
+            <table class="table">
+              <thead><tr><th>类型</th><th>openid</th><th>昵称</th><th></th></tr></thead>
+              <tbody id="names-body"><tr><td colspan="4" class="empty">加载中…</td></tr></tbody>
+            </table>
           </div>
         </div>
       </section>
