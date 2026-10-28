@@ -264,8 +264,13 @@ class Storage:
         with self._lock, self._conn() as c:
             c.executemany("UPDATE messages SET status=? WHERE msg_id=?", [(status, m) for m in msg_ids])
 
-    def count_pending(self) -> int:
+    def count_pending(self, session_id: str | None = None) -> int:
         with self._lock, self._conn() as c:
+            if session_id:
+                return c.execute(
+                    "SELECT COUNT(*) FROM messages WHERE status='pending' AND session_id=?",
+                    (session_id,),
+                ).fetchone()[0]
             return c.execute("SELECT COUNT(*) FROM messages WHERE status='pending'").fetchone()[0]
 
     def get_recent_messages_global_pending(self, limit: int = 1000) -> list[dict]:

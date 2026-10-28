@@ -205,13 +205,14 @@ class PresenceManager:
         st = self._state_of(sid)
         if st.state == "offline":
             if inbound.get("is_at") and self.p.get("wake_on_at_message", True):
-                logger.info("会话%s收到@，唤醒上线并立即回复: %s", st.label, inbound["msg_id"])
+                logger.info("会话%s 收到@，唤醒并立即回复: %.40r", st.label, inbound["content"])
                 # 先即时被动回复该条（5 分钟窗口内有效、不耗主动消息额度），
                 # 成功后状态标记 replied，之后处理积压不会再重复回复它
                 await self._reply_now(inbound)
                 await st.go_online("wake-on-at")
                 return True
-            logger.debug("会话%s 离线：消息入库 %s (pending)", st.label, inbound["msg_id"])
+            pending = self.storage.count_pending(sid)
+            logger.info("会话%s 离线积压 +1（pending=%d）: %.40r", st.label, pending, inbound["content"])
             return True
         # 在线：进入本会话 debounce 窗口聚合
         st.debounce.append(inbound)
@@ -465,15 +466,15 @@ class PresenceManager:
         base_seq = inbound.get("msg_seq")
         for i, seg in enumerate(segments):
             seq = self._next_seq(sid, base_seq)
-            logger.info("回复发送 target=%s scene=%s 段数=%d passive=%s 段%d: %.60r",
-                        target, scene, len(segments), can_passive, i + 1, seg)
+            logger.info("回复 %s target=%s seg=%d/%d passive=%s: %.60r",
+                        scene, target, i + 1, len(segments), can_passive, seg)
             try:
                 resp = await self.bot.send_text(target, seg, scene, msg_id, seq, event_id)
                 if resp is not None:
                     # botpy 解析 QQ 返回（含新消息 id）；有 id 说明平台已受理并生成消息
                     rid, ts = (resp.get("id"), resp.get("timestamp")) if isinstance(resp, dict) \
                         else (getattr(resp, "id", None), getattr(resp, "timestamp", None))
-                    logger.info("QQ 已受理 seq=%d resp_id=%s ts=%s", seq, rid, ts)
+                    logger.info("已受理 seq=%d resp=%.24s ts=%s", seq, rid or "", ts)
             except Exception as e:  # noqa: BLE001
                 if can_passive and msg_id:
                     # 被动回复失败（msg_id 过期 / 事件不可回复等）→ 降级主动发送，确保送达
@@ -482,7 +483,7 @@ class PresenceManager:
                     if resp is not None:
                         rid, ts = (resp.get("id"), resp.get("timestamp")) if isinstance(resp, dict) \
                             else (getattr(resp, "id", None), getattr(resp, "timestamp", None))
-                        logger.info("QQ 已受理(降级主动) seq=%d resp_id=%s ts=%s", seq, rid, ts)
+                        logger.info("已受理(降级主动) seq=%d resp=%.24s ts=%s", seq, rid or "", ts)
                 else:
                     raise
             # 每发送一条消息：会话在线时长 +renew_per_reply_sec（聊得火热）

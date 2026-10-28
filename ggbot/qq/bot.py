@@ -36,12 +36,17 @@ class QQBot(botpy.Client):
     async def on_group_at_message_create(self, message: GroupMessage) -> None:
         # GROUP_AT_MESSAGE_CREATE：只有真正被@本机器人时触发（事件通道）
         self._learn_bot_openid(message)
-        logger.info("群@消息 group=%s", self._short(message.group_openid))
+        logger.info("群@消息 group=%s sender=%s: %.50s",
+                    self._short(message.group_openid),
+                    self._short(getattr(message.author, "member_openid", None)),
+                    (message.content or "").strip())
         await self._route(message, is_at=True, passive_ok=True)
 
     async def on_c2c_message_create(self, message: C2CMessage) -> None:
         # 私聊 = 直接找机器人对话，等价于 @；C2C 事件可被动回复
-        logger.info("私聊消息 user=%s", self._short(getattr(message, "author", None) and getattr(message.author, "user_openid", None)))
+        logger.info("私聊消息 user=%s: %.50s",
+                    self._short(getattr(message, "author", None) and getattr(message.author, "user_openid", None)),
+                    (message.content or "").strip())
         await self._route(message, is_at=True, passive_ok=True)
 
     async def on_group_add_robot(self, message) -> None:
@@ -84,11 +89,15 @@ class QQBot(botpy.Client):
     async def on_group_message_create(self, message: GroupMessage) -> None:
         """群全量消息（私域权限，所有普通消息；含@别人的消息，不含对本机器人的@）。
 
-        is_at 仅由 GROUP_AT_MESSAGE_CREATE 事件判定为 True——
-        全量消息里 mentions 可能包含被@的其他成员/机器人，不能据此误判为自己。
+        is_at 判定：全量消息的 mentions 无法直接区分是否@本机器人——优先精确匹配
+        config.qq.bot_openid；未学到（平台未订阅@事件）时按 QQ 机器人 openid 前缀
+        ROBOT1.0 兜底（测试群内机器人唯一，@任何机器人即视为@本机）。
         """
         me = self._mentioned_self(message)
-        logger.info("群消息 group=%s%s", self._short(message.group_openid), " AT_ME" if me else "")
+        sender = self._short(getattr(message.author, "member_openid", None))
+        logger.info("群消息 group=%s sender=%s at=%s: %.50s",
+                    self._short(message.group_openid), sender, "Y" if me else "N",
+                    (message.content or "").strip())
         # passive_ok 固定 False：全量事件的 event_id 不能用于被动回复（40034027），只能主动发送
         await self._route(message, is_at=me, passive_ok=False)
 
@@ -160,14 +169,21 @@ class QQBot(botpy.Client):
         return (s or "")[:n]
 
     def _mentioned_self(self, message) -> bool:
-        """全量消息兜底：mentions 中是否包含本机器人 openid（config bot_openid）。
-        平台未推送 GROUP_AT_MESSAGE_CREATE 事件时，凭此仍能识别"被@本机器人"。"""
+        """全量消息兜底：mentions 是否命中本机器人。
+
+        优先精确匹配 config.qq.bot_openid（学到后最可靠）；
+        bot_openid 为空（平台未订阅 GROUP_AT_MESSAGE_CREATE，学不到）时，
+        按 QQ 机器人 openid 前缀 ROBOT1.0 兜底——测试群内机器人唯一，
+        @任何机器人即视为@本机；学到 bot_openid 后自动切回精确匹配。"""
         own = str((self.cfg.qq or {}).get("bot_openid") or "").strip().lower()
-        if not own:
-            return False
         for m in getattr(message, "mentions", None) or []:
             mid = str(getattr(m, "id", "") or "").strip().lower()
-            if mid and mid == own:
+            if not mid:
+                continue
+            if own:
+                if mid == own:
+                    return True
+            elif mid.startswith("robot1.0_"):
                 return True
         return False
 
