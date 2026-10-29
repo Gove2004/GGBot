@@ -1,4 +1,4 @@
-"""SQLite 持久化层：会话、消息、记忆、规则。
+"""SQLite 持久化层：会话、消息、记忆。
 
 全部落盘，重启不丢。线程安全：每个操作独立连接 + WAL。
 """
@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS sessions(
     key TEXT UNIQUE,
     scene TEXT,
     summary TEXT,
+    archived_upto INTEGER DEFAULT 0,
     created_at TEXT,
     updated_at TEXT
 );
@@ -46,13 +47,12 @@ CREATE TABLE IF NOT EXISTS memories(
     importance INTEGER DEFAULT 1,
     ts TEXT
 );
-CREATE TABLE IF NOT EXISTS rules(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    content TEXT,
-    trigger TEXT,
-    version TEXT,
-    active INTEGER DEFAULT 1,
-    ts TEXT
+CREATE TABLE IF NOT EXISTS actors(
+    openid TEXT PRIMARY KEY,
+    name TEXT,
+    level INTEGER NOT NULL DEFAULT 2,
+    note TEXT,
+    updated_at TEXT
 );
 """
 
@@ -87,7 +87,7 @@ class Storage:
             self._ensure_columns(c)
 
     def _ensure_columns(self, c: sqlite3.Connection) -> None:
-        """旧库迁移：messages 表补齐 event_id / is_at / sender_name 列。"""
+        """旧库迁移：messages 补齐 event_id / is_at / sender_name，sessions 补归档游标。"""
         cols = {r[1] for r in c.execute("PRAGMA table_info(messages)").fetchall()}
         if "event_id" not in cols:
             c.execute("ALTER TABLE messages ADD COLUMN event_id TEXT")
@@ -97,6 +97,9 @@ class Storage:
             c.execute("ALTER TABLE messages ADD COLUMN passive_ok INTEGER DEFAULT 0")
         if "sender_name" not in cols:
             c.execute("ALTER TABLE messages ADD COLUMN sender_name TEXT")
+        scols = {r[1] for r in c.execute("PRAGMA table_info(sessions)").fetchall()}
+        if "archived_upto" not in scols:
+            c.execute("ALTER TABLE sessions ADD COLUMN archived_upto INTEGER DEFAULT 0")
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30)
@@ -158,6 +161,34 @@ class Storage:
             row = c.execute("SELECT summary FROM sessions WHERE id=?", (session_id,)).fetchone()
             return row["summary"] if row else ""
 
+    def get_archive_cursor(self, session_id: str) -> int:
+        """已归档到的消息 id（该 id 及更早的历史已进入长期记忆）。"""
+        with self._lock, self._conn() as c:
+            row = c.execute(
+                "SELECT archived_upto FROM sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            return int(row["archived_upto"] or 0) if row else 0
+
+    def set_archive_cursor(self, session_id: str, message_id: int) -> None:
+        with self._lock, self._conn() as c:
+            c.execute(
+                "UPDATE sessions SET archived_upto=? WHERE id=?", (int(message_id), session_id)
+            )
+
+    def get_archive_batch(
+        self, session_id: str, after_id: int, before_id: int, limit: int
+    ) -> list[dict]:
+        """窗口外的旧消息：id 在 (after_id, before_id) 之间的记录，按时间正序。"""
+        if limit <= 0 or before_id <= after_id:
+            return []
+        with self._lock, self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM messages WHERE session_id=? AND id>? AND id<? "
+                "ORDER BY id ASC LIMIT ?",
+                (session_id, int(after_id), int(before_id), int(limit)),
+            ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
     def list_sessions(self, limit: int = 200) -> list[dict]:
         """会话列表（面板/CLI）：带消息数、待处理数、最后一条消息。"""
         with self._lock, self._conn() as c:
@@ -192,11 +223,14 @@ class Storage:
         return dict(row) if row else None
 
     def clear_session_context(self, session_id: str) -> dict:
-        """清空单个会话的上下文（消息 + 历史摘要），保留会话本身、记忆、规则。"""
+        """清空单个会话的上下文（消息 + 历史摘要），保留会话本身与记忆。"""
         with self._lock, self._conn() as c:
             n = c.execute("SELECT COUNT(*) FROM messages WHERE session_id=?", (session_id,)).fetchone()[0]
             c.execute("DELETE FROM messages WHERE session_id=?", (session_id,))
-            c.execute("UPDATE sessions SET summary='', updated_at=? WHERE id=?", (_now(), session_id))
+            c.execute(
+                "UPDATE sessions SET summary='', archived_upto=0, updated_at=? WHERE id=?",
+                (_now(), session_id),
+            )
         return {"messages": n}
 
     # ---------- 消息 ----------
@@ -254,6 +288,47 @@ class Storage:
             ).fetchall()
         return [_row_to_dict(r) for r in reversed(rows)]
 
+    def find_message_id(self, session_id: str, needle: str) -> str | None:
+        """按正文关键词找本会话最近一条有 msg_id 的消息（用于引用回复）。"""
+        needle = (needle or "").strip()
+        if not session_id or not needle:
+            return None
+        with self._lock, self._conn() as c:
+            row = c.execute(
+                "SELECT msg_id FROM messages WHERE session_id=? AND instr(content, ?) > 0 "
+                "AND msg_id IS NOT NULL AND msg_id<>'' ORDER BY id DESC LIMIT 1",
+                (session_id, needle),
+            ).fetchone()
+        return row["msg_id"] if row else None
+
+    def find_sender_openid(self, name: str, session_id: str | None = None) -> str | None:
+        """按昵称反查 openid：先找本会话发言者，再找显式权限成员。"""
+        name = (name or "").strip().lstrip("@")
+        if not name:
+            return None
+        with self._lock, self._conn() as c:
+            if session_id:
+                row = c.execute(
+                    "SELECT sender FROM messages WHERE session_id=? AND role='user' "
+                    "AND sender_name=? AND sender IS NOT NULL AND sender<>'' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (session_id, name),
+                ).fetchone()
+                if row:
+                    return row["sender"]
+            row = c.execute(
+                "SELECT sender FROM messages WHERE role='user' AND sender_name=? "
+                "AND sender IS NOT NULL AND sender<>'' ORDER BY id DESC LIMIT 1",
+                (name,),
+            ).fetchone()
+            if row:
+                return row["sender"]
+            row = c.execute(
+                "SELECT openid FROM actors WHERE name=? ORDER BY level DESC, updated_at DESC LIMIT 1",
+                (name,),
+            ).fetchone()
+        return row["openid"] if row else None
+
     def get_pending_messages(self, session_id: str, limit: int = 1000) -> list[dict]:
         """积压消息：status='pending'，按到达顺序。"""
         with self._lock, self._conn() as c:
@@ -287,7 +362,7 @@ class Storage:
 
     def reset_chat_data(self) -> dict:
         """清理会话聊天数据：清空 messages + sessions。
-        保留：memory（长期记忆）、rules（规则）、config（配置）。
+        保留：memory（长期记忆）、config（配置）。
         返回清理统计。"""
         with self._lock, self._conn() as c:
             m = c.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
@@ -297,15 +372,14 @@ class Storage:
             return {"messages": m, "sessions": s}
 
     def reset_all_data(self) -> dict:
-        """清空全部业务数据：messages + sessions + memories + rules。"""
+        """清空全部业务数据：messages + sessions + memories。"""
         with self._lock, self._conn() as c:
             counts = {
                 "messages": c.execute("SELECT COUNT(*) FROM messages").fetchone()[0],
                 "sessions": c.execute("SELECT COUNT(*) FROM sessions").fetchone()[0],
                 "memories": c.execute("SELECT COUNT(*) FROM memories").fetchone()[0],
-                "rules": c.execute("SELECT COUNT(*) FROM rules").fetchone()[0],
             }
-            for table in ("messages", "sessions", "memories", "rules"):
+            for table in ("messages", "sessions", "memories"):
                 c.execute(f"DELETE FROM {table}")
             return counts
 
@@ -317,6 +391,58 @@ class Storage:
                     (session_id,),
                 ).fetchone()[0]
             return c.execute("SELECT COUNT(*) FROM messages WHERE status='pending'").fetchone()[0]
+
+    # ---------- 权限 ----------
+
+    def get_actor(self, openid: str) -> dict | None:
+        with self._lock, self._conn() as c:
+            row = c.execute("SELECT * FROM actors WHERE openid=?", (openid,)).fetchone()
+        return dict(row) if row else None
+
+    def set_actor(
+        self, openid: str, level: int, name: str | None = None, note: str | None = None
+    ) -> dict:
+        """写入/更新成员等级；未提供的字段保持原值。"""
+        with self._lock, self._conn() as c:
+            old = c.execute("SELECT name, note FROM actors WHERE openid=?", (openid,)).fetchone()
+            c.execute(
+                "INSERT INTO actors(openid, name, level, note, updated_at) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(openid) DO UPDATE SET level=excluded.level, name=excluded.name, "
+                "note=excluded.note, updated_at=excluded.updated_at",
+                (
+                    openid,
+                    name if name is not None else (old["name"] if old else None),
+                    int(level),
+                    note if note is not None else (old["note"] if old else None),
+                    _now(),
+                ),
+            )
+            row = c.execute("SELECT * FROM actors WHERE openid=?", (openid,)).fetchone()
+        return dict(row)
+
+    def list_actors(self) -> list[dict]:
+        with self._lock, self._conn() as c:
+            rows = c.execute("SELECT * FROM actors ORDER BY level DESC, updated_at DESC").fetchall()
+        return [dict(r) for r in rows]
+
+    def list_senders(self, limit: int = 200) -> list[dict]:
+        """最近发言过的成员（含昵称与消息数），用于权限页展示与分配。"""
+        with self._lock, self._conn() as c:
+            rows = c.execute(
+                """
+                SELECT m.sender, m.sender_name, g.n AS messages, m.ts AS last_ts
+                FROM messages m
+                JOIN (
+                    SELECT sender, MAX(id) AS mid, COUNT(*) AS n
+                    FROM messages
+                    WHERE role='user' AND sender IS NOT NULL AND sender <> ''
+                    GROUP BY sender
+                ) g ON m.id = g.mid
+                ORDER BY m.id DESC LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     # ---------- 记忆 ----------
 
@@ -394,33 +520,6 @@ class Storage:
         with self._lock, self._conn() as c:
             c.executemany("DELETE FROM memories WHERE id=?", [(m,) for m in memory_ids])
 
-    # ---------- 规则 ----------
-
-    def add_rule(self, content: str, trigger: str | None = None) -> int:
-        with self._lock, self._conn() as c:
-            cur = c.execute(
-                "INSERT INTO rules(content, trigger, version, active, ts) VALUES(?,?,?,1,?)",
-                (content, trigger, "v1", _now()),
-            )
-            return cur.lastrowid
-
-    def list_rules(self, active_only: bool = True) -> list[dict]:
-        sql = "SELECT * FROM rules"
-        params: tuple = ()
-        if active_only:
-            sql += " WHERE active=1"
-        sql += " ORDER BY id ASC"
-        with self._lock, self._conn() as c:
-            return [dict(r) for r in c.execute(sql, params).fetchall()]
-
-    def set_rule_active(self, rule_id: int, active: bool) -> None:
-        with self._lock, self._conn() as c:
-            c.execute("UPDATE rules SET active=? WHERE id=?", (1 if active else 0, rule_id))
-
-    def delete_rule(self, rule_id: int) -> None:
-        with self._lock, self._conn() as c:
-            c.execute("DELETE FROM rules WHERE id=?", (rule_id,))
-
     # ---------- 面板辅助 ----------
 
     def recent_messages_global(
@@ -454,5 +553,4 @@ class Storage:
                 "messages_today": one("SELECT COUNT(*) FROM messages WHERE ts LIKE ?", (today + "%",)),
                 "pending": one("SELECT COUNT(*) FROM messages WHERE status='pending'"),
                 "memories": one("SELECT COUNT(*) FROM memories"),
-                "rules": one("SELECT COUNT(*) FROM rules"),
             }

@@ -51,14 +51,33 @@ class Config:
         self.web_cfg = self.data.get("web", {})
 
     def _migrate(self) -> bool:
-        """旧版 deepseek 段 → 通用 llm 段；返回是否有改动。"""
+        """旧版 deepseek 段 → 通用 llm 段；补齐 vision 段；返回是否有改动。"""
+        changed = False
         legacy = self.data.pop("deepseek", None)
-        if legacy is None:
-            return False
-        llm = self.data.setdefault("llm", {})
-        for key, value in legacy.items():
-            llm.setdefault(key, value)
-        return True
+        if legacy is not None:
+            llm = self.data.setdefault("llm", {})
+            for key, value in legacy.items():
+                llm.setdefault(key, value)
+            changed = True
+        if "vision" not in self.data:
+            self.data["vision"] = {
+                "enabled": True,
+                "base_url": "",
+                "api_key": "",
+                "model": "",
+                "thinking": "",
+                "prompt": "简单描述一下图片内容：主体、场景和画面里的关键文字，一两句话，不要客套。",
+                "max_chars": 240,
+                "max_tokens": 200,
+                "timeout_sec": 30,
+            }
+            changed = True
+        else:
+            vision = self.data.get("vision")
+            if isinstance(vision, dict) and "thinking" not in vision:
+                vision["thinking"] = ""
+                changed = True
+        return changed
 
     @property
     def model(self) -> str:
@@ -87,6 +106,40 @@ class Config:
             "api_key": api_key,
             "batch_size": max(1, int(emb.get("batch_size", 32))),
             "enabled": bool(emb.get("enabled", True)) and bool(base_url and model and api_key),
+        }
+
+    @property
+    def vision(self) -> dict:
+        """识图配置：base_url / api_key / model 留空时沿用 llm 段（同一厂商直接可用）。"""
+        v = self.data.get("vision", {}) or {}
+        llm = self.llm or {}
+
+        def pick(key: str) -> str:
+            return str(v.get(key) or llm.get(key) or "").strip()
+
+        def integer(key: str, default: int) -> int:
+            try:
+                value = int(v.get(key, default))
+            except (TypeError, ValueError):
+                return default
+            return value if value > 0 else default
+
+        base_url, api_key, model = pick("base_url"), pick("api_key"), pick("model")
+        thinking = str(v.get("thinking") or "").strip()
+        same_endpoint = base_url.rstrip("/") == str(llm.get("base_url") or "").rstrip("/")
+        if not thinking and same_endpoint:
+            # 同一服务商时沿用对话的 thinking 设置；识图默认不能把 token 全耗在思考上
+            thinking = str((llm.get("request") or {}).get("thinking") or "").strip()
+        return {
+            "enabled": bool(v.get("enabled", True)) and bool(base_url and api_key and model),
+            "base_url": base_url,
+            "api_key": api_key,
+            "model": model,
+            "thinking": thinking,
+            "prompt": str(v.get("prompt") or "简单描述一下图片内容：主体、场景和画面里的关键文字，一两句话，不要客套。"),
+            "max_chars": integer("max_chars", 240),
+            "max_tokens": integer("max_tokens", 200),
+            "timeout_sec": integer("timeout_sec", 30),
         }
 
     @property

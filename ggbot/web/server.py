@@ -1,13 +1,15 @@
 """Web 控制面板：FastAPI + WebSocket + 静态前端（ggbot/web/static）。
 
 前端与后端分离：ggbot/web/static/{index.html,style.css,app.js}，经 /static 托管，可独立修改热加载。
-功能：在线状态、会话与上下文、消息流、记忆（检索/写入/编辑/整理）、规则、配置热更新、日志查看。
+功能：在线状态、会话与上下文、消息流、记忆（检索/写入/编辑/整理）、配置热更新、日志查看。
 
 鉴权（安全）：
 - 登录：POST /api/login 校验 config.web.token，成功后写入 HttpOnly + SameSite=Strict Cookie，
   浏览器不再把令牌放进 URL 或 localStorage；
 - API：Cookie 或 X-Token 头（CLI/脚本），常量时间比较；/ws 同样校验 Cookie；
-- 失败限流、跨站 Origin 拦截、CSP 等安全响应头；令牌为空时仅建议本机使用。
+- 限流：每个 IP 的 API 请求滑动窗口（240 次 / 10s），登录失败 8 次 / 60s 后返回 429；
+  反代部署时设 web.trust_proxy=true，按 X-Forwarded-For 首个地址限流；
+- 跨站 Origin 拦截、CSP 等安全响应头；令牌为空时仅建议本机使用。
 """
 
 from __future__ import annotations
@@ -27,6 +29,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from ggbot.core.auth import LEVEL_LOCKED, LEVEL_NAMES, LEVEL_MAX, clamp_level
+from ggbot.core.runtime_stats import runtime
 from ggbot.util.session import SYSTEM_LABEL, session_label
 
 logger = logging.getLogger("ggbot.web")
@@ -49,6 +53,9 @@ COOKIE_NAME = "ggbot_panel"
 SESSION_MAX_AGE = 7 * 24 * 3600
 LOGIN_MAX_FAILS = 8
 LOGIN_WINDOW_SEC = 60
+API_RATE_LIMIT = 240
+API_RATE_WINDOW_SEC = 10
+RATE_MAP_MAX = 2048
 
 # 安全响应头（无内联脚本/样式，前端全部走 /static）
 CSP = (
@@ -70,11 +77,6 @@ class LoginIn(BaseModel):
     token: str = ""
 
 
-class RuleIn(BaseModel):
-    content: str
-    trigger: str | None = None
-
-
 class MemoryIn(BaseModel):
     content: str
     importance: int = 1
@@ -93,6 +95,17 @@ class SettingIn(BaseModel):
 
 class ToolToggleIn(BaseModel):
     enabled: bool
+
+
+class ActorIn(BaseModel):
+    openid: str
+    level: int = 2
+    name: str | None = None
+    note: str | None = None
+
+
+class ToolLevelIn(BaseModel):
+    level: int
 
 
 # 允许通过 Web 热更新的配置路径（其余只读，避免误改关键结构）
@@ -118,6 +131,8 @@ ALLOWED_SETTINGS = [
     "behavior.backlog.online_max_messages",
     "llm.context.max_history_messages",
     "llm.context.summary_threshold_tokens",
+    "llm.context.archive_batch_messages",
+    "llm.context.archive_enabled",
     "web.log_level",
 ]
 
@@ -181,7 +196,38 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
     app = FastAPI(title="GGBot Panel", docs_url=None, redoc_url=None, openapi_url=None)
     token = str((cfg.web_cfg or {}).get("token") or "")
     cookie_secure = bool((cfg.web_cfg or {}).get("cookie_secure", False))
+    trust_proxy = bool((cfg.web_cfg or {}).get("trust_proxy", False))
     login_fails: dict[str, list[float]] = {}
+    api_hits: dict[str, list[float]] = {}
+
+    def _client_ip(request: Request) -> str:
+        # 仅在明确启用反代时信任 X-Forwarded-For 的首个地址，避免直连时被伪造绕过限流
+        if trust_proxy:
+            forwarded = request.headers.get("x-forwarded-for", "")
+            first = forwarded.split(",", 1)[0].strip()
+            if first:
+                return first
+        return request.client.host if request.client else "unknown"
+
+    def _rate_limited(ip: str) -> int:
+        """记录一次 API 请求；超过窗口上限时返回需等待的秒数。"""
+        now = time.monotonic()
+        hits = [t for t in api_hits.get(ip, []) if now - t < API_RATE_WINDOW_SEC]
+        if len(hits) >= API_RATE_LIMIT:
+            api_hits[ip] = hits
+            return max(1, int(API_RATE_WINDOW_SEC - (now - hits[0])) + 1)
+        hits.append(now)
+        api_hits[ip] = hits
+        if len(api_hits) > RATE_MAP_MAX:
+            cutoff = now - API_RATE_WINDOW_SEC
+            stale = [k for k, v in api_hits.items() if not v or v[-1] < cutoff]
+            for key in stale:
+                api_hits.pop(key, None)
+            if len(api_hits) > RATE_MAP_MAX:
+                overflow = len(api_hits) - RATE_MAP_MAX
+                for key in sorted(api_hits, key=lambda k: api_hits[k][-1])[:overflow]:
+                    api_hits.pop(key, None)
+        return 0
 
     def _auth(request: Request, x_token: str | None) -> None:
         if not token:
@@ -206,14 +252,30 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         recent = [t for t in login_fails.get(ip, []) if now - t < LOGIN_WINDOW_SEC]
         login_fails[ip] = recent
         if len(recent) >= LOGIN_MAX_FAILS:
-            raise HTTPException(status_code=429, detail="尝试过于频繁，请稍后再试")
+            retry = max(1, int(LOGIN_WINDOW_SEC - (now - recent[0])) + 1)
+            raise HTTPException(
+                status_code=429,
+                detail=f"尝试过于频繁，请 {retry} 秒后再试",
+                headers={"Retry-After": str(retry)},
+            )
 
     def _login_failed(ip: str) -> None:
         login_fails.setdefault(ip, []).append(time.monotonic())
 
-    # 安全响应头 + 跨站写请求拦截
+    # 安全响应头 + IP 限流 + 跨站写请求拦截
     @app.middleware("http")
     async def security_middleware(request: Request, call_next):
+        if request.url.path.startswith("/api/"):
+            retry = _rate_limited(_client_ip(request))
+            if retry:
+                resp = JSONResponse(
+                    {"detail": f"请求过于频繁，请 {retry} 秒后再试"},
+                    status_code=429,
+                    headers={"Retry-After": str(retry), "Cache-Control": "no-store"},
+                )
+                for k, v in SECURITY_HEADERS.items():
+                    resp.headers.setdefault(k, v)
+                return resp
         if request.method not in ("GET", "HEAD", "OPTIONS"):
             if not _same_origin(request.headers.get("origin"), request.headers.get("host")):
                 return JSONResponse({"detail": "cross-origin request blocked"}, status_code=403)
@@ -253,7 +315,7 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
 
     @app.post("/api/login")
     async def login(body: LoginIn, request: Request, response: Response):
-        ip = request.client.host if request.client else "?"
+        ip = _client_ip(request)
         _login_guard(ip)
         if token and not secrets.compare_digest(
             (body.token or "").encode("utf-8"), token.encode("utf-8")
@@ -292,6 +354,7 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         live = presence.status()
         out["online_sessions"] = live.get("online_sessions", 0)
         out["state"] = live.get("state", "offline")
+        out["runtime"] = runtime.snapshot()
         return out
 
     @app.get("/api/sessions")
@@ -442,46 +505,6 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         storage.delete_memory(memory_id)
         return {"ok": True}
 
-    # ---------- 规则 ----------
-
-    @app.get("/api/rules")
-    async def rules(request: Request, x_token: str | None = Header(default=None)):
-        _auth(request, x_token)
-        return storage.list_rules(active_only=False)
-
-    @app.post("/api/rules")
-    async def rule_add(
-        body: RuleIn,
-        request: Request,
-        x_token: str | None = Header(default=None),
-    ):
-        _auth(request, x_token)
-        rid = storage.add_rule(body.content, body.trigger)
-        return {"ok": True, "rule_id": rid}
-
-    @app.post("/api/rules/{rule_id}/toggle")
-    async def rule_toggle(
-        rule_id: int,
-        request: Request,
-        x_token: str | None = Header(default=None),
-    ):
-        _auth(request, x_token)
-        row = next((r for r in storage.list_rules(active_only=False) if r["id"] == rule_id), None)
-        if not row:
-            raise HTTPException(status_code=404, detail="rule not found")
-        storage.set_rule_active(rule_id, not row["active"])
-        return {"ok": True}
-
-    @app.delete("/api/rules/{rule_id}")
-    async def rule_delete(
-        rule_id: int,
-        request: Request,
-        x_token: str | None = Header(default=None),
-    ):
-        _auth(request, x_token)
-        storage.delete_rule(rule_id)
-        return {"ok": True}
-
     # ---------- 工具（插件清单 / 启停） ----------
 
     @app.get("/api/tools")
@@ -514,6 +537,63 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
             raise HTTPException(status_code=404, detail="tool not found")
         logger.info("Web 工具启停 %s=%s", name, body.enabled)
         return {"ok": True, "config": mask_secrets(data)}
+
+    # ---------- 权限（成员等级 / 工具门槛） ----------
+
+    def _perms():
+        p = getattr(presence, "perms", None)
+        if p is None:
+            raise HTTPException(status_code=503, detail="权限模块未就绪")
+        return p
+
+    @app.get("/api/actors")
+    async def list_actors(request: Request, x_token: str | None = Header(default=None)):
+        _auth(request, x_token)
+        p = _perms()
+        return {
+            "actors": p.members(),
+            "default_level": p.default_level,
+            "level_names": {str(k): v for k, v in LEVEL_NAMES.items()},
+            "max_level": LEVEL_MAX,
+            "locked_level": LEVEL_LOCKED,
+        }
+
+    @app.post("/api/actors")
+    async def set_actor(
+        body: ActorIn,
+        request: Request,
+        x_token: str | None = Header(default=None),
+    ):
+        _auth(request, x_token)
+        openid = body.openid.strip()
+        if not openid:
+            raise HTTPException(status_code=400, detail="openid 不能为空")
+        if not 0 <= int(body.level) <= LEVEL_MAX:
+            raise HTTPException(status_code=400, detail=f"等级需在 0-{LEVEL_MAX} 之间")
+        p = _perms()
+        row = p.set_level(openid, body.level, note=body.note, name=body.name)
+        logger.info("Web 权限设置 %s = L%d %s", openid[:8], row.get("level"),
+                    LEVEL_NAMES.get(clamp_level(row.get("level")), ""))
+        return {"ok": True, "actor": row}
+
+    @app.post("/api/tools/{name}/level")
+    async def set_tool_level(
+        name: str,
+        body: ToolLevelIn,
+        request: Request,
+        x_token: str | None = Header(default=None),
+    ):
+        _auth(request, x_token)
+        if not 1 <= int(body.level) <= LEVEL_LOCKED:
+            raise HTTPException(status_code=400, detail="工具门槛需在 1-6 之间（6 = 永久锁）")
+        ex = getattr(presence, "executor", None)
+        tool = ex.registry.tools.get(name) if ex is not None else None
+        if tool is None:
+            raise HTTPException(status_code=404, detail="tool not found")
+        data = ex.set_level(name, body.level)
+        level = tool.required_level()
+        logger.info("Web 工具门槛 %s = L%d%s", name, level, "（永久锁）" if level >= LEVEL_LOCKED else "")
+        return {"ok": True, "level": level, "config": mask_secrets(data)}
 
     # ---------- 配置（Web 热更新） ----------
 

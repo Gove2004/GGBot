@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -21,6 +22,8 @@ import botpy
 from botpy.http import Route
 from botpy.message import C2CMessage, GroupMessage
 
+from ggbot.core.runtime_stats import runtime
+from ggbot.llm.vision import VisionClient
 from ggbot.util.media import media_kind_label
 from ggbot.util.session import oid8, session_label
 
@@ -44,10 +47,31 @@ def _face_text(match: re.Match) -> str:
     return f"[表情:{text}]" if text else "[表情]"
 
 
-def clean_content(content: str) -> str:
-    """剥离 QQ 富文本标记：表情还原为文字，@ 标记去掉（是否被@由 is_at 单独标识）。"""
+def clean_content(content: str, mentions=None, bot_openid: str = "") -> str:
+    """剥离 QQ 富文本标记：表情还原为文字，@ 还原为 @昵称（自己则去掉）。
+
+    mentions 携带 id/username；没有昵称时用 8 位 id 兜底。
+    """
     text = FACE_RE.sub(_face_text, content or "")
-    text = AT_RE.sub("", text)
+    names: dict[str, str] = {}
+    for m in mentions or []:
+        mid = str(getattr(m, "id", None) or (m.get("id") if isinstance(m, dict) else "") or "").strip()
+        name = str(
+            getattr(m, "username", None) or (m.get("username") if isinstance(m, dict) else "") or ""
+        ).strip()
+        if mid:
+            names[mid.lower()] = name
+    own = (bot_openid or "").strip().lower()
+
+    def _at(match: re.Match) -> str:
+        raw = match.group(1)
+        mid = raw.lower()
+        if own and mid == own:
+            return ""
+        name = names.get(mid)
+        return f"@{name}" if name else f"@{raw[:8]}"
+
+    text = AT_RE.sub(_at, text)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -116,6 +140,7 @@ class QQBot(botpy.Client):
         self.cfg = config
         self.presence = presence
         self.temp_dir: Path = config.temp_dir
+        self.vision = VisionClient(config)
         self._seen: set[str] = set()
         self._max_seen = 5000
 
@@ -232,6 +257,7 @@ class QQBot(botpy.Client):
             scene = "c2c"
         content = self._message_text(message)
         attachments = await self._download_attachments(message.attachments or [], key=key)
+        content = await self._describe_images(content, attachments, key)
         # is_at：事件来源（group_at/c2c=True）优先；全量消息用 mentions / content <@> 兜底匹配 bot_openid
         # passive_ok：只有 @事件/C2C 事件的消息可用 msg_id+event_id 被动回复；
         #   全量事件（GROUP_MESSAGE_CREATE）的 event_id 平台拒绝用于被动回复（40034027），只能主动
@@ -264,15 +290,37 @@ class QQBot(botpy.Client):
         name = (getattr(message, "username", "") or "").strip()
         return f"{name}/{uid}" if name and uid else (name or uid or "unknown")
 
-    @staticmethod
-    def _message_text(message) -> str:
+    def _message_text(self, message) -> str:
         """清洗正文并附富媒体标记；引用消息前置 [引用 被引用内容]。"""
-        text = clean_content(message.content)
+        own = str((self.cfg.qq or {}).get("bot_openid") or "")
+        text = clean_content(message.content, getattr(message, "mentions", None), own)
         media = attachment_summary(getattr(message, "attachments", None))
         if media:
             text = f"{text} {media}".strip()
         quote = (getattr(message, "quote_text", "") or "").strip()
         return f"[引用 {quote}] {text}" if quote else text
+
+    async def _describe_images(self, content: str, attachments: list[dict], key: str) -> str:
+        """把图片附件转成 [图片]（描述）；失败或未启用时保留原有文件名标记。"""
+        vision = getattr(self, "vision", None)
+        if vision is None or not vision.enabled:
+            return content
+        label = session_label(key)
+        for a in attachments:
+            if not (a.get("content_type") or "").lower().startswith("image/"):
+                continue
+            local = a.get("local_path")
+            if not local:
+                continue
+            name = (a.get("filename") or "").strip()
+            marker = f"[图片 {name[:29] + '…' if len(name) > 32 else name}]" if name else "[图片]"
+            desc = await asyncio.to_thread(vision.describe, local, label)
+            if not desc:
+                continue
+            a["description"] = desc
+            content = content.replace(marker, f"[图片]（{desc}）", 1)
+            logger.debug("图片已识别 %s: %.60s", Path(local).name, desc, extra={"session": label})
+        return content
 
     def _mentioned_self(self, message) -> bool:
         """全量消息识别"被@本机器人"。
@@ -385,7 +433,7 @@ class QQBot(botpy.Client):
             except OSError:
                 continue
         if removed:
-            logger.info("temp 清理: 移除 %d 个过期文件（>%.0fh）", removed, ttl_hours)
+            logger.info("Temp清理: 移除 %d 个过期文件（>%.0fh）", removed, ttl_hours)
         return removed
 
     @staticmethod
@@ -398,17 +446,23 @@ class QQBot(botpy.Client):
     # ---------- 发送 ----------
 
     async def send_text(self, target: str, content: str, scene: str, msg_id: str | None = None,
-                        msg_seq: int = 1, event_id: str | None = None):
+                        msg_seq: int = 1, event_id: str | None = None,
+                        message_reference: dict | None = None):
         """发送文本。携带 msg_id 为被动回复（msg_seq 递增支持同一消息多次回复，event_id 为前置事件 ID）。"""
         if scene == "group":
-            return await self.api.post_group_message(
+            resp = await self.api.post_group_message(
                 group_openid=target, msg_type=0, content=content,
-                msg_id=msg_id, msg_seq=msg_seq, event_id=event_id
+                msg_id=msg_id, msg_seq=msg_seq, event_id=event_id,
+                message_reference=message_reference,
             )
-        return await self.api.post_c2c_message(
-            openid=target, msg_type=0, content=content,
-            msg_id=msg_id, msg_seq=msg_seq, event_id=event_id
-        )
+        else:
+            resp = await self.api.post_c2c_message(
+                openid=target, msg_type=0, content=content,
+                msg_id=msg_id, msg_seq=msg_seq, event_id=event_id,
+                message_reference=message_reference,
+            )
+        runtime.outbound()
+        return resp
 
     async def upload_and_send_media(
         self, target: str, scene: str, file_type: int, source: str,
@@ -427,9 +481,29 @@ class QQBot(botpy.Client):
         if source.startswith(("http://", "https://")):
             url = source
         else:
-            p = Path(source)
+            p = Path(source).expanduser()
             if not p.is_absolute():
                 p = self.cfg.temp_dir / p
+            p = p.resolve()
+            # 本地媒体只允许 temp/ 与 tool/：否则低等级发送者可用 send_image 读取任意本机文件
+            temp_root = Path(self.cfg.temp_dir).resolve()
+            tool_raw = getattr(self.cfg, "tool_dir", None)
+            tool_root = Path(tool_raw).resolve() if tool_raw else None
+            inside = None
+            for root in (temp_root, tool_root):
+                if root is not None and (p == root or root in p.parents):
+                    inside = root
+                    break
+            if inside is None:
+                return False, "本地媒体只允许 temp/ 与 tool/chat/emoji/ 素材"
+            rel = p.relative_to(inside)
+            if inside == temp_root and rel.parts[:1] == ("logs",):
+                return False, "本地媒体不能发送日志文件"
+            if inside == tool_root:
+                if rel.parts[:2] != ("chat", "emoji"):
+                    return False, "本地媒体只允许 temp/ 与 tool/chat/emoji/ 素材"
+                if p.name == "config.json" or p.suffix.lower() in {".key", ".pem"}:
+                    return False, "本地媒体不能发送配置/密钥文件"
             if not p.is_file():
                 return False, f"本地文件不存在: {Path(source).name}"
             local, display = p, p.name
@@ -458,6 +532,7 @@ class QQBot(botpy.Client):
                 )
             logger.debug("富媒体发送成功 file_type=%d %s", file_type, display,
                          extra={"session": session_label(f"{scene}:{target}")})
+            runtime.outbound()
             return True, display
         except Exception as e:  # noqa: BLE001
             logger.exception("富媒体发送失败", extra={"session": session_label(f"{scene}:{target}")})

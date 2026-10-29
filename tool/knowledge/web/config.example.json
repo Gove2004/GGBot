@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "provider": "bing",
+  "base_url": "",
+  "api_key": "",
+  "timeout_sec": 15,
+  "max_results": 5,
+  "fetch_max_chars": 6000,
+  "fetch_max_bytes": 2000000
+}

@@ -12,8 +12,8 @@ const PAGE_META = {
   sessions: ["会话与上下文", "每个群 / 私聊的历史摘要与消息"],
   messages: ["消息流", "跨会话的最近消息记录"],
   memory: ["向量记忆", "长期记忆的语义检索与维护"],
-  rules: ["规则", "实时注入系统提示词的行为约束"],
   settings: ["设置", "配置热更新，写回 config.json"],
+  permissions: ["权限", "发送者等级与工具调用门槛"],
   tools: ["工具", "一切皆 Tool · 独立配置 / 持久化数据 / 动态挂载"],
   logs: ["运行日志", "时间 | 等级 | 会话 | 内容"],
 };
@@ -41,6 +41,12 @@ const state = {
   confirmResolve: null,
   tools: [],
   toolCat: "",
+  actors: [],
+  levelNames: {},
+  defaultLevel: 2,
+  maxLevel: 5,
+  lockedLevel: 6,
+  logsRendered: false,
 };
 
 /* ================= API ================= */
@@ -76,7 +82,13 @@ function guarded(name, fn) {
 }
 
 /* ================= 提示 / 弹窗 ================= */
+let lastErrorToast = { msg: "", at: 0 };
 function toast(msg, type) {
+  if (type === "error") {
+    const now = Date.now();
+    if (lastErrorToast.msg === msg && now - lastErrorToast.at < 4000) return;
+    lastErrorToast = { msg, at: now };
+  }
   const stack = qs("#toast-stack");
   const el = document.createElement("div");
   el.className = `toast ${type || "info"}`;
@@ -180,19 +192,19 @@ function startPolling() {
   stopPolling();
   state.timers.push(setInterval(() => {
     if (!document.hidden) guarded("status", refreshStatus);
-  }, 2000));
+  }, 1000));
   state.timers.push(setInterval(() => {
     if (document.hidden) return;
     guarded("stats", refreshStats);
     guarded("sessions", refreshSessions);
     if (state.page === "messages") guarded("messages", refreshMessages);
     if (state.page === "dash") guarded("recent", refreshDashRecent);
-  }, 6000));
+  }, 1000));
   state.timers.push(setInterval(() => {
     if (document.hidden || state.page !== "logs") return;
     if (!qs("#log-auto").checked) return;
     guarded("logs", refreshLogs);
-  }, 3000));
+  }, 1000));
 }
 
 function stopPolling() {
@@ -228,6 +240,20 @@ function fmtAgo(sec) {
   if (n < 60) return `${Math.round(n)}s`;
   if (n < 3600) return `${Math.floor(n / 60)}m`;
   return `${Math.floor(n / 3600)}h`;
+}
+function fmtUptime(sec) {
+  const n = Math.max(0, Math.floor(Number(sec) || 0));
+  const d = Math.floor(n / 86400);
+  const h = Math.floor((n % 86400) / 3600);
+  const m = Math.floor((n % 3600) / 60);
+  if (d) return `${d}天${h}小时`;
+  if (h) return `${h}小时${m}分`;
+  if (m) return `${m}分${n % 60}秒`;
+  return `${n}秒`;
+}
+function fmtNum(v) {
+  if (v == null || !isFinite(Number(v))) return "—";
+  return Number(v).toLocaleString("en-US");
 }
 function labelFromKey(key) {
   const s = String(key || "");
@@ -297,13 +323,14 @@ function switchPage(name) {
   } else if (name === "memory") {
     guarded("sessions", refreshSessions);
     guarded("memories", refreshMemories);
-  } else if (name === "rules") {
-    guarded("rules", refreshRules);
   } else if (name === "settings") {
     guarded("config", loadConfig);
+  } else if (name === "permissions") {
+    guarded("permissions", refreshPermissions);
   } else if (name === "tools") {
     guarded("tools", refreshTools);
   } else if (name === "logs") {
+    state.logsRendered = false;
     guarded("logs", refreshLogs);
   }
 }
@@ -367,7 +394,19 @@ async function refreshStats() {
   qs("#m-memories").textContent = d.memories != null ? d.memories : "—";
   qs("#m-sessions").textContent = d.sessions != null ? d.sessions : "—";
   qs("#m-today").textContent = d.messages_today != null ? d.messages_today : "—";
-  qs("#m-rules").textContent = d.rules != null ? d.rules : "—";
+  const rt = d.runtime || {};
+  const uptime = qs("#rt-uptime");
+  if (uptime) {
+    const vision = rt.vision_calls ? ` · 识图 ${fmtNum(rt.vision_calls)} 次` : "";
+    uptime.textContent = rt.uptime_sec != null ? `运行 ${fmtUptime(rt.uptime_sec)}${vision}` : "运行时长 —";
+  }
+  qs("#rt-sessions").textContent = fmtNum(rt.sessions);
+  qs("#rt-received").textContent = fmtNum(rt.received);
+  qs("#rt-sent").textContent = fmtNum(rt.sent);
+  qs("#rt-tools").textContent = fmtNum(rt.tool_calls);
+  qs("#rt-llm").textContent = fmtNum(rt.llm_calls);
+  qs("#rt-tokens").textContent = fmtNum(rt.tokens);
+  qs("#rt-cost").textContent = rt.cost_text || "—";
 }
 
 function renderDashSessions() {
@@ -676,47 +715,6 @@ async function tidyMemory() {
   } catch (err) { toast(err.message, "error"); }
 }
 
-/* ================= 规则 ================= */
-async function refreshRules() {
-  const rows = await api("/api/rules");
-  const body = qs("#rule-body");
-  body.innerHTML = (rows || []).map((r) => `<tr>
-    <td>${esc(r.content)}</td>
-    <td><button class="switch ${r.active ? "on" : ""}" data-action="rule-toggle" data-id="${r.id}" aria-label="切换规则"><span></span></button></td>
-    <td class="col-actions"><button class="btn danger small" data-action="rule-delete" data-id="${r.id}">删除</button></td>
-  </tr>`).join("");
-  if (!rows || !rows.length) body.innerHTML = '<tr><td colspan="3" class="empty">暂无规则</td></tr>';
-}
-
-async function addRule() {
-  const input = qs("#rule-content");
-  const content = input.value.trim();
-  if (!content) return;
-  try {
-    await api("/api/rules", { method: "POST", body: { content } });
-    input.value = "";
-    toast("规则已添加", "success");
-    refreshRules();
-    refreshStats();
-  } catch (err) { toast(err.message, "error"); }
-}
-
-async function toggleRule(id) {
-  try { await api(`/api/rules/${id}/toggle`, { method: "POST" }); refreshRules(); }
-  catch (err) { toast(err.message, "error"); }
-}
-
-async function deleteRule(id) {
-  const ok = await confirmAction("删除规则", "确定删除这条规则？", "删除");
-  if (!ok) return;
-  try {
-    await api(`/api/rules/${id}`, { method: "DELETE" });
-    toast("规则已删除", "success");
-    refreshRules();
-    refreshStats();
-  } catch (err) { toast(err.message, "error"); }
-}
-
 /* ================= 设置 ================= */
 function getPath(obj, path) {
   return path.split(".").reduce((node, key) => (node && typeof node === "object" ? node[key] : undefined), obj);
@@ -777,17 +775,25 @@ async function saveConfig() {
 }
 
 /* ================= 工具 ================= */
-const TOOL_CATS = { core: "核心", memory: "记忆", emoji: "表情", audio: "语音", media: "媒体", mail: "邮件" };
-const TOOL_CAT_ORDER = ["core", "memory", "emoji", "audio", "media", "mail"];
+const TOOL_CATS = { chat: "对话", knowledge: "信息", fs: "文件", mail: "邮件", admin: "管理" };
+const TOOL_CAT_ORDER = ["chat", "knowledge", "fs", "mail", "admin"];
 function toolCat(cat) { return TOOL_CATS[cat] || cat || "其他"; }
 function toolOrder(cat) {
   const i = TOOL_CAT_ORDER.indexOf(cat);
   return i < 0 ? 99 : i;
 }
-async function refreshTools() {
+function fmtCfgValue(v) {
+  if (Array.isArray(v)) return v.length > 6 ? `[${v.length} 项]` : v.map(fmtCfgValue).join(",");
+  if (v && typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+async function fetchTools() {
   const d = await api("/api/tools");
   state.tools = (d.tools || []).slice().sort((a, b) =>
     toolOrder(a.category) - toolOrder(b.category) || a.name.localeCompare(b.name));
+}
+async function refreshTools() {
+  await fetchTools();
   renderToolCats();
   renderTools();
 }
@@ -806,11 +812,12 @@ function renderTools() {
   const rows = tools.map((t) => {
     const cfg = Object.entries(t.config || {})
       .filter(([k]) => k !== "enabled")
-      .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(",") : v}`)
+      .map(([k, v]) => `${k}=${fmtCfgValue(v)}`)
       .join(" · ");
+    const lv = t.min_level >= 6 ? "锁" : `L${t.min_level}`;
     return `<div class="tool-card ${t.enabled ? "" : "off"}" data-cat="${esc(t.category || "")}">
       <div class="tool-head">
-        <div><div class="tool-name"><span class="tool-state ${t.enabled ? "on" : ""}"></span>${esc(t.name)} <span class="badge gray">${esc(toolCat(t.category))}</span></div>
+        <div><div class="tool-name"><span class="tool-state ${t.enabled ? "on" : ""}"></span>${esc(t.name)} <span class="badge gray">${esc(toolCat(t.category))}</span> <span class="badge gray">${esc(lv)}</span></div>
         <div class="tool-desc muted small">${esc(t.description)}</div></div>
         <button class="btn ${t.enabled ? "ghost" : "primary"} small"
           data-action="tool-toggle" data-tool="${esc(t.name)}" data-enabled="${t.enabled ? 1 : 0}"
@@ -822,6 +829,96 @@ function renderTools() {
     </div>`;
   }).join("");
   qs("#tool-list").innerHTML = rows || `<p class="empty">${state.toolCat ? "该分类下暂无工具" : "（无工具）"}</p>`;
+}
+
+/* ================= 权限 ================= */
+const LEVEL_FALLBACK_NAMES = { 0: "禁止", 1: "受限", 2: "普通", 3: "特权", 4: "心腹", 5: "归属" };
+function levelLabel(n) {
+  const num = Number(n);
+  if (num >= state.lockedLevel) return "永久锁";
+  const name = (state.levelNames && state.levelNames[num]) || LEVEL_FALLBACK_NAMES[num] || "";
+  return `L${num} ${name}`.trim();
+}
+function levelOptions(selected, lo, hi) {
+  const out = [];
+  for (let i = lo; i <= hi; i++) {
+    out.push(`<option value="${i}"${Number(selected) === i ? " selected" : ""}>${esc(levelLabel(i))}</option>`);
+  }
+  return out.join("");
+}
+async function refreshPermissions() {
+  const d = await api("/api/actors");
+  state.actors = d.actors || [];
+  state.levelNames = d.level_names || {};
+  state.defaultLevel = d.default_level != null ? d.default_level : 2;
+  state.maxLevel = d.max_level != null ? d.max_level : 5;
+  state.lockedLevel = d.locked_level != null ? d.locked_level : 6;
+  const sub = qs("#perm-sub");
+  if (sub) {
+    sub.textContent = `发送者等级决定它能触发哪些工具 · 未登记成员默认 ${levelLabel(state.defaultLevel)}`;
+  }
+  const addSel = qs("#actor-level");
+  if (addSel) addSel.innerHTML = levelOptions(state.defaultLevel, 0, state.maxLevel);
+  renderActors();
+  await fetchTools();
+  renderPermTools();
+}
+function renderActors() {
+  const body = qs("#actor-body");
+  if (!body) return;
+  const rows = (state.actors || []).map((a) => `<tr>
+    <td>
+      <div>${esc(a.name || "—")}${a.explicit ? ' <span class="badge gray">已设置</span>' : ""}</div>
+      <div class="mono small muted">${esc(a.openid)}</div>
+    </td>
+    <td><select class="sel small-input" data-actor-level data-openid="${esc(a.openid)}">${levelOptions(a.level, 0, state.maxLevel)}</select></td>
+    <td class="muted small col-sm-hide">${a.messages || 0}</td>
+    <td class="muted small col-sm-hide">${esc(a.last_ts || "—")}</td>
+  </tr>`);
+  body.innerHTML = rows.join("") || '<tr><td colspan="4" class="empty">还没有发言记录，可在上方直接填 openid 添加</td></tr>';
+}
+function renderPermTools() {
+  const body = qs("#perm-tool-body");
+  if (!body) return;
+  const rows = (state.tools || []).map((t) => `<tr>
+    <td>
+      <div class="mono">${esc(t.name)}</div>
+      ${t.enabled ? "" : '<div class="muted small">已停用</div>'}
+    </td>
+    <td class="muted small col-sm-hide">${esc(toolCat(t.category))}</td>
+    <td><select class="sel small-input" data-tool-level data-tool="${esc(t.name)}">${levelOptions(t.min_level, 1, state.lockedLevel)}</select></td>
+    <td class="muted small col-sm-hide">${esc(t.description)}</td>
+  </tr>`);
+  body.innerHTML = rows.join("") || '<tr><td colspan="4" class="empty">（无工具）</td></tr>';
+}
+async function addActor() {
+  const openid = qs("#actor-openid").value.trim();
+  const name = qs("#actor-name").value.trim();
+  const level = Number(qs("#actor-level").value);
+  if (!openid) { toast("请填写 openid", "error"); return; }
+  try {
+    await api("/api/actors", { method: "POST", body: { openid, level, name: name || null } });
+    qs("#actor-openid").value = "";
+    qs("#actor-name").value = "";
+    toast(`已设为 ${levelLabel(level)}`, "success");
+  } catch (err) { toast(err.message, "error"); }
+  guarded("permissions", refreshPermissions);
+}
+async function saveActorLevel(openid, level) {
+  try {
+    await api("/api/actors", { method: "POST", body: { openid, level: Number(level) } });
+    toast(`已把 ${openid.slice(0, 8)} 设为 ${levelLabel(level)}`, "success");
+  } catch (err) { toast(err.message, "error"); }
+  guarded("permissions", refreshPermissions);
+}
+async function saveToolLevel(name, level) {
+  try {
+    const d = await api(`/api/tools/${encodeURIComponent(name)}/level`, {
+      method: "POST", body: { level: Number(level) },
+    });
+    toast(`已把 ${name} 门槛设为 ${levelLabel(d.level)}`, "success");
+  } catch (err) { toast(err.message, "error"); }
+  guarded("permissions", refreshPermissions);
 }
 
 /* ================= 日志 ================= */
@@ -843,7 +940,13 @@ async function refreshLogs() {
       <span class="log-msg">${esc(l.content)}</span>
     </div>`;
   }).join("");
+  const wrap = qs(".log-wrap");
+  const follow = qs("#log-auto").checked && (
+    !state.logsRendered || !wrap || wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 48
+  );
   qs("#log-body").innerHTML = rows || '<div class="empty">（无日志）</div>';
+  state.logsRendered = true;
+  if (follow && wrap) wrap.scrollTop = wrap.scrollHeight;
 }
 
 /* ================= 刷新 ================= */
@@ -855,8 +958,8 @@ async function refreshAll() {
     guarded("recent", refreshDashRecent),
     guarded("messages", refreshMessages),
     guarded("memories", refreshMemories),
-    guarded("rules", refreshRules),
     guarded("config", loadConfig),
+    guarded("permissions", refreshPermissions),
     guarded("tools", refreshTools),
     guarded("logs", refreshLogs),
   ]);
@@ -902,6 +1005,12 @@ document.addEventListener("click", async (event) => {
       break;
     case "refresh-tools":
       guarded("tools", refreshTools);
+      break;
+    case "refresh-permissions":
+      guarded("permissions", refreshPermissions);
+      break;
+    case "actor-add":
+      addActor();
       break;
     case "tool-cat":
       state.toolCat = el.dataset.cat || "";
@@ -950,15 +1059,6 @@ document.addEventListener("click", async (event) => {
     case "memory-tidy":
       tidyMemory();
       break;
-    case "rule-add":
-      addRule();
-      break;
-    case "rule-toggle":
-      toggleRule(id);
-      break;
-    case "rule-delete":
-      deleteRule(id);
-      break;
     case "save-config":
       saveConfig();
       break;
@@ -978,6 +1078,16 @@ document.addEventListener("click", async (event) => {
     default:
       break;
   }
+});
+
+document.addEventListener("change", (event) => {
+  const actorSel = event.target.closest("select[data-actor-level]");
+  if (actorSel) {
+    saveActorLevel(actorSel.dataset.openid, actorSel.value);
+    return;
+  }
+  const toolSel = event.target.closest("select[data-tool-level]");
+  if (toolSel) saveToolLevel(toolSel.dataset.tool, toolSel.value);
 });
 
 document.addEventListener("keydown", (event) => {
@@ -1007,9 +1117,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
   qs("#mem-q").addEventListener("keydown", (e) => { if (e.key === "Enter") searchMemories(); });
   qs("#mem-add").addEventListener("keydown", (e) => { if (e.key === "Enter") addMemory(); });
-  qs("#rule-content").addEventListener("keydown", (e) => { if (e.key === "Enter") addRule(); });
 
   qs("#log-level").addEventListener("change", () => guarded("logs", refreshLogs));
+  qs("#log-auto").addEventListener("change", (e) => {
+    if (!e.target.checked) return;
+    const wrap = qs(".log-wrap");
+    if (wrap) wrap.scrollTop = wrap.scrollHeight;
+    guarded("logs", refreshLogs);
+  });
   qsa("[data-path]").forEach((el) => {
     el.addEventListener("input", () => setConfigDirty(true));
     el.addEventListener("change", () => setConfigDirty(true));

@@ -1,0 +1,25 @@
+{
+  "enabled": true,
+  "root": "",
+  "max_read_bytes": 262144,
+  "max_write_bytes": 1048576,
+  "max_output_chars": 20000,
+  "max_results": 200,
+  "max_scan_files": 2000,
+  "deny_globs": [
+    "db",
+    "db/*",
+    "tool/*/config.json",
+    ".env",
+    "*.env",
+    "*.pem",
+    "*.key",
+    "*id_rsa*",
+    ".git",
+    ".git/*",
+    ".venv",
+    ".venv/*",
+    "__pycache__",
+    "__pycache__/*"
+  ]
+}

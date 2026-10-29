@@ -112,7 +112,7 @@ async def main(cfg: Config | None = None) -> None:
     if getattr(cfg, "_reset_db", False):
         bak = _backup_db(Path(cfg.db_path))
         _wipe_db(Path(cfg.db_path))
-        log.info("数据库已重置（聊天/记忆/规则全部清空）%s",
+        log.info("数据库已重置（聊天/记忆全部清空）%s",
                  f"，备份: {_rel(bak)}" if bak else "，原库不存在")
 
     storage = Storage(cfg.db_path)
@@ -120,7 +120,7 @@ async def main(cfg: Config | None = None) -> None:
 
     if getattr(cfg, "_reset_chat", False):
         n = storage.reset_chat_data()
-        log.info("聊天数据已清理: messages=%d sessions=%d（记忆/规则保留）", n["messages"], n["sessions"])
+        log.info("聊天数据已清理: messages=%d sessions=%d（记忆保留）", n["messages"], n["sessions"])
 
     memory = MemoryStore(cfg, storage)
     if memory.enabled:
@@ -130,6 +130,11 @@ async def main(cfg: Config | None = None) -> None:
 
     llm = LLMClient(cfg)
     log.info("LLM 就绪: %s @ %s", cfg.model, cfg.llm.get("base_url"))
+    vision = cfg.vision
+    if vision["enabled"]:
+        log.info("识图就绪: %s @ %s", vision["model"], vision["base_url"])
+    else:
+        log.info("识图未启用: 图片只保留 [图片] 占位（检查 vision 配置）")
 
     intents = botpy.Intents(public_messages=True, public_guild_messages=True, message_audit=True)
     bot = QQBot(cfg, presence=None, intents=intents)
@@ -145,7 +150,7 @@ async def main(cfg: Config | None = None) -> None:
             try:
                 bot.cleanup_temp()
             except Exception as e:  # noqa: BLE001
-                log.warning("temp 清理失败: %s", e)
+                log.warning("Temp 清理失败: %s", e)
             await asyncio.sleep(3600)
 
     cleanup_task = asyncio.create_task(_temp_cleanup_loop())
@@ -173,9 +178,9 @@ async def main(cfg: Config | None = None) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GGBot")
     parser.add_argument("--reset-chat", action="store_true",
-                        help="清理 messages/sessions 聊天数据（保留记忆与规则）后启动")
+                        help="清理 messages/sessions 聊天数据（保留记忆）后启动")
     parser.add_argument("--reset-db", action="store_true",
-                        help="备份后删除整个数据库（聊天/记忆/规则全部清空）再启动")
+                        help="备份后删除整个数据库（聊天/记忆全部清空）再启动")
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default=None,
                         help="覆盖 config web.log_level（start 脚本默认 DEBUG）")
     args = parser.parse_args()

@@ -1,10 +1,15 @@
-"""表情包 Tool：按情绪/场景从素材库挑图发送，支持用户授权投喂入库。
+"""表情包 Tool：按情绪标签从素材库挑图发送，支持用户投喂入库。
 
-素材与索引持久化在 tool/emoji/（与代码同目录）：
-- stickers/  内置素材（clean_*.gif/jpg/png）
-- user/      用户明确投喂并同意收藏的素材
-- index.json 含义索引（文件名 -> 含义 -> 场景）
-运行期不产生额外文件；用户投喂的源图来自 temp/，复制入库后由 temp TTL 清理。
+素材与索引在 tool/chat/emoji/（与代码同分类目录，整目录可迁移）：
+- stickers/  内置素材
+- user/      用户投喂并同意收藏的素材
+- index.json 情绪标签索引（v2）
+
+索引以「情绪标签」为主键，而不是自由文本含义：
+- MOOD_ALIASES 把口语（笑死、服了、破防…）归一到固定情绪；
+- 文件系统是素材真相：查询时自动把目录里未入索引的图片补进来，文件名里的情绪词
+  （如 `无语_翻白眼.gif`）会自动识别成标签；文件删掉后索引条目自动失效；
+- 未标注的素材仍可被随机/按文件名使用，用 sticker_save 可补标签。
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ import random
 import re
 import time
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 
 from ..base import Tool
@@ -27,9 +33,59 @@ logger = logging.getLogger("ggbot.tools.sticker")
 
 IMAGE_EXTS = {".gif", ".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
+# 固定情绪词表：左侧是标准标签，右侧是口语别名（用于检索与文件名识别）
+MOOD_ALIASES: dict[str, tuple[str, ...]] = {
+    "开心": ("高兴", "快乐", "笑", "哈哈", "笑死", "好耶", "兴奋", "乐"),
+    "无语": ("无奈", "服了", "翻白眼", "沉默", "呃", "汗"),
+    "委屈": ("难过", "哭", "伤心", "可怜", "卖惨", "破防"),
+    "生气": ("气", "怒", "哼", "不爽", "恼"),
+    "惊讶": ("震惊", "惊", "没想到", "卧槽", "啊这"),
+    "期待": ("等", "盼", "想要", "搓手", "馋"),
+    "卖萌": ("可爱", "撒娇", "贴贴", "亲亲", "乖"),
+    "敷衍": ("哦", "嗯", "随便", "懒得", "摆"),
+    "得意": ("骄傲", "牛逼", "炫耀", "赢", "飘"),
+    "感动": ("暖心", "谢谢", "爱了", "泪目"),
+    "困": ("累", "睡", "困倦", "熬夜"),
+    "吃瓜": ("围观", "看戏", "八卦", "热闹"),
+    "打招呼": ("你好", "在吗", "早安", "晚安", "嗨"),
+    "道谢": ("谢", "感谢", "多谢"),
+    "鼓励": ("加油", "抱抱", "安慰", "别怕", "摸头"),
+    "拒绝": ("不要", "不行", "算了", "告辞", "拒绝"),
+}
+
+_MOOD_LOOKUP = {
+    alias: mood
+    for mood, aliases in MOOD_ALIASES.items()
+    for alias in (mood, *aliases)
+}
+_MOOD_WORDS = tuple(sorted(_MOOD_LOOKUP, key=len, reverse=True))
+
+
+def _canonical_moods(raw) -> list[str]:
+    """把口语/自由标签归一为标准情绪词，去重保序。"""
+    if isinstance(raw, str):
+        tokens = re.split(r"[\s,，、/;；|]+", raw)
+    else:
+        tokens = [str(x) for x in (raw or [])]
+    out: list[str] = []
+    for token in tokens:
+        token = token.strip()
+        if not token:
+            continue
+        mood = _MOOD_LOOKUP.get(token)
+        if mood is None:
+            for word in _MOOD_WORDS:
+                if word in token:
+                    mood = _MOOD_LOOKUP[word]
+                    break
+        mood = mood or token[:20]
+        if mood not in out:
+            out.append(mood)
+    return out[:6]
+
 
 class _StickerBase(Tool):
-    data_name = "emoji"
+    data_name = "chat/emoji"
     default_config = {
         "enabled": True,
         "max_per_turn": 1,
@@ -50,7 +106,7 @@ class _StickerBase(Tool):
 
     @property
     def root(self) -> Path:
-        return self.rt.data_dir("emoji")
+        return self.rt.data_dir(self.key)
 
     @property
     def index_path(self) -> Path:
@@ -69,20 +125,83 @@ class _StickerBase(Tool):
         except (OSError, ValueError) as e:
             logger.warning("表情索引读取失败: %s", e)
             items = []
-        items = [it for it in items if isinstance(it, dict) and it.get("file")]
-        self._index_cache = (mtime, items)
-        return items
+        migrated = []
+        for it in items:
+            if not isinstance(it, dict) or not it.get("file"):
+                continue
+            moods = it.get("moods")
+            if moods is None:
+                moods = it.get("scenes") or ([it["meaning"]] if it.get("meaning") else [])
+            migrated.append({
+                "file": str(it["file"]),
+                "moods": _canonical_moods(moods),
+                "desc": str(it.get("desc") or it.get("meaning") or "")[:40],
+                "source": str(it.get("source") or "builtin"),
+                "added_at": it.get("added_at") or "",
+            })
+        self._index_cache = (mtime, migrated)
+        return migrated
 
     def _save_index(self, items: list[dict]) -> None:
-        payload = {"version": 1, "items": items}
+        payload = {"version": 2, "items": items}
         tmp = self.index_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         tmp.replace(self.index_path)
         self._index_cache = None
 
+    def _scan_files(self) -> list[str]:
+        out = []
+        for sub in ("stickers", "user"):
+            d = self.root / sub
+            d.mkdir(parents=True, exist_ok=True)
+            for p in sorted(d.rglob("*")):
+                if p.is_file() and p.suffix.lower() in IMAGE_EXTS:
+                    out.append(p.relative_to(self.root).as_posix())
+        return out
+
+    @staticmethod
+    def _infer_moods(rel: str) -> list[str]:
+        stem = Path(rel).stem.replace("_", " ").replace("-", " ")
+        moods = []
+        for token in re.split(r"\s+", stem):
+            if not token:
+                continue
+            mood = _MOOD_LOOKUP.get(token)
+            if mood is None:
+                for word in _MOOD_WORDS:
+                    if len(word) >= 2 and word in token:
+                        mood = _MOOD_LOOKUP[word]
+                        break
+            if mood and mood not in moods:
+                moods.append(mood)
+        return moods
+
+    def _sync_index(self) -> list[dict]:
+        """以目录为准补齐/清理索引；新文件可按文件名自动识别情绪。"""
+        items = self._load_index()
+        known = {it["file"] for it in items}
+        changed = False
+        for rel in self._scan_files():
+            if rel in known:
+                continue
+            items.append({
+                "file": rel,
+                "moods": self._infer_moods(rel),
+                "desc": Path(rel).stem.replace("_", " ")[:40],
+                "source": "user" if rel.startswith("user/") else "builtin",
+                "added_at": datetime.now().isoformat(timespec="seconds"),
+            })
+            changed = True
+        kept = [it for it in items if (self.root / it["file"]).is_file()]
+        if len(kept) != len(items):
+            changed = True
+        if changed:
+            self._save_index(kept)
+        return kept
+
     def _available(self) -> list[dict]:
         out = []
-        for it in self._load_index():
+        for it in self._sync_index():
             p = (self.root / it["file"]).resolve()
             if p.is_file() and p.suffix.lower() in IMAGE_EXTS:
                 out.append({**it, "_path": p})
@@ -92,27 +211,27 @@ class _StickerBase(Tool):
     def _score(item: dict, mood: str) -> int:
         if not mood:
             return 0
+        want = set(_canonical_moods(mood))
+        if not want:
+            return 0
+        have = set(_canonical_moods(item.get("moods") or []))
+        score = 8 * len(want & have)
+        text = (str(item.get("desc") or "") + " " + " ".join(item.get("moods") or [])).lower()
         q = mood.lower().strip()
-        text = (str(item.get("meaning") or "") + " " + " ".join(item.get("scenes") or [])).lower()
         if q and q in text:
-            return 8
-        score = 0
+            score += 4
         for token in re.split(r"[\s,，、/;；]+", q):
-            if not token:
-                continue
-            if token in text:
-                score += 4
-            else:
-                score += sum(1 for ch in set(token) if ch in text)
+            if token and token in text:
+                score += 2
         return score
 
 
 class SendSticker(_StickerBase):
     name = "send_sticker"
     description = (
-        "从本地表情包素材库挑一张合适的图发送，用来代替文字表达情绪。"
-        "mood 用一两个词描述此刻想表达的情绪/场景（如 开心、无语、委屈、期待、惊讶、卖萌、"
-        "吐槽、盯人、卖惨、夸赞、道谢、打招呼），系统会按含义索引自动挑图；"
+        "从本地表情库挑一张合适的图发送，用来代替文字表达情绪。"
+        "mood 用一两个词描述此刻的情绪/场景（如 开心、无语、委屈、生气、惊讶、卖萌、"
+        "敷衍、得意、困、吃瓜、打招呼、道谢、鼓励、拒绝），系统按情绪标签自动挑图；"
         "也可用 name 指定素材文件名。一次回复最多一张"
     )
     parameters = {
@@ -126,7 +245,7 @@ class SendSticker(_StickerBase):
     async def run(self, args: dict, ctx: dict) -> dict:
         items = self._available()
         if not items:
-            return {"ok": False, "error": "表情库为空（tool/emoji/stickers 未放入素材）"}
+            return {"ok": False, "error": "表情库为空（tool/chat/emoji/stickers 未放入素材）"}
         sid = str(ctx.get("session_id") or "")
         now = time.monotonic()
         limit = max(1, int(self.config.get("max_per_turn", 1) or 1))
@@ -145,9 +264,9 @@ class SendSticker(_StickerBase):
         else:
             scored = sorted(((self._score(it, mood), it) for it in items),
                             key=lambda x: x[0], reverse=True)
-            top = [it for s, it in scored[:3] if s > 0] or [
-                it for it in items if "通用" in (it.get("scenes") or [])
-            ] or items
+            top = [it for s, it in scored[:3] if s > 0]
+            if not top:
+                top = [it for it in items if not it.get("moods")] or items
             recent = self._recent.setdefault(sid, deque(maxlen=12))
             fresh = [it for it in top if Path(it["file"]).name not in recent]
             picked = fresh or top
@@ -159,7 +278,7 @@ class SendSticker(_StickerBase):
             ctx["_sticker_count"] = int(ctx.get("_sticker_count", 0)) + 1
             self._last_sent[sid] = now
             self._recent.setdefault(sid, deque(maxlen=12)).append(Path(item["file"]).name)
-            result["meaning"] = item.get("meaning") or ""
+            result["moods"] = item.get("moods") or []
         return result
 
 
@@ -168,11 +287,11 @@ class StickerList(_StickerBase):
     config_owner = False
     toggleable = False
     prompt_hint = ""
-    description = "查看表情库中与情绪/场景匹配的素材（最多返回 10 条），用于了解有哪些图可用"
+    description = "查看表情库中与情绪匹配的素材（最多返回 10 条），用于了解有哪些图可用"
     parameters = {
         "type": "object",
         "properties": {
-            "mood": {"type": "string", "description": "情绪/场景关键词，留空则列通用素材"},
+            "mood": {"type": "string", "description": "情绪/场景关键词，留空则列出全部"},
             "limit": {"type": "integer", "description": "返回条数，默认 10"},
         },
     }
@@ -185,12 +304,12 @@ class StickerList(_StickerBase):
                         key=lambda x: x[0], reverse=True)
         rows = []
         for score, it in scored:
-            if mood and score <= 0 and len(rows) >= limit:
-                break
+            if mood and score <= 0:
+                continue
             rows.append({
                 "name": Path(it["file"]).name,
-                "meaning": it.get("meaning") or "",
-                "scenes": it.get("scenes") or [],
+                "moods": it.get("moods") or [],
+                "desc": it.get("desc") or "",
                 "source": it.get("source") or "builtin",
             })
             if len(rows) >= limit:
@@ -200,32 +319,33 @@ class StickerList(_StickerBase):
 
 class StickerSave(_StickerBase):
     name = "sticker_save"
+    min_level = 2
     config_owner = False
     toggleable = False
     prompt_hint = ""
     description = (
         "把用户明确投喂并同意收藏的图片存进表情库（仅限 temp 目录下的图片路径），"
-        "同时记录含义与适用场景。群友随手发的图未经同意不要收藏"
+        "并按情绪标签建索引。群友随手发的图未经同意不要收藏"
     )
     parameters = {
         "type": "object",
         "properties": {
             "source": {"type": "string", "description": "图片路径（上下文中的本地附件路径）"},
-            "meaning": {"type": "string", "description": "这张图表达的含义，如「无语」"},
-            "scenes": {
+            "moods": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "适用场景关键词，如 [\"尴尬\",\"无奈\"]",
+                "description": "情绪标签，如 [\"无语\",\"无奈\"]（会自动归一到标准情绪）",
             },
+            "desc": {"type": "string", "description": "可选：一句话描述画面"},
         },
-        "required": ["source", "meaning"],
+        "required": ["source", "moods"],
     }
 
     async def run(self, args: dict, ctx: dict) -> dict:
         raw = str(args.get("source") or "").strip()
-        meaning = str(args.get("meaning") or "").strip()
-        if not raw or not meaning:
-            return {"ok": False, "error": "source 与 meaning 不能为空"}
+        moods = _canonical_moods(args.get("moods"))
+        if not raw or not moods:
+            return {"ok": False, "error": "source 与 moods 不能为空"}
         temp_root = Path(self.rt.cfg.temp_dir).resolve()
         p = Path(raw)
         if not p.is_absolute():
@@ -240,7 +360,7 @@ class StickerSave(_StickerBase):
         if not p.is_file() or p.suffix.lower() not in IMAGE_EXTS:
             return {"ok": False, "error": "文件不存在或不是支持的图片格式"}
 
-        items = self._load_index()
+        items = self._sync_index()
         user_count = sum(1 for it in items if it.get("source") == "user")
         max_user = max(0, int(self.config.get("max_user_stickers", 200) or 0))
         if user_count >= max_user:
@@ -253,19 +373,18 @@ class StickerSave(_StickerBase):
         dest.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(dest.write_bytes, data)
 
-        scenes = args.get("scenes") or []
-        if isinstance(scenes, str):
-            scenes = [s.strip() for s in re.split(r"[,，、/;；]+", scenes) if s.strip()]
+        desc = str(args.get("desc") or p.stem.replace("_", " "))[:40]
         items.append({
             "file": f"user/{fname}",
-            "meaning": meaning[:40],
-            "scenes": [str(s)[:20] for s in scenes][:8],
+            "moods": moods,
+            "desc": desc,
             "source": "user",
+            "added_at": datetime.now().isoformat(timespec="seconds"),
         })
         self._save_index(items)
-        logger.info("表情入库: %s (%s)", fname, meaning[:20],
+        logger.info("表情入库: %s (%s)", fname, "/".join(moods),
                     extra={"session": session_label(ctx.get("session_id"))})
-        return {"ok": True, "name": fname, "note": "已收藏进表情库"}
+        return {"ok": True, "name": fname, "moods": moods, "note": "已收藏进表情库"}
 
 
 def get_tools(rt):

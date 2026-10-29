@@ -97,7 +97,6 @@ def cmd_stats(storage: Storage) -> None:
     print(f"  消息      {s['messages']}（今日 {s['messages_today']}）")
     print(f"  待处理    {s['pending']}")
     print(f"  记忆      {s['memories']}")
-    print(f"  规则      {s['rules']}")
 
 
 def cmd_sessions(storage: Storage, limit: int) -> None:
@@ -131,11 +130,11 @@ def cmd_clear(storage: Storage, ref: str, yes: bool) -> None:
 
 
 def cmd_reset_chat(storage: Storage, yes: bool) -> None:
-    if not yes and not _confirm("清空全部会话与消息（保留记忆/规则/配置）？"):
+    if not yes and not _confirm("清空全部会话与消息（保留记忆/配置）？"):
         print("已取消")
         return
     n = storage.reset_chat_data()
-    print(f"已清理 messages={n['messages']} sessions={n['sessions']}（记忆/规则保留）")
+    print(f"已清理 messages={n['messages']} sessions={n['sessions']}（记忆保留）")
 
 
 def cmd_memory_list(storage: Storage, sid: str | None, limit: int) -> None:
@@ -214,7 +213,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("session")
     sp.add_argument("--yes", action="store_true")
 
-    sp = sub.add_parser("reset-chat", help="清空全部会话与消息（保留记忆/规则）")
+    sp = sub.add_parser("reset-chat", help="清空全部会话与消息（保留记忆）")
     sp.add_argument("--yes", action="store_true")
 
     mem = sub.add_parser("memory", help="记忆管理")

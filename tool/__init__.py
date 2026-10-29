@@ -1,7 +1,8 @@
 """Tool 执行器与 agent 循环。
 
-一切能力都是 Tool：插件按能力域放在项目根 tool/{core,memory,emoji,audio,media,mail}/，
+一切能力都是 Tool：插件按能力域放在项目根 tool/{chat,knowledge,fs,mail,admin}/，
 启动时自动发现并按配置挂载 schema。每个 toolset 目录自包含代码、config.json 与持久化数据。
+每个 Tool 带 min_level 门槛：请求只下发当前发送者能用的 schema，执行器再按实际发送者校验。
 回合语义：优先通过工具行动——send_text 发送消息；未调用任何工具即本轮不回复。
 模型无视协议直接回文本且本轮尚未发送时，自动按 send_text 兜底。
 """
@@ -12,16 +13,29 @@ import asyncio
 import json
 import logging
 
-from tool.base import ToolRegistry, ToolRuntime
-from ggbot.util.session import session_label
+from tool.base import PLACEHOLDER_RE, ToolRegistry, ToolRuntime
+from ggbot.core.runtime_stats import runtime
+from ggbot.util.session import oid8, session_label
 
 logger = logging.getLogger("ggbot.tools")
 
 NO_REPLY = "__NO_REPLY__"
 
+PLACEHOLDER_HINT = (
+    "不要用 [表情]/[语音]/[图片] 这类方括号占位符：它们只是文字，不会变成媒体。"
+    "要发表情就调用 send_sticker，发语音就调用 send_voice_clone，发图/视频就调用 "
+    "send_image/send_video。"
+)
+
+
+def _actor_label(actor: dict) -> str:
+    name = (actor.get("name") or "").strip()
+    oid = oid8(actor.get("openid"))
+    return f"{name}/{oid}" if name and oid else (name or oid or "unknown")
+
 
 class ToolExecutor:
-    """执行 function calling 调用。ctx 提供回复目标与会话上下文。"""
+    """执行 function calling 调用。ctx 提供回复目标、会话上下文与发送者权限。"""
 
     def __init__(self, cfg, storage, memory, bot):
         self.rt = ToolRuntime(cfg, storage, memory, bot)
@@ -32,12 +46,11 @@ class ToolExecutor:
         summary = " / ".join(f"{k} {v}" for k, v in sorted(counts.items()))
         logger.debug("工具就绪: %d 个（%s）", len(self.registry.tools), summary or "无")
 
-    @property
-    def schemas(self) -> list[dict]:
-        return self.registry.schemas()
+    def schemas(self, level: int) -> list[dict]:
+        return self.registry.schemas(level)
 
-    def hints(self) -> str:
-        return self.registry.hints()
+    def hints(self, level: int) -> str:
+        return self.registry.hints(level)
 
     def list_tools(self) -> list[dict]:
         return self.registry.list_info()
@@ -45,14 +58,32 @@ class ToolExecutor:
     def toggle(self, name: str, enabled: bool) -> dict | None:
         return self.registry.toggle(name, enabled)
 
+    def set_level(self, name: str, level: int) -> dict | None:
+        return self.registry.set_level(name, level)
+
     async def execute(self, name: str, args: dict, ctx: dict) -> dict:
-        tool = self.registry.get(name)
+        tool = self.registry.tools.get(name)
         if tool is None:
-            known = name in self.registry.tools
-            return {"ok": False, "error": f"工具 {name} 未启用" if known else f"未知工具 {name}"}
+            return {"ok": False, "error": f"未知工具 {name}"}
+        runtime.tool()
+        if not tool.is_enabled():
+            return {"ok": False, "error": f"工具 {name} 未启用"}
+        actor = ctx.get("actor") or {}
+        level = int(actor.get("level") or 0)
+        need = tool.required_level()
         sid = session_label(ctx.get("session_id"))
-        logger.debug("工具 %s args=%s", name, json.dumps(args, ensure_ascii=False)[:200],
-                     extra={"session": sid})
+        if need > 5 or level < need:
+            need_label = "永久锁" if need > 5 else f"L{need}"
+            logger.warning("工具 %s 拒绝: %s(L%d) 需 %s", name, _actor_label(actor), level,
+                           need_label, extra={"session": sid})
+            return {"ok": False, "error": f"权限不足：{name} 需要 {need_label}，当前 L{level}"}
+        if need >= 3:
+            logger.info("工具 %s 允许: %s(L%d)", name, _actor_label(actor), level,
+                        extra={"session": sid})
+        else:
+            logger.debug("工具 %s args=%s actor=%s(L%d)", name,
+                         json.dumps(args, ensure_ascii=False)[:200], _actor_label(actor), level,
+                         extra={"session": sid})
         try:
             return await tool.run(args, ctx)
         except Exception as e:  # noqa: BLE001
@@ -70,17 +101,30 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
     - 达到 max_rounds。
     回复内容优先由工具发送（send_text / send_image 等），不依赖返回文本。
     """
-    tools = executor.schemas
+    level = int((ctx.get("actor") or {}).get("level") or 0)
+    tools = executor.schemas(level)
     if not tools:
-        logger.warning("没有启用的工具，跳过本轮")
+        logger.warning("没有可用的工具（等级 L%d），跳过本轮", level)
         return NO_REPLY
     history = list(messages)
-    for _round in range(max_rounds):
-        resp = await asyncio.to_thread(llm.chat, history, tools)
+    base_len = max(0, len(messages) - 1)
+    retried_placeholder = False
+    for round_no in range(max_rounds):
+        resp = await asyncio.to_thread(
+            llm.chat, history, tools, base_len=base_len, call_no=round_no + 1
+        )
         msg = resp.choices[0].message
         calls = msg.tool_calls or []
         if not calls:
             content = (msg.content or "").strip()
+            if content and PLACEHOLDER_RE.match(content):
+                logger.warning("模型用占位符代替工具调用: %s", content)
+                if not retried_placeholder and round_no + 1 < max_rounds:
+                    retried_placeholder = True
+                    history.append({"role": "assistant", "content": content})
+                    history.append({"role": "system", "content": PLACEHOLDER_HINT})
+                    continue
+                return NO_REPLY
             # 模型偶尔无视工具协议直接回文本：本轮还没发过就兜底发出去，避免整轮静默
             if content and not ctx.get("sent_any"):
                 logger.debug("模型未调用工具，默认 send_text")

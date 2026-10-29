@@ -40,6 +40,7 @@ def _as_list(v) -> list[str]:
 
 class SendEmail(Tool):
     name = "send_email"
+    min_level = 3
     data_name = "mail"
     description = (
         "通过 SMTP 发送邮件。用户明确要求发邮件时直接调用，不要在调用前自己判断能不能发；"

@@ -4,8 +4,11 @@
 - ToolRuntime：给 Tool 提供配置、持久化目录、发送能力等公共依赖
 - ToolRegistry：自动发现 tool/<分类>/ 下的插件，按配置开关动态挂载 schema
 
-分类即能力域：core（对话）/ memory（记忆）/ emoji（表情）/ audio（语音）/
-media（图文视频）/ mail（邮件）。新增分类 = 新建一个含插件模块的子包。
+分类即能力域：chat（对话与表达）/ knowledge（信息）/ fs（文件）/ mail（邮件）/ admin（管理）。
+新增分类 = 新建一个含插件模块的子包。
+
+每个 Tool 声明 min_level（调用门槛，0-5 为发送者等级，6 为永久锁）；注册表按等级裁剪
+下发给模型的 schema，执行器再按实际发送者校验一次——前者省 token，后者才是安全边界。
 
 tool/ 位于项目根目录且**自包含**：每个 toolset 目录同时存放代码、config.json
 与持久化数据（索引、素材、参考音频），整目录复制即可迁移；运行产物在 temp/tool/<name>/。
@@ -26,6 +29,25 @@ from pathlib import Path
 from ggbot.util.session import session_label
 
 logger = logging.getLogger("ggbot.tools")
+
+# 模型偶尔把媒体写成方括号占位符进正文；这些不是媒体，发送前拦截
+PLACEHOLDER_RE = re.compile(
+    r"^(?:\s*[\[【(（]\s*(?:表情|语音|图片|视频|文件|emoji|voice|image|video)\s*[\]】)）]"
+    r"\s*[。.!！?？~～…]*\s*)+$",
+    re.IGNORECASE,
+)
+# 同一类占位符夹在正常文字里（“哈哈[表情]”）时直接剔除，避免用户看到方括号
+PLACEHOLDER_INLINE_RE = re.compile(
+    r"[\[【(（]\s*(?:表情|语音|图片|视频|文件|emoji|voice|image|video)\s*[\]】)）]",
+    re.IGNORECASE,
+)
+# 正文开头的引用标记：[引用 关键词] / 【引用】；允许前面先写 @昵称（head 保留，不参与正文剥离）
+QUOTE_RE = re.compile(
+    r"^\s*(?P<head>(?:@[\w\u4e00-\u9fff·._-]{1,32}\s*)*)"
+    r"[\[【]\s*引用(?:\s*[:：]?\s*([^\]】\n]*?))?\s*[\]】]\s*"
+)
+# @昵称：允许中文、字母数字、下划线与常见连接符，避免把邮箱/代码里的 @ 当成人
+AT_NAME_RE = re.compile(r"(?<![\w@])@([\w\u4e00-\u9fff·._-]{1,32})")
 
 
 def to_str(v) -> str:
@@ -127,8 +149,26 @@ class ToolRuntime:
 
     async def send_text(self, ctx: dict, content) -> dict:
         content = to_str(content).strip()
+        content, reference = self._parse_quote(content, ctx)
         if not content:
             return {"ok": False, "error": "content 为空"}
+        if PLACEHOLDER_RE.match(content):
+            logger.warning("拦截占位符文本: %s", content,
+                           extra={"session": session_label(ctx.get("session_id"))})
+            return {
+                "ok": False,
+                "error": "不要用 [表情]/[语音]/[图片] 占位符；发表情调 send_sticker，"
+                         "发语音调 send_voice_clone，发图/视频调 send_image/send_video",
+            }
+        cleaned = PLACEHOLDER_INLINE_RE.sub("", content).strip()
+        if cleaned != content:
+            logger.warning("正文含媒体占位符，已剔除: %s", content,
+                           extra={"session": session_label(ctx.get("session_id"))})
+            content = cleaned
+            if not content:
+                return {"ok": False, "error": "content 只剩占位符，请改用媒体工具发送"}
+        if ctx.get("scene") == "group":
+            content = self._apply_mentions(content, ctx)
         # 模型偶尔用换行/空行把多句拼进一条，这里拆成多条依次发送，
         # 避免出现"A 空行 B"式的整段回复
         segments = [s.strip() for s in re.split(r"\n+", content) if s.strip()] or [content]
@@ -137,14 +177,17 @@ class ToolRuntime:
         sid = ctx.get("session_id")
         for i, seg in enumerate(segments):
             seq = ctx.get("msg_seq", 1)
+            kwargs = {"message_reference": reference} if reference else {}
             try:
                 await self.bot.send_text(
-                    ctx["target"], seg, ctx["scene"], ctx.get("msg_id"), seq, ctx.get("event_id")
+                    ctx["target"], seg, ctx["scene"], ctx.get("msg_id"), seq,
+                    ctx.get("event_id"), **kwargs
                 )
             except Exception as e:  # noqa: BLE001
                 if not ctx.get("msg_id"):
                     raise
-                # 被动回复失败（msg_id 过期等）→ 降级主动发送，确保送达
+                # 被动回复失败（msg_id 过期等）→ 降级主动发送，确保送达；
+                # 主动通道不带引用，避免已失效的消息 ID 再触发一次失败
                 logger.warning("被动回复失败，降级主动发送: %s", e,
                                extra={"session": session_label(ctx.get("session_id"))})
                 await self.bot.send_text(ctx["target"], seg, ctx["scene"], None, seq)
@@ -155,6 +198,35 @@ class ToolRuntime:
             if gap and i < len(segments) - 1:
                 await asyncio.sleep(gap)
         return {"ok": True, "sent": content}
+
+    def _parse_quote(self, content: str, ctx: dict) -> tuple[str, dict | None]:
+        """解析开头的 [引用 关键词]：回查本会话消息并生成 QQ message_reference。"""
+        m = QUOTE_RE.match(content)
+        if not m:
+            return content, None
+        head = (m.group("head") or "").strip()
+        needle = (m.group(2) or "").strip()
+        sid = ctx.get("session_id")
+        target = None
+        if needle and self.storage is not None and sid:
+            target = self.storage.find_message_id(sid, needle)
+        if not target:
+            target = ctx.get("msg_id")
+        body = content[m.end():].strip()
+        ref = {"message_id": target, "ignore_get_message_error": True} if target else None
+        return " ".join(p for p in (head, body) if p), ref
+
+    def _apply_mentions(self, content: str, ctx: dict) -> str:
+        """把 @昵称 换成 QQ 的 <qqbot-at-user id="openid" />；查不到的人保持原样。"""
+        if self.storage is None:
+            return content
+        sid = ctx.get("session_id")
+
+        def repl(m: re.Match) -> str:
+            openid = self.storage.find_sender_openid(m.group(1), sid)
+            return f'<qqbot-at-user id="{openid}" />' if openid else m.group(0)
+
+        return AT_NAME_RE.sub(repl, content)
 
     async def send_media(self, ctx: dict, file_type: int, source: str, label: str) -> dict:
         seq = ctx.get("msg_seq", 1)
@@ -179,7 +251,7 @@ class Tool:
     """一个 Tool = 一份 schema + 一个执行器；配置/数据目录由 runtime 提供。"""
 
     name: str = ""
-    category: str = ""  # 所属能力域（由注册表按所在子包填充：core/memory/emoji/audio/media/mail）
+    category: str = ""  # 所属能力域（由注册表按所在子包填充：chat/knowledge/fs/mail/admin）
     data_name: str = ""  # 数据/配置目录名，默认与工具名一致（send_email -> mail 时可覆盖）
     description: str = ""
     parameters: dict = {"type": "object", "properties": {}}
@@ -188,6 +260,7 @@ class Tool:
     prompt_hint: str = ""
     config_owner: bool = True   # 共享配置目录时，只由一个工具展示/承担配置
     toggleable: bool = True     # 共享配置的工具不单独启停
+    min_level: int = 1          # 调用门槛（0-5 为发送者等级，6 = 永久锁）；可在 config.levels 覆盖
 
     def __init__(self, rt: ToolRuntime):
         self.rt = rt
@@ -202,6 +275,19 @@ class Tool:
 
     def is_enabled(self) -> bool:
         return bool(self.config.get("enabled", self.enabled_by_default))
+
+    def required_level(self) -> int:
+        """实际门槛：config.levels.<tool> 覆盖 > 类默认；范围 0-6。"""
+        data = self.config or {}
+        levels = data.get("levels")
+        raw = levels.get(self.name) if isinstance(levels, dict) else None
+        if raw is None:
+            raw = self.min_level
+        try:
+            raw = int(raw)
+        except (TypeError, ValueError):
+            raw = self.min_level
+        return max(0, min(6, raw))
 
     def schema(self) -> dict:
         return {
@@ -239,6 +325,8 @@ class ToolRegistry:
             for mod in pkgutil.iter_modules(pkg.__path__):
                 if mod.name.startswith("_"):
                     continue
+                if mod.ispkg and not (Path(pkg.__path__[0]) / mod.name / "__init__.py").is_file():
+                    continue  # 素材/数据目录不是插件包（如 chat/emoji、chat/audio）
                 self._load_module(f"tool.{info.name}.{mod.name}", info.name)
 
     def _load_module(self, dotted: str, category: str) -> None:
@@ -267,15 +355,26 @@ class ToolRegistry:
             return None
         return tool
 
-    def schemas(self) -> list[dict]:
-        return [t.schema() for t in self.tools.values() if t.is_enabled()]
+    def visible(self, level: int) -> list[tuple[Tool, int]]:
+        """某等级可见的工具（启用且门槛达标），按 (门槛, 分类, 名称) 稳定排序。
 
-    def hints(self) -> str:
-        lines = [
-            f"- {t.name}：{t.prompt_hint}"
+        排序固定是为了让不同等级的工具列表共享前缀：低等级用户的列表是高等级的前缀，
+        厂商的前缀缓存命中率更高。6 级工具永远不会出现在任何人的列表里。
+        """
+        level = max(0, min(6, int(level)))
+        rows = [
+            (t, t.required_level())
             for t in self.tools.values()
-            if t.is_enabled() and t.prompt_hint
+            if t.is_enabled() and level >= t.required_level()
         ]
+        rows.sort(key=lambda x: (x[1], x[0].category, x[0].name))
+        return rows
+
+    def schemas(self, level: int) -> list[dict]:
+        return [t.schema() for t, _ in self.visible(level)]
+
+    def hints(self, level: int) -> str:
+        lines = [f"- {t.name}：{t.prompt_hint}" for t, _ in self.visible(level) if t.prompt_hint]
         return "\n".join(lines) or "（无）"
 
     def list_info(self) -> list[dict]:
@@ -287,6 +386,8 @@ class ToolRegistry:
                 "description": t.description,
                 "enabled": t.is_enabled(),
                 "toggleable": t.toggleable,
+                "min_level": t.required_level(),
+                "level_default": int(t.min_level),
                 "config": t.config if t.config_owner else {},
             })
         return out
@@ -296,3 +397,23 @@ class ToolRegistry:
         if tool is None or not tool.toggleable:
             return None
         return self.rt.set_enabled(tool.key, tool.default_config, enabled)
+
+    def set_level(self, name: str, level: int) -> dict | None:
+        """设置工具门槛（0-6）；与类默认相同时删除覆盖，配置保持干净。"""
+        tool = self.tools.get(name)
+        if tool is None:
+            return None
+        level = max(0, min(6, int(level)))
+        data = dict(self.rt.load_config(tool.key, tool.default_config))
+        raw_levels = data.get("levels")
+        levels = dict(raw_levels) if isinstance(raw_levels, dict) else {}
+        if level == int(tool.min_level):
+            levels.pop(name, None)
+        else:
+            levels[name] = level
+        if levels:
+            data["levels"] = levels
+        else:
+            data.pop("levels", None)
+        self.rt.save_config(tool.key, data)
+        return data

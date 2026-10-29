@@ -36,6 +36,7 @@ class MemorySearch(Tool):
 
 class MemoryWrite(Tool):
     name = "memory_write"
+    min_level = 2
     description = (
         "把值得长期记住的信息写入记忆库（例如某人的叫法、偏好、脾气、约定、重要日子、最近在忙的事）。"
         "内容要自带主语、能独立看懂；不要记琐碎寒暄。"

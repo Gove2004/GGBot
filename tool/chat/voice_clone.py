@@ -1,7 +1,7 @@
 """MiMo 语音克隆 Tool：用参考音色把文本合成为语音并发送。
 
-配置/数据：tool/audio/config.json + voice_ref.wav（与代码同目录）
-运行产物：temp/tool/audio/*.wav → *.silk（随 temp TTL 清理）
+配置/数据：tool/chat/audio/config.json + voice_ref.wav（与代码同分类目录）
+运行产物：temp/tool/chat/audio/*.wav → *.silk（随 temp TTL 清理）
 """
 
 from __future__ import annotations
@@ -40,7 +40,8 @@ def _to_silk(path: Path) -> Path:
 
 class VoiceClone(Tool):
     name = "send_voice_clone"
-    data_name = "audio"
+    min_level = 2
+    data_name = "chat/audio"
     description = (
         "用固定参考音色把一段话合成语音并发送（比文字更有温度）。"
         "适合撒娇、安慰、问候、道晚安、分享开心事；私聊比群聊更合适，正事不要用语音。"
@@ -72,7 +73,7 @@ class VoiceClone(Tool):
     def _ref_path(self) -> Path:
         raw = str(self.config.get("reference_voice_path") or "voice_ref.wav")
         p = Path(raw)
-        return p if p.is_absolute() else self.rt.data_dir("audio") / p
+        return p if p.is_absolute() else self.rt.data_dir(self.key) / p
 
     def is_enabled(self) -> bool:
         if not super().is_enabled():
@@ -99,7 +100,7 @@ class VoiceClone(Tool):
         timeout = max(5, int(cfg.get("timeout") or 60))
         retries = max(1, int(cfg.get("max_retries") or 2))
         fmt = str(cfg.get("output_format") or "wav").lower()
-        out = self.rt.temp_dir("audio") / f"mimo_{int(time.time() * 1000)}.{fmt}"
+        out = self.rt.temp_dir(self.key) / f"mimo_{int(time.time() * 1000)}.{fmt}"
 
         last_error: Exception | None = None
         for attempt in range(1, retries + 1):

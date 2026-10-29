@@ -7,14 +7,75 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import time
+from datetime import datetime
+
+from ggbot.core.runtime_stats import runtime
 
 logger = logging.getLogger("ggbot.llm")
 
 
 class LLMError(RuntimeError):
     pass
+
+
+def price_factor(pricing: dict) -> float:
+    """高峰时段返回 1，空闲时段返回 off_peak_multiplier；未配置则恒为 1。"""
+    spans = pricing.get("peak_hours")
+    try:
+        off_peak = float(pricing.get("off_peak_multiplier"))
+    except (TypeError, ValueError):
+        return 1.0
+    if not spans:
+        return 1.0
+    now = datetime.now()
+    if pricing.get("peak_weekdays_only", True) and now.weekday() >= 5:
+        return off_peak
+    hhmm = now.strftime("%H:%M")
+    for span in spans:
+        start, _, end = str(span).partition("-")
+        if start and end and start.strip() <= hhmm < end.strip():
+            return 1.0
+    return off_peak
+
+
+def cost_value(pricing: dict, prompt: int | None, cached: int | None, done: int) -> float | None:
+    """按每百万 tokens 单价计算费用数值；未配置单价时返回 None。"""
+    if not isinstance(pricing, dict):
+        return None
+
+    def num(key):
+        val = pricing.get(key)
+        if val in (None, ""):
+            return None
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
+    inp, out = num("input_per_mtok"), num("output_per_mtok")
+    cached_price = num("cached_input_per_mtok")
+    if cached_price is None:
+        cached_price = inp
+    if not any((inp, out, cached_price)):
+        return None
+    inp, out = inp or 0.0, out or 0.0
+    cached_price = cached_price or 0.0
+    factor = price_factor(pricing)
+    inp, out, cached_price = inp * factor, out * factor, cached_price * factor
+    prompt = prompt or 0
+    cached = min(cached or 0, prompt)
+    return ((prompt - cached) * inp + cached * cached_price + done * out) / 1_000_000
+
+
+def format_cost(pricing: dict, fee: float | None) -> str | None:
+    if fee is None:
+        return None
+    currency = str((pricing or {}).get("currency") or "¥")
+    return f"{currency}{fee:.6f}".rstrip("0").rstrip(".")
 
 
 class LLMClient:
@@ -53,18 +114,20 @@ class LLMClient:
             kwargs["extra_body"] = {"thinking": {"type": thinking}}
         return kwargs
 
-    def chat(self, messages: list, tools=None, tool_choice=None, retries: int = 3):
-        """单次补全调用。返回 openai response 对象。"""
+    def chat(self, messages: list, tools=None, tool_choice=None, retries: int = 3,
+             base_len: int | None = None, call_no: int | None = None):
+        """单次补全调用。返回 openai response 对象。
+
+        base_len：messages 中属于「上下文」的前缀长度，其余视为「新增」
+        （本轮消息与工具往返），仅用于日志拆解；call_no 为回合内第几次请求。
+        """
         kwargs = self._kwargs(messages, tools, tool_choice)
-        logger.debug("LLM 请求 tokens ≈ %d", self.estimate_messages_tokens(messages))
+        parts = self._request_parts(messages, tools, base_len)
         last_err: Exception | None = None
         for attempt in range(retries):
             try:
                 resp = self.client.chat.completions.create(**kwargs)
-                usage = getattr(resp, "usage", None)
-                done = getattr(usage, "completion_tokens", None) if usage else None
-                if done is not None:
-                    logger.debug("LLM 响应 tokens ≈ %d", int(done))
+                self._log_usage(getattr(resp, "usage", None), call_no, parts)
                 return resp
             except Exception as e:  # noqa: BLE001
                 last_err = e
@@ -72,6 +135,127 @@ class LLMClient:
                 if attempt < retries - 1:
                     time.sleep(1.5 * (attempt + 1))
         raise LLMError(f"LLM 调用重试耗尽: {last_err}")
+
+    def _request_parts(self, messages: list, tools, base_len: int | None) -> tuple[int, int, int]:
+        """把一次请求拆成 工具 schema / 上下文 / 新增 三部分（估算口径）。"""
+        cut = (len(messages) - 1) if base_len is None else int(base_len)
+        cut = max(0, min(cut, len(messages)))
+        tool_tokens = 0
+        if tools:
+            try:
+                tool_tokens = self.estimate_tokens(json.dumps(tools, ensure_ascii=False))
+            except (TypeError, ValueError):
+                tool_tokens = 0
+        ctx_tokens = self.estimate_messages_tokens(messages[:cut])
+        new_tokens = self.estimate_messages_tokens(messages[cut:])
+        return tool_tokens, ctx_tokens, new_tokens
+
+    def _log_usage(self, usage, call_no: int | None = None,
+                   parts: tuple[int, int, int] = (0, 0, 0)) -> None:
+        """请求量以服务商 usage 为准；拆解按估算比例缩放，保证三项之和等于实际值。"""
+        if usage is None:
+            runtime.llm(None, None, None, None, self._currency())
+            self._log_request_estimate(*parts, call_no)
+            return
+        prompt = self._usage_value(usage, "prompt_tokens", "input_tokens")
+        done = self._usage_value(usage, "completion_tokens", "output_tokens")
+        if done is None:
+            runtime.llm(prompt, None, None, None, self._currency())
+            return
+        done = int(done)
+        cached = self._cached_tokens(usage)
+        cost_value = self._cost_value(prompt, cached, done)
+        runtime.llm(int(prompt) if prompt is not None else None, done, cached,
+                    cost_value, self._currency())
+        if prompt is None:
+            self._log_request_estimate(*parts, call_no)
+        else:
+            prompt = int(prompt)
+            tool_t, ctx_t, new_t = self._scale_parts(parts, prompt)
+            turn = f" · 第 {call_no} 次" if call_no else ""
+            logger.debug(
+                "LLM 请求 tokens %d (工具 %d | 上下文 %d | 新增 %d%s)",
+                prompt, tool_t, ctx_t, new_t, turn,
+            )
+        bits = [f"实际请求 {prompt if prompt is not None else '-'}"]
+        if prompt:
+            hit = f"{cached}/{prompt} ({cached * 100 // prompt}%)" if cached is not None else "-"
+            bits.append(f"命中 {hit}")
+        else:
+            bits.append("命中 -")
+        bits.append(f"输出 {done}")
+        cost = self._format_cost(cost_value)
+        bits.append(f"费用 {cost or '-'}")
+        if call_no:
+            bits.append(f"第 {call_no} 次")
+        logger.debug("LLM 响应 tokens %d (%s)", done, " | ".join(bits))
+
+    def _log_request_estimate(self, tool_tokens: int, ctx_tokens: int, new_tokens: int,
+                              call_no: int | None = None) -> None:
+        turn = f" · 第 {call_no} 次" if call_no else ""
+        logger.debug(
+            "LLM 请求 tokens ≈ %d (工具 %d | 上下文 %d | 新增 %d%s)",
+            tool_tokens + ctx_tokens + new_tokens, tool_tokens, ctx_tokens, new_tokens, turn,
+        )
+
+    @staticmethod
+    def _scale_parts(parts: tuple[int, int, int], total: int) -> tuple[int, int, int]:
+        tool_t, ctx_t, new_t = max(0, parts[0]), max(0, parts[1]), max(0, parts[2])
+        estimate = tool_t + ctx_t + new_t
+        if total <= 0 or estimate <= 0:
+            return tool_t, ctx_t, new_t
+        scale = total / estimate
+        out_tool = int(round(tool_t * scale))
+        out_ctx = int(round(ctx_t * scale))
+        out_new = total - out_tool - out_ctx
+        if out_new < 0:
+            out_ctx = max(0, out_ctx + out_new)
+            out_new = 0
+        return out_tool, out_ctx, out_new
+
+
+    @staticmethod
+    def _usage_value(obj, *names):
+        for name in names:
+            val = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+            if val is not None:
+                return val
+        return None
+
+    def _cached_tokens(self, usage) -> int | None:
+        details = self._usage_value(usage, "prompt_tokens_details")
+        if details is not None:
+            val = self._usage_value(details, "cached_tokens")
+            if val is not None:
+                return max(0, int(val))
+        # DeepSeek 等厂商直接返回 prompt_cache_hit_tokens
+        val = self._usage_value(usage, "prompt_cache_hit_tokens", "cached_tokens")
+        return max(0, int(val)) if val is not None else None
+
+    def _cost(self, prompt: int | None, cached: int | None, done: int) -> str | None:
+        """按 llm.pricing 的每百万 tokens 单价估算费用；未配置单价时返回 None。"""
+        return self._format_cost(self._cost_value(prompt, cached, done))
+
+    def _currency(self) -> str:
+        pricing = self.cfg.llm.get("pricing") or {}
+        if not isinstance(pricing, dict):
+            return "¥"
+        return str(pricing.get("currency") or "¥")
+
+    def _format_cost(self, fee: float | None) -> str | None:
+        pricing = self.cfg.llm.get("pricing") or {}
+        if not isinstance(pricing, dict):
+            pricing = {}
+        return format_cost(pricing, fee)
+
+    def _cost_value(self, prompt: int | None, cached: int | None, done: int) -> float | None:
+        """费用数值（用于运行统计）；未配置单价时返回 None。"""
+        return cost_value(self.cfg.llm.get("pricing") or {}, prompt, cached, done)
+
+    @staticmethod
+    def _price_factor(pricing: dict) -> float:
+        return price_factor(pricing)
+
 
     def estimate_tokens(self, text: str) -> int:
         """粗略 token 估算：中文约 1 字 ≈ 1 token，英文约 4 字符 ≈ 1 token。"""
@@ -98,3 +282,37 @@ class LLMClient:
             ]
         )
         return (resp.choices[0].message.content or "").strip()[:max_chars]
+
+    def extract_memories(self, text: str, max_items: int = 6) -> list[str]:
+        """从一段历史对话中提炼值得长期记住的事实，用于窗口溢出时自动归档。"""
+        prompt = (
+            "下面是聊天记录。请提取值得长期记住的信息：人物的称呼、身份、喜好、脾气、近况、"
+            "约定、重要日子、正在做的事。\n"
+            "要求：每条一句完整的中文，自带主语，脱离上下文也能看懂；不记寒暄、口头禅、"
+            "玩笑和重复内容；不要猜测或编造。\n"
+            f"只输出 JSON 字符串数组，最多 {max_items} 条；没有值得记的就输出 []。\n\n" + text
+        )
+        resp = self.chat(
+            [
+                {"role": "system", "content": "你负责从聊天记录里沉淀长期记忆，只输出 JSON 数组。"},
+                {"role": "user", "content": prompt},
+            ]
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I | re.M).strip()
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            start, end = raw.find("["), raw.rfind("]")
+            if start < 0 or end <= start:
+                return []
+            try:
+                data = json.loads(raw[start : end + 1])
+            except json.JSONDecodeError:
+                return []
+        if isinstance(data, dict):
+            data = data.get("memories") or data.get("items") or []
+        if not isinstance(data, list):
+            return []
+        facts = [str(x).strip() for x in data if str(x).strip()]
+        return facts[:max_items]

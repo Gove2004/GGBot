@@ -13,9 +13,20 @@
       "stop": [],
       "thinking": ""
     },
+    "pricing": {
+      "currency": "¥",
+      "input_per_mtok": 2,
+      "cached_input_per_mtok": 0.04,
+      "output_per_mtok": 8,
+      "peak_hours": ["09:00-12:00", "14:00-18:00"],
+      "peak_weekdays_only": true,
+      "off_peak_multiplier": 0.5
+    },
     "context": {
-      "max_history_messages": 64,
-      "summary_threshold_tokens": 16000
+      "max_history_messages": 1024,
+      "summary_threshold_tokens": 128000,
+      "archive_batch_messages": 256,
+      "archive_enabled": true
     }
   },
   "embedding": {
@@ -25,6 +36,17 @@
     "api_key": "",
     "model": "",
     "batch_size": 32
+  },
+  "vision": {
+    "enabled": true,
+    "base_url": "",
+    "api_key": "",
+    "model": "",
+    "thinking": "",
+    "prompt": "简单描述一下图片内容：主体、场景和画面里的关键文字，一两句话，不要客套。",
+    "max_chars": 240,
+    "max_tokens": 200,
+    "timeout_sec": 30
   },
   "behavior": {
     "presence": {
@@ -40,7 +62,7 @@
       "renew_max_sec": 600
     },
     "backlog": {
-      "max_scan_messages": 128,
+      "max_scan_messages": 256,
       "online_max_messages": 16
     },
     "reply": {
@@ -48,6 +70,10 @@
       "debounce_sec": 5,
       "debounce_max_sec": 10
     }
+  },
+  "permissions": {
+    "default_level": 2,
+    "owners": []
   },
   "storage": {
     "temp_dir": "temp",
@@ -61,6 +87,8 @@
     "host": "127.0.0.1",
     "port": 11028,
     "token": "换成随机长字符串",
-    "log_level": "INFO"
+    "log_level": "INFO",
+    "cookie_secure": false,
+    "trust_proxy": false
   }
 }

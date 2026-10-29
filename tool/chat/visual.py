@@ -7,9 +7,10 @@ from ..base import Tool
 
 class SendImage(Tool):
     name = "send_image"
+    min_level = 2
     description = (
         "发送一张图片。source 传公网可访问的图片 URL（可直接使用群友刚发的图片 URL，"
-        "即上下文中的 [图片 url=...]），或本地图片文件路径（temp/tool 下的文件直接上传，无需公网地址）"
+        "即上下文中的 [图片 url=...]），或 temp/ 与 tool/chat/emoji/ 下的本地图片（直接上传，无需公网地址）"
     )
     parameters = {
         "type": "object",
@@ -27,7 +28,8 @@ class SendImage(Tool):
 
 class SendVideo(Tool):
     name = "send_video"
-    description = "发送一段视频。source 传公网可访问的视频 URL（可使用群友刚发的视频 URL），或本地文件路径"
+    min_level = 2
+    description = "发送一段视频。source 传公网可访问的视频 URL（可使用群友刚发的视频 URL），或 temp/ 下的本地文件"
     parameters = {
         "type": "object",
         "properties": {"source": {"type": "string", "description": "视频公网 URL 或本地文件路径"}},
