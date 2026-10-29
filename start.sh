@@ -9,20 +9,22 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 PY=".venv/bin/python"
-if [ ! -x "$PY" ]; then
+# 解释器不可用就重建 venv：apt 升级 Python 后旧 venv 的软链接会指向没了的解释器
+if [ ! -x "$PY" ] || ! "$PY" --version >/dev/null 2>&1; then
   echo "[GGBot] creating virtual env .venv ..."
   python3 -m venv .venv
-  PY=".venv/bin/python"
 fi
 
 echo "[GGBot] checking dependencies ..."
-if ! "$PY" -c "import botpy, openai, fastapi, uvicorn, numpy" >/dev/null 2>&1; then
+# probe every third-party import the bot needs, in sync with requirements.txt
+if ! "$PY" -c "import botpy, openai, fastapi, uvicorn, numpy, pysilk" >/dev/null 2>&1; then
   echo "[GGBot] installing requirements.txt ..."
   "$PY" -m pip install -r requirements.txt
 fi
 
 mkdir -p temp/logs
-nohup "$PY" main.py --log-level DEBUG >> temp/logs/stdout.log 2>&1 &
+# 控制台输出每次启动覆盖：ggbot.log 才是留档的那份（轮转 5x5MB），stdout 只是启动失败的兜底
+nohup "$PY" main.py --log-level DEBUG > temp/logs/stdout.log 2>&1 &
 PID=$!
 echo "[GGBot] started in background, PID=${PID}"
 echo "[GGBot] logs: temp/logs/ggbot.log (rotating) + temp/logs/stdout.log (console)"
