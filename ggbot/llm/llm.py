@@ -22,6 +22,11 @@ class LLMError(RuntimeError):
     pass
 
 
+def session_extra(session: str | None) -> dict:
+    """日志「会话」列：调用方传入 8 位标签时归到该会话，否则沿用默认（系统）。"""
+    return {"session": session} if session else {}
+
+
 def price_factor(pricing: dict) -> float:
     """高峰时段返回 1，空闲时段返回 off_peak_multiplier；未配置则恒为 1。"""
     spans = pricing.get("peak_hours")
@@ -115,11 +120,12 @@ class LLMClient:
         return kwargs
 
     def chat(self, messages: list, tools=None, tool_choice=None, retries: int = 3,
-             base_len: int | None = None, call_no: int | None = None):
+             base_len: int | None = None, session: str | None = None):
         """单次补全调用。返回 openai response 对象。
 
-        base_len：messages 中属于「上下文」的前缀长度，其余视为「新增」
-        （本轮消息与工具往返），仅用于日志拆解；call_no 为回合内第几次请求。
+        base_len：messages 中属于「历史」的前缀长度，其余视为「新增」
+        （本轮消息与工具往返），用于请求行的三段拆解；
+        session 是 8 位会话标签，让 tokens/费用行归到同一会话。
         """
         kwargs = self._kwargs(messages, tools, tool_choice)
         parts = self._request_parts(messages, tools, base_len)
@@ -127,11 +133,12 @@ class LLMClient:
         for attempt in range(retries):
             try:
                 resp = self.client.chat.completions.create(**kwargs)
-                self._log_usage(getattr(resp, "usage", None), call_no, parts)
+                self._log_usage(getattr(resp, "usage", None), parts, session)
                 return resp
             except Exception as e:  # noqa: BLE001
                 last_err = e
-                logger.warning("LLM 调用失败（第 %d 次）: %s", attempt + 1, e)
+                logger.warning("LLM 调用失败（第 %d 次）: %s", attempt + 1, e,
+                               extra=session_extra(session))
                 if attempt < retries - 1:
                     time.sleep(1.5 * (attempt + 1))
         raise LLMError(f"LLM 调用重试耗尽: {last_err}")
@@ -150,12 +157,16 @@ class LLMClient:
         new_tokens = self.estimate_messages_tokens(messages[cut:])
         return tool_tokens, ctx_tokens, new_tokens
 
-    def _log_usage(self, usage, call_no: int | None = None,
-                   parts: tuple[int, int, int] = (0, 0, 0)) -> None:
-        """请求量以服务商 usage 为准；拆解按估算比例缩放，保证三项之和等于实际值。"""
+    def _log_usage(self, usage, parts: tuple[int, int, int] = (0, 0, 0),
+                   session: str | None = None) -> None:
+        """请求量以服务商 usage 为准，三段按估算比例缩放、和等于实际。
+
+        口径：请求行 = 服务商输入 tokens + 工具/历史/新增，响应行 = 输出 tokens + 缓存命中 + 费用。
+        """
+        extra = session_extra(session)
         if usage is None:
             runtime.llm(None, None, None, None, self._currency())
-            self._log_request_estimate(*parts, call_no)
+            self._log_request_estimate(*parts, session=session)
             return
         prompt = self._usage_value(usage, "prompt_tokens", "input_tokens")
         done = self._usage_value(usage, "completion_tokens", "output_tokens")
@@ -168,38 +179,27 @@ class LLMClient:
         runtime.llm(int(prompt) if prompt is not None else None, done, cached,
                     cost_value, self._currency())
         if prompt is None:
-            self._log_request_estimate(*parts, call_no)
+            self._log_request_estimate(*parts, session=session)
         else:
             prompt = int(prompt)
             tool_t, ctx_t, new_t = self._scale_parts(parts, prompt)
-            turn = f" · 第 {call_no} 次" if call_no else ""
-            logger.debug(
-                "LLM 请求 tokens %d (工具 %d | 上下文 %d | 新增 %d%s)",
-                prompt, tool_t, ctx_t, new_t, turn,
-            )
-        bits = [f"实际请求 {prompt if prompt is not None else '-'}"]
-        if prompt:
-            hit = f"{cached}/{prompt} ({cached * 100 // prompt}%)" if cached is not None else "-"
-            bits.append(f"命中 {hit}")
-        else:
-            bits.append("命中 -")
-        bits.append(f"输出 {done}")
+            logger.debug("LLM 请求 %d tokens (工具 %d | 历史 %d | 新增 %d)",
+                         prompt, tool_t, ctx_t, new_t, extra=extra)
+        hit = f"{cached}/{prompt} ({cached * 100 // prompt}%)" if cached is not None and prompt else "-"
         cost = self._format_cost(cost_value)
-        bits.append(f"费用 {cost or '-'}")
-        if call_no:
-            bits.append(f"第 {call_no} 次")
-        logger.debug("LLM 响应 tokens %d (%s)", done, " | ".join(bits))
+        bits = [f"命中 {hit}", f"费用 {cost or '-'}"]
+        logger.debug("LLM 响应 %d tokens (%s)", done, " | ".join(bits), extra=extra)
 
     def _log_request_estimate(self, tool_tokens: int, ctx_tokens: int, new_tokens: int,
-                              call_no: int | None = None) -> None:
-        turn = f" · 第 {call_no} 次" if call_no else ""
-        logger.debug(
-            "LLM 请求 tokens ≈ %d (工具 %d | 上下文 %d | 新增 %d%s)",
-            tool_tokens + ctx_tokens + new_tokens, tool_tokens, ctx_tokens, new_tokens, turn,
-        )
+                              session: str | None = None) -> None:
+        """服务商未返回 usage 时的估算行，总量明确标注 ≈。"""
+        logger.debug("LLM 请求 ≈%d tokens (工具 %d | 历史 %d | 新增 %d)",
+                     tool_tokens + ctx_tokens + new_tokens, tool_tokens, ctx_tokens, new_tokens,
+                     extra=session_extra(session))
 
     @staticmethod
     def _scale_parts(parts: tuple[int, int, int], total: int) -> tuple[int, int, int]:
+        """把本地估算的三段缩放到服务商实际总数上，保证拆开看时和是对得上的。"""
         tool_t, ctx_t, new_t = max(0, parts[0]), max(0, parts[1]), max(0, parts[2])
         estimate = tool_t + ctx_t + new_t
         if total <= 0 or estimate <= 0:
@@ -212,7 +212,6 @@ class LLMClient:
             out_ctx = max(0, out_ctx + out_new)
             out_new = 0
         return out_tool, out_ctx, out_new
-
 
     @staticmethod
     def _usage_value(obj, *names):
@@ -269,7 +268,7 @@ class LLMClient:
         """按消息正文估算请求 tokens；上下文预算与请求日志共用同一口径。"""
         return sum(self.estimate_tokens(m.get("content") or "") for m in messages)
 
-    def summarize(self, text: str, max_chars: int = 600) -> str:
+    def summarize(self, text: str, max_chars: int = 600, session: str | None = None) -> str:
         """用 LLM 压缩一段文本（用于上下文窗口超限时的历史摘要）。"""
         prompt = (
             "请将以下群聊记录压缩成一份简洁的中文摘要，保留：讨论主题、关键观点、人物关系、"
@@ -279,11 +278,13 @@ class LLMClient:
             [
                 {"role": "system", "content": "你是群聊纪要整理助手，输出精炼、结构化。"},
                 {"role": "user", "content": prompt},
-            ]
+            ],
+            session=session,
         )
         return (resp.choices[0].message.content or "").strip()[:max_chars]
 
-    def extract_memories(self, text: str, max_items: int = 6) -> list[str]:
+    def extract_memories(self, text: str, max_items: int = 6,
+                         session: str | None = None) -> list[str]:
         """从一段历史对话中提炼值得长期记住的事实，用于窗口溢出时自动归档。"""
         prompt = (
             "下面是聊天记录。请提取值得长期记住的信息：人物的称呼、身份、喜好、脾气、近况、"
@@ -296,7 +297,8 @@ class LLMClient:
             [
                 {"role": "system", "content": "你负责从聊天记录里沉淀长期记忆，只输出 JSON 数组。"},
                 {"role": "user", "content": prompt},
-            ]
+            ],
+            session=session,
         )
         raw = (resp.choices[0].message.content or "").strip()
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I | re.M).strip()

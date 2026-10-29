@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 from ggbot.core.runtime_stats import runtime
-from ggbot.llm.llm import cost_value, format_cost
+from ggbot.llm.llm import cost_value, format_cost, session_extra
 
 logger = logging.getLogger("ggbot.vision")
 
@@ -49,14 +49,15 @@ class VisionClient:
         if not self.enabled or self.client is None:
             return None
         p = Path(path)
+        extra = session_extra(session)
         try:
             if not p.is_file() or p.stat().st_size > MAX_IMAGE_BYTES:
                 logger.warning("识图跳过 %s：文件缺失或超过 %dMB",
-                               p.name, MAX_IMAGE_BYTES // 1048576)
+                               p.name, MAX_IMAGE_BYTES // 1048576, extra=extra)
                 return None
             data = p.read_bytes()
         except OSError as e:
-            logger.warning("识图读取失败 %s: %s", p.name, e)
+            logger.warning("识图读取失败 %s: %s", p.name, e, extra=extra)
             return None
         mime = mimetypes.guess_type(p.name)[0] or "image/jpeg"
         url = f"data:{mime};base64,{base64.b64encode(data).decode()}"
@@ -76,20 +77,21 @@ class VisionClient:
             try:
                 resp = self.client.chat.completions.create(**kwargs)
                 text = self._clean((resp.choices[0].message.content or ""))
-                self._record(resp, text, session)
+                self._record(resp, session)
                 return text or None
             except Exception as e:  # noqa: BLE001
                 last_err = e
                 if attempt == 0:
-                    logger.warning("识图失败，重试一次 %s: %s", p.name, e)
-        logger.warning("识图失败 %s: %s", p.name, last_err)
+                    logger.warning("识图失败，重试一次 %s: %s", p.name, e, extra=extra)
+        logger.warning("识图失败 %s: %s", p.name, last_err, extra=extra)
         return None
 
     def _clean(self, text: str) -> str:
         text = re.sub(r"\s+", " ", (text or "").strip()).strip("\"'“”")
         return text[: self.max_chars]
 
-    def _record(self, resp, text: str, session: str | None) -> None:
+    def _record(self, resp, session: str | None) -> None:
+        """识图的 tokens/费用单独计一行；描述正文由「图片已识别」行输出，避免重复。"""
         usage = getattr(resp, "usage", None)
         prompt = getattr(usage, "prompt_tokens", None) if usage is not None else None
         done = getattr(usage, "completion_tokens", None) if usage is not None else None
@@ -103,10 +105,11 @@ class VisionClient:
         runtime.llm(prompt, done, cached, fee, str(self.pricing.get("currency") or "¥"),
                     vision=True)
         cost = format_cost(self.pricing, fee)
-        extra = {"session": session} if session else {}
-        logger.debug("识图 %s tokens %s (实际请求 %s | 输出 %s | 费用 %s): %s",
+        hit = (f"{cached}/{prompt} ({int(cached) * 100 // int(prompt)}%)"
+               if cached is not None and prompt else "-")
+        logger.debug("识图 %s 请求 %s | 输出 %s | 命中 %s | 费用 %s",
                      self.model,
-                     (int(prompt or 0) + int(done or 0)) if usage is not None else "-",
                      prompt if prompt is not None else "-",
                      done if done is not None else "-",
-                     cost or "-", text[:80], extra=extra)
+                     hit, cost or "-",
+                     extra={"session": session} if session else {})

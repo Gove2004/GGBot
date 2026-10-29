@@ -50,6 +50,7 @@
   },
   "behavior": {
     "presence": {
+      "start_online": true,
       "online_duration_sec": 60,
       "offline_interval_sec": 600,
       "wake_on_at_message": true,
