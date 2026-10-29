@@ -48,7 +48,7 @@ GGBot/
 │   ├── core/             # 核心业务
 │   │   ├── config.py     #   配置加载（纯配置文件驱动 + Web 热更新）
 │   │   ├── auth.py       #   发送者等级解析 / owners 引导 / 成员列表
-│   │   ├── storage.py    #   SQLite（会话/消息/记忆/发送者等级）
+│   │   ├── storage.py    #   SQLite（会话/消息/记忆/发送者等级；一次操作一个连接，用完即关）
 │   │   ├── runtime_stats.py  # 本次启动内存统计（会话/收发/工具/LLM/token/费用，不落库）
 │   │   └── presence.py   #   在线/离线状态机（会话级唤醒/积压只读/抖动/分段发送）
 │   ├── llm/
@@ -171,6 +171,8 @@ sudo bash deploy/install_service.sh
 
 这一步把 `deploy/ggbot.service` 装进 systemd（`Restart=on-failure`，掉线自动拉起，开机自启）、enable、停掉仍在跑的 `main.py`，并**删除 crontab 里的 `@reboot ... start.sh`**——两条启动路径并存时会抢 `db/.bot.lock` 单实例锁，谁后起谁进不去。此后日常只管 `systemctl status|restart ggbot`；项目不在 `/root/GGBot` 的话，改 unit 里的 `WorkingDirectory` / `ExecStart` 两行。
 
+unit 里有 `LimitNOFILE=65535`：systemd 拉起的服务 soft nofile 默认只有 1024，一个 SQLite 连接要占 `ggbot.db` + `-wal` 两个 fd，会话一多就顶满（面板 accept 报 `Errno 24`）。unit 归仓库管，`deploy_server.sh` 每次部署都会比对 `/etc/systemd/system/ggbot.service`，不一致就覆盖 + `daemon-reload`，改完 push 即可，不用重跑 `install_service.sh`。
+
 **仓库 Secrets**（Settings → Secrets and variables → Actions）
 
 | Secret | 必填 | 说明 |
@@ -184,7 +186,7 @@ sudo bash deploy/install_service.sh
 **每次 push 做的事**（`.github/workflows/deploy.yml`，也可在 Actions 页手动触发）
 
 1. `rsync -az --delete` 同步代码，排除项与 `.gitignore` 的运行时部分一致：`.git/ .github/ .venv/ __pycache__/ *.pyc config.json *.db *.db-wal *.db-shm .bot.lock temp/ tool/chat/emoji/{stickers,user}/ tool/chat/emoji/vectors.json tool/chat/audio/`。所以 `--delete` 只会清掉服务器上多余的**代码**，服务器上的 `db/config.json`、数据库、表情素材、语音参考音频、日志都不受影响；服务器原来手工放的 `start.sh` 会被删（systemd 接管后不再需要）。
-2. SSH 执行 `deploy/deploy_server.sh`：`requirements.txt` 的 sha1 变了才 `pip install`（平时几毫秒跳过）→ `systemctl restart ggbot`（没装 systemd 时退回 `start_linux.sh`）→ 读 `db/config.json → web.port`，最多探测 30 秒；面板首页响应即打「面板端口 11028 响应正常，重启成功」，起不来就 tail 40 行 `temp/logs/stdout.log` 并以非零退出，Actions 里直接红叉。
+2. SSH 执行 `deploy/deploy_server.sh`：`requirements.txt` 的 sha1 变了才 `pip install`（平时几毫秒跳过）→ 比对 `deploy/ggbot.service` 与 `/etc/systemd/system/ggbot.service`，不一致就覆盖 + `daemon-reload` → `systemctl restart ggbot`（没装 systemd 时退回 `start_linux.sh`）→ 读 `db/config.json → web.port`，最多探测 30 秒；面板首页响应即打「面板端口 11028 响应正常，重启成功」，起不来就 tail 40 行 `temp/logs/stdout.log` 并以非零退出，Actions 里直接红叉。
 
 **公网访问**：`web.host` 保持 `127.0.0.1` 时用 SSH 隧道看面板最省事；确实要公网直连，改 `web.host=0.0.0.0`、`web.token` 换强随机串，前面加 HTTPS 反向代理并设 `web.cookie_secure=true`（需要按 `X-Forwarded-For` 限流再置 `web.trust_proxy=true`）。QQ 侧只要求机器人能连上开放平台的 WebSocket，服务器不需要公网入站端口。
 
@@ -487,6 +489,7 @@ stateDiagram-v2
 ```
 [PASS] import_all        # 全部模块导入
 [PASS] storage_crud      # SQLite 会话/消息/记忆 CRUD + 积压查询
+[PASS] storage_fd        # 连接随操作关闭：450 轮混合读写后零长驻连接、fd（Windows 取进程句柄数）不随调用数增长；with 块里抛异常时未提交的内容丢弃（原 rollback 语义保留）；close() 把 WAL 归并回主库
 [PASS] memory_vector     # embedding 真实调用（实测 SiliconFlow）+ 语义检索 + 去重/ tidy 合并
 [PASS] llm_chat          # LLM 真实调用（实测 DeepSeek deepseek-flash，thinking=disabled 生效）
 [PASS] tools_schema      # 18 个 Tool 插件自动发现 + schema 校验 + 启用状态过滤

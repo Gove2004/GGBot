@@ -80,6 +80,19 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   上线积压只读不回，自然上线时把最后一条积压投进窗口。
 - 平台配额/规则会变，写这类注释前先查当期官方文档，别照旧笔记下结论。
 
+## 存储与进程资源
+
+- **SQLite 一次操作一个连接，用完必须 close**（`ggbot/core/storage.py` 的 `_conn()` 是 contextmanager，`finally` 里关）。
+  → 云服务器崩过一次：旧写法把每个连接塞进 `_open_conns` 长期持有、从不关闭，一个连接吃掉 `ggbot.db` + `-wal` 两个 fd，
+  跑到 505 个连接就顶满 systemd 默认的 soft nofile(1024)，面板 `accept()` 报 Errno 24，asyncio 失败即重试把 2 核 CPU 吃满；
+  重启只是清空一轮 fd，几分钟后复发。
+  改动时注意：`with conn:` 只管提交/回滚、**不关连接**，别把它当关闭用；也不要为"省一次 open"把连接缓存回一个长驻列表——
+  真要复用就按线程缓存并给出明确的生命周期。这条由 `temp/test_storage_fd.py` 锁住（450 轮读写后零长驻连接、fd/句柄不涨）。
+- **`Storage.close()` 不释放连接**（连接已随操作关闭），只做 `PRAGMA wal_checkpoint(TRUNCATE)` 把 WAL 归并回主库，
+  让退出与测试清理后的库目录干净。
+- **`LimitNOFILE=65535` 是兜底，不是修复**：unit 归仓库管，`deploy_server.sh` 每次部署比对 `/etc/systemd/system/ggbot.service`，
+  不一致就覆盖 + `daemon-reload`，所以改完 unit push 即生效，不必重跑 `install_service.sh`。
+
 ## 安全与部署边界
 
 - `db/config.json` 与 `tool/**/config.json` 有密钥（AppSecret、LLM/Embedding/MiMo/SMTP/搜索 key、`web.token`），
