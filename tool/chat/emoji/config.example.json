@@ -2,5 +2,7 @@
   "enabled": true,
   "max_per_turn": 1,
   "min_interval_sec": 10,
-  "max_user_stickers": 200
+  "max_user_stickers": 200,
+  "min_score": 0.5,
+  "query_instruct": "Given a Chinese chat message, retrieve the sticker description that matches the feeling to send."
 }

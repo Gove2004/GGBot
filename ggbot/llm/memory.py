@@ -19,7 +19,7 @@ logger = logging.getLogger("ggbot.memory")
 DEDUP_SCORE = 0.95
 
 
-def _bigrams(text: str) -> set[str]:
+def bigrams(text: str) -> set[str]:
     s = "".join(ch for ch in text if not ch.isspace())
     if len(s) < 2:
         return {s} if s else set()
@@ -147,7 +147,7 @@ class MemoryStore:
         q = (query or "").strip().lower()
         if not q:
             return []
-        qgrams = _bigrams(q)
+        qgrams = bigrams(q)
         qchars = {ch for ch in q if not ch.isspace()}
         scored: list[tuple[float, dict]] = []
         for m in self.storage.get_all_memories():
@@ -158,7 +158,7 @@ class MemoryStore:
             text = (m.get("content") or "").lower()
             if not text:
                 continue
-            overlap = len(qgrams & _bigrams(text))
+            overlap = len(qgrams & bigrams(text))
             hits = len(qchars & set(text))
             if not overlap and hits < 2:
                 continue
