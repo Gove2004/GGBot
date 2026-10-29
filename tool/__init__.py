@@ -3,8 +3,8 @@
 一切能力都是 Tool：插件按能力域放在项目根 tool/{chat,knowledge,fs,mail,admin}/，
 启动时自动发现并按配置挂载 schema。每个 toolset 目录自包含代码、config.json 与持久化数据。
 每个 Tool 带 min_level 门槛：请求只下发当前发送者能用的 schema，执行器再按实际发送者校验。
-回合语义：优先通过工具行动——send_text 发送消息，silence 主动不接话。
-模型直接回文本一律按 send_text 发出去（不管本轮有没有调用过工具），避免整轮静默。
+回合语义：模型只有一条说话通道——回复正文，由运行时逐行拆成消息发出（send_text 不暴露给模型）；
+媒体、沉默等才走工具（send_sticker / send_voice_clone / silence …），silence 主动不接话。
 """
 
 from __future__ import annotations
@@ -101,10 +101,12 @@ class ToolExecutor:
                            _actor_label(actor), level, extra={"session": sid})
             return {"ok": False, "error": f"权限不足：{name} 需要 {need_label}，当前 L{level}"}
         brief = _args_brief(args)
-        call = f"工具 {name}（admin={_actor_label(actor)}(L{level})"
-        call += f", {brief}）" if brief else "）"
-        # 特权工具（L3+）在 INFO 留痕，普通工具只在 DEBUG 展开参数
-        (logger.info if need >= 3 else logger.debug)(call, extra={"session": sid})
+        internal = not tool.llm_visible
+        if not internal:
+            call = f"工具 {name}（admin={_actor_label(actor)}(L{level})"
+            call += f", {brief}）" if brief else "）"
+            # 特权工具（L3+）在 INFO 留痕，普通工具只在 DEBUG 展开参数
+            (logger.info if need >= 3 else logger.debug)(call, extra={"session": sid})
         try:
             result = await tool.run(args, ctx)
         except Exception as e:  # noqa: BLE001
@@ -112,7 +114,9 @@ class ToolExecutor:
             ctx["tool_error"] = f"{name}: {e}"
             return {"ok": False, "error": str(e)}
         if isinstance(result, dict) and not result.get("ok", True):
-            logger.warning("工具 %s 未成功: %s", name, clip(str(result.get("error") or result), 120),
+            # 内部通道（send_text）不打工具行，失败也只说"发送未成功"
+            label = "发送未成功" if internal else f"工具 {name} 未成功"
+            logger.warning("%s: %s", label, clip(str(result.get("error") or result), 120),
                            extra={"session": sid})
         return result
 
@@ -120,12 +124,13 @@ class ToolExecutor:
 async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int = 6) -> str:
     """function calling 循环：LLM 决策 → 执行工具 → 结果回传 → 继续，直到结束回合。
 
+    模型唯一的说话通道是回复正文（send_text 不进工具列表，避免"调一次工具又说一遍"）：
     回合结束条件（返回 NO_REPLY，调用方不会把文本当回复发送）：
     - LLM 未调用工具：有文本一律按 send_text 发出（本轮调用过工具也照发，
       工具往返之后的补充文本同样是要说的话），无文本直接结束；
+    - LLM 同时给了工具和正文：先执行工具，再把正文发出去（"发张表情再补一句"是同一个动作）；
     - 某次工具调用是 silence → 立即结束，不再追加请求（沉默不该紧接着一句话）；
     - 达到 max_rounds。
-    回复内容优先由工具发送（send_text / send_image 等），不依赖返回文本。
     """
     level = int((ctx.get("actor") or {}).get("level") or 0)
     sid = session_label(ctx.get("session_id"))
@@ -133,6 +138,7 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
     if not tools:
         logger.warning("没有可用的工具（等级 L%d），跳过本轮", level, extra={"session": sid})
         return NO_REPLY
+    allowed = {s["function"]["name"] for s in tools}
     history = list(messages)
     base_len = max(0, len(messages) - 1)
     retried_placeholder = False
@@ -153,8 +159,8 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
                     continue
                 return NO_REPLY
             # 模型直接回文本一律照发：工具往返之后的补充文本同样是要说的话
+            # （不另打一行说明——发出去的「发送: 」行本身就是记录）
             if content:
-                logger.debug("模型直接回文本，按 send_text 兜底发送", extra={"session": sid})
                 await executor.execute("send_text", {"content": content}, ctx)
             else:
                 logger.debug("模型未调用工具，结束本轮", extra={"session": sid})
@@ -168,6 +174,16 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
                 args = json.loads(tc.function.arguments or "{}")
             except json.JSONDecodeError:
                 args = {}
+            if tc.function.name not in allowed:
+                # 模型调了没下发给它的工具（例如已收起来的 send_text）：不发出去，让它把话写进正文
+                logger.warning("工具 %s 未下发给模型，调用被忽略", tc.function.name,
+                               extra={"session": sid})
+                history.append({
+                    "role": "tool", "tool_call_id": tc.id,
+                    "content": json.dumps({"ok": False, "error": f"{tc.function.name} 不可调用；"
+                                        "要说的话直接写在回复正文里，系统会替你发出去"}, ensure_ascii=False),
+                })
+                continue
             result = await executor.execute(tc.function.name, args, ctx)
             history.append({
                 "role": "tool",
@@ -177,5 +193,9 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
             if ctx.get("silence"):
                 # 选了沉默就到此为止：再问一次只会换来一句收尾话，正是要避免的
                 return NO_REPLY
+        # 工具和正文同轮出现时，正文同样是要说的话：媒体先落地，这句话跟在后面
+        companion = (msg.content or "").strip()
+        if companion:
+            await executor.execute("send_text", {"content": companion}, ctx)
     # 工具循环超限：兜底结束（不回复）
     return NO_REPLY

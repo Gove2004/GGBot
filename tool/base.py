@@ -172,7 +172,7 @@ class ToolRuntime:
             }
         cleaned = PLACEHOLDER_INLINE_RE.sub("", content).strip()
         if cleaned != content:
-            # 只报被剔除的占位符，不复读整段正文（工具调用行里已经有了）
+            # 只报被剔除的占位符，不复读整段正文（发送行里记的就是剔除后的干净正文）
             removed = " ".join(dict.fromkeys(PLACEHOLDER_INLINE_RE.findall(content)))
             logger.warning("正文夹带占位符已剔除: %s（余文照常发送）", removed, extra=extra)
             content = cleaned
@@ -206,12 +206,13 @@ class ToolRuntime:
                                          display=seg)
             ctx["msg_seq"] = seq + 1
             ctx["sent_any"] = True
+            logger.info("发送: %s", clip(seg, 200), extra=extra)
             if sid:
                 self.storage.add_message(sid, "assistant", "bot", seg, status="sent")
             if gap and i < len(segments) - 1:
                 await asyncio.sleep(gap)
-        # 不再单打"发送文本 N 条 / M 字"：工具调用行已经记过一次正文，
-        # 送达与否看有没有异常/降级行即可（同一信息只打一行）
+        # send_text 不暴露给模型，所以按"发出去的一条消息"记一行，不套工具调用格式；
+        # 送达与否只看有没有异常/降级行（同一信息只打一行）
         return {"ok": True, "sent": display}
 
     def _parse_quote(self, content: str, ctx: dict) -> tuple[str, dict | None]:
@@ -279,6 +280,7 @@ class Tool:
     prompt_hint: str = ""
     config_owner: bool = True   # 共享配置目录时，只由一个工具展示/承担配置
     toggleable: bool = True     # 共享配置的工具不单独启停
+    llm_visible: bool = True    # 是否出现在给模型的工具列表里（False=只能由运行时内部调用）
     min_level: int = 1          # 调用门槛（0-5 为发送者等级，6 = 永久锁）；可在 config.levels 覆盖
 
     def __init__(self, rt: ToolRuntime):
@@ -375,16 +377,17 @@ class ToolRegistry:
         return tool
 
     def visible(self, level: int) -> list[tuple[Tool, int]]:
-        """某等级可见的工具（启用且门槛达标），按 (门槛, 分类, 名称) 稳定排序。
+        """某等级可见的工具（启用、门槛达标且对模型开放），按 (门槛, 分类, 名称) 稳定排序。
 
         排序固定是为了让不同等级的工具列表共享前缀：低等级用户的列表是高等级的前缀，
         厂商的前缀缓存命中率更高。6 级工具永远不会出现在任何人的列表里。
+        llm_visible=False 的工具（如 send_text）不进列表，模型看不到也调不到，只能由运行时内部调用。
         """
         level = max(0, min(6, int(level)))
         rows = [
             (t, t.required_level())
             for t in self.tools.values()
-            if t.is_enabled() and level >= t.required_level()
+            if t.is_enabled() and t.llm_visible and level >= t.required_level()
         ]
         rows.sort(key=lambda x: (x[1], x[0].category, x[0].name))
         return rows
@@ -405,6 +408,7 @@ class ToolRegistry:
                 "description": t.description,
                 "enabled": t.is_enabled(),
                 "toggleable": t.toggleable,
+                "llm_visible": bool(t.llm_visible),
                 "min_level": t.required_level(),
                 "level_default": int(t.min_level),
                 "config": t.config if t.config_owner else {},
