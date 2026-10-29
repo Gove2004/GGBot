@@ -24,13 +24,16 @@ from botpy.message import C2CMessage, GroupMessage
 
 from ggbot.core.runtime_stats import runtime
 from ggbot.llm.vision import VisionClient
-from ggbot.util.media import media_kind_label
+from ggbot.util.logging_setup import clip
+from ggbot.util.media import attach_marker, human_size, media_id, media_kind_label
 from ggbot.util.session import oid8, session_label
 
 logger = logging.getLogger("ggbot.bot")
 
 # QQ 群消息 @ 人/机器人：content 内嵌 <@openid>（openid 为 32 位十六进制）
 AT_RE = re.compile(r"<@([0-9A-Fa-f]{32})>")
+# 发送侧的 @成员 标记：markdown 被拒退回普通文本时剔除，避免用户看到标签原文
+AT_TAG_RE = re.compile(r'<qqbot-at-user\s+id="[^"]*"\s*/>')
 # QQ 表情：<faceType=1,faceId="427",ext="<base64>">，ext 内含表情文字
 FACE_RE = re.compile(r'<faceType=\d+,faceId="[^"]*"(?:,ext="([^"]*)")?\s*/?>')
 MAX_INLINE_UPLOAD = 10 * 1024 * 1024
@@ -76,14 +79,13 @@ def clean_content(content: str, mentions=None, bot_openid: str = "") -> str:
 
 
 def attachment_summary(attachments) -> str:
-    """附件概要：[图片 cat.gif] [语音 a.silk]，用于无文本消息的日志/展示。"""
+    """附件概要：[图片 6ce72460] [语音 8ebd2219]，用于无文本消息的日志/展示。
+
+    短标识取文件名词干前 8 位，与 temp 落地文件名、识图日志行互相对应。
+    """
     parts = []
     for a in attachments or []:
-        label = media_kind_label(getattr(a, "content_type", ""))
-        name = (getattr(a, "filename", "") or "").strip()
-        if len(name) > 32:
-            name = name[:29] + "…"
-        parts.append(f"[{label} {name}]" if name else f"[{label}]")
+        parts.append(attach_marker(getattr(a, "content_type", ""), getattr(a, "filename", "")))
     return " ".join(parts)
 
 
@@ -107,9 +109,10 @@ def extract_quote(elements) -> str:
 
 
 class _RichGroupMessage(GroupMessage):
-    """保留 botpy 丢弃的 author.username / message_type / msg_elements 字段。"""
+    """保留 botpy 丢弃的 author.username / message_type / msg_elements / 附件原始字段。"""
 
-    __slots__ = ("username", "msg_elements", "message_type", "message_scene", "quote_text")
+    __slots__ = ("username", "msg_elements", "message_type", "message_scene", "quote_text",
+                 "attachments_raw")
 
     def __init__(self, api, event_id, data: dict):
         super().__init__(api, event_id, data)
@@ -118,10 +121,14 @@ class _RichGroupMessage(GroupMessage):
         self.message_type = data.get("message_type")
         self.message_scene = data.get("message_scene") or {}
         self.quote_text = extract_quote(self.msg_elements)
+        # botpy 的 _Attachments 只留 url/filename/size/content_type，语音的
+        # asr_refer_text（平台内置转写）与 voice_wav_url 需要从原始 dict 取
+        self.attachments_raw = data.get("attachments") or []
 
 
 class _RichC2CMessage(C2CMessage):
-    __slots__ = ("username", "msg_elements", "message_type", "message_scene", "quote_text")
+    __slots__ = ("username", "msg_elements", "message_type", "message_scene", "quote_text",
+                 "attachments_raw")
 
     def __init__(self, api, event_id, data: dict):
         super().__init__(api, event_id, data)
@@ -130,6 +137,7 @@ class _RichC2CMessage(C2CMessage):
         self.message_type = data.get("message_type")
         self.message_scene = data.get("message_scene") or {}
         self.quote_text = extract_quote(self.msg_elements)
+        self.attachments_raw = data.get("attachments") or []
 
 
 class QQBot(botpy.Client):
@@ -151,20 +159,15 @@ class QQBot(botpy.Client):
         logger.info("Bot 就绪: WebSocket gateway 已连接")
 
     async def on_group_at_message_create(self, message: GroupMessage) -> None:
-        # GROUP_AT_MESSAGE_CREATE：只有真正被@本机器人时触发（事件通道）
+        # GROUP_AT_MESSAGE_CREATE：只有真正被@本机器人时触发（事件通道，可被动回复）
         self._learn_bot_openid(message)
-        sid = session_label(f"group:{message.group_openid}")
-        logger.info("群@[%s] %.80s", self._who(message), self._message_text(message),
-                    extra={"session": sid})
-        await self._route(message, is_at=True, passive_ok=True)
+        await self._route(message, session_label(f"group:{message.group_openid}"),
+                          is_at=True, passive_ok=True)
 
     async def on_c2c_message_create(self, message: C2CMessage) -> None:
         # 私聊 = 直接找机器人对话，等价于 @；C2C 事件可被动回复
         openid = getattr(message, "author", None) and getattr(message.author, "user_openid", None)
-        sid = session_label(f"c2c:{openid}")
-        logger.info("私聊[%s] %.80s", self._who(message), self._message_text(message),
-                    extra={"session": sid})
-        await self._route(message, is_at=True, passive_ok=True)
+        await self._route(message, session_label(f"c2c:{openid}"), is_at=True, passive_ok=True)
 
     async def on_group_add_robot(self, message) -> None:
         gid = getattr(message, "group_openid", None)
@@ -216,17 +219,22 @@ class QQBot(botpy.Client):
         （测试群机器人唯一），之后切回精确匹配。"""
         me = self._mentioned_self(message)
         sid = session_label(f"group:{message.group_openid}")
-        logger.info("群消息[%s] at=%s: %.80s", self._who(message), "Y" if me else "N",
-                    self._message_text(message), extra={"session": sid})
         # passive_ok 固定 False：全量事件的 event_id 不能用于被动回复（40034027），只能主动发送
-        await self._route(message, is_at=me, passive_ok=False)
+        await self._route(message, sid, is_at=me, passive_ok=False)
 
-    async def _route(self, message, is_at: bool = False, passive_ok: bool = False) -> None:
+    async def _route(self, message, sid: str, is_at: bool = False,
+                     passive_ok: bool = False) -> None:
+        """入站唯一入口：去重 → 记录一条「收到 […]」日志 → 归一化 → 交给 presence。
+
+        日志只在去重后打，因此 @事件与全量事件重复推送同一条消息时不会刷两行。
+        """
         msg_id = getattr(message, "id", None)
         if not msg_id or msg_id in self._seen:
             logger.debug("重复/空消息忽略 id=%s", msg_id)
             return
         self._seen.add(msg_id)
+        logger.info("收到 [%s] @=%d: %s", self._who(message), 1 if is_at else 0,
+                    clip(self._message_text(message), 80), extra={"session": sid})
         if len(self._seen) > self._max_seen:
             self._seen = set(list(self._seen)[-self._max_seen // 2 :])
         inbound = await self._normalize(message, is_at=is_at, passive_ok=passive_ok)
@@ -256,8 +264,11 @@ class QQBot(botpy.Client):
             sender = openid
             scene = "c2c"
         content = self._message_text(message)
-        attachments = await self._download_attachments(message.attachments or [], key=key)
+        attachments = await self._download_attachments(
+            message.attachments or [], key=key, raw=getattr(message, "attachments_raw", None)
+        )
         content = await self._describe_images(content, attachments, key)
+        content = self._transcribe_voices(content, attachments, key)
         # is_at：事件来源（group_at/c2c=True）优先；全量消息用 mentions / content <@> 兜底匹配 bot_openid
         # passive_ok：只有 @事件/C2C 事件的消息可用 msg_id+event_id 被动回复；
         #   全量事件（GROUP_MESSAGE_CREATE）的 event_id 平台拒绝用于被动回复（40034027），只能主动
@@ -312,14 +323,35 @@ class QQBot(botpy.Client):
             local = a.get("local_path")
             if not local:
                 continue
-            name = (a.get("filename") or "").strip()
-            marker = f"[图片 {name[:29] + '…' if len(name) > 32 else name}]" if name else "[图片]"
+            marker = attach_marker(a.get("content_type"), a.get("filename"))
             desc = await asyncio.to_thread(vision.describe, local, label)
             if not desc:
                 continue
             a["description"] = desc
             content = content.replace(marker, f"[图片]（{desc}）", 1)
-            logger.debug("图片已识别 %s: %.60s", Path(local).name, desc, extra={"session": label})
+            # 描述只在这一行出现（识图行只报 tokens/费用），截断显式加省略号
+            mid = media_id(a.get("filename")) or Path(local).stem[:8]
+            logger.debug("图片已识别 %s: %s", mid, clip(desc, 120), extra={"session": label})
+        return content
+
+    def _transcribe_voices(self, content: str, attachments: list[dict], key: str) -> str:
+        """语音附件用平台自带的 ASR 结果（asr_refer_text）替换正文标记。
+
+        QQ 在语音消息的 attachment 里直接给转写文本，botpy 1.2.1 的附件模型会丢弃它，
+        原始 dict 由 _Rich*Message 保留。平台没给转写时只留 [语音] 标记，模型不能"听"。
+        """
+        label = session_label(key)
+        for a in attachments:
+            if media_kind_label(a.get("content_type")) != "语音":
+                continue
+            text = str(a.get("asr_text") or "").strip()
+            if not text:
+                continue
+            marker = attach_marker(a.get("content_type"), a.get("filename"))
+            content = content.replace(marker, f"[语音]（{text}）", 1)
+            local = a.get("local_path")
+            mid = media_id(a.get("filename")) or (Path(local).stem[:8] if local else "")
+            logger.debug("语音已转写 %s: %s", mid, clip(text, 120), extra={"session": label})
         return content
 
     def _mentioned_self(self, message) -> bool:
@@ -366,14 +398,19 @@ class QQBot(botpy.Client):
         except Exception as e:  # noqa: BLE001
             logger.warning("学习 bot_openid 失败: %s", e)
 
-    async def _download_attachments(self, attachments, key: str | None = None) -> list[dict]:
+    async def _download_attachments(self, attachments, key: str | None = None,
+                                    raw: list | None = None) -> list[dict]:
         """富媒体落地：按类型下载到 temp/<子目录>（emoji/voice/video/other），不平铺。
 
         - storage.download_video=false 时，视频附件不下载不处理，仅保留 url/元信息供上下文引用
         - temp 文件由 cleanup_temp() 按 storage.temp_ttl_hours 定期清理
+        - raw 是事件的原始附件 dict 列表：botpy 的附件模型会丢掉 asr_refer_text，
+          平台的语音转写只能从这里取（按 url 对齐）
         """
         sid = session_label(key)
         download_video = bool((self.cfg.storage_cfg or {}).get("download_video", False))
+        asr_by_url = {(r.get("url") or ""): str(r.get("asr_refer_text") or "").strip()
+                      for r in (raw or []) if isinstance(r, dict)}
         out = []
         for a in attachments:
             ctype = a.content_type or ""
@@ -383,22 +420,29 @@ class QQBot(botpy.Client):
                 "url": a.url,
                 "size": a.size,
                 "local_path": None,
+                "asr_text": asr_by_url.get(a.url or "", ""),
             }
             is_video = "video" in ctype.lower()
             if a.url and not (is_video and not download_video):
                 try:
-                    fname = f"{int(time.time() * 1000)}_{Path(a.filename or 'file').name}"
                     sub = self._media_kind(ctype)
+                    # 落地名 = 毫秒 + 附件短标识：与正文占位符 [图片 xxxx] 同一段，肉眼可对齐
+                    stem = media_id(a.filename) or Path(a.filename or "file").stem or "file"
+                    fname = f"{int(time.time() * 1000)}_{stem}{Path(a.filename or 'file').suffix}"
                     data = await self._http_get(a.url)
                     p = self.cfg.media_dir(sub) / fname
                     p.write_bytes(data)
                     rec["local_path"] = str(p)
-                    logger.info("富媒体落地 %s (%d bytes)", p.name, len(data), extra={"session": sid})
+                    note = ""
+                    if sub == "voice" and not rec["asr_text"]:
+                        note = "（平台未给转写，正文只保留标记）"
+                    logger.info("富媒体落地 %s/%s %s%s", sub, p.name, human_size(len(data)), note,
+                                extra={"session": sid})
                 except Exception as e:  # noqa: BLE001
                     logger.warning("富媒体下载失败 %s: %s", a.filename, e, extra={"session": sid})
             elif is_video and not download_video:
-                logger.debug("视频不下载（download_video=false），保留 URL: %s", a.filename,
-                             extra={"session": sid})
+                logger.debug("视频不下载（storage.download_video=false），保留 URL: %s",
+                             media_id(a.filename) or a.filename, extra={"session": sid})
             out.append(rec)
         return out
 
@@ -447,8 +491,29 @@ class QQBot(botpy.Client):
 
     async def send_text(self, target: str, content: str, scene: str, msg_id: str | None = None,
                         msg_seq: int = 1, event_id: str | None = None,
-                        message_reference: dict | None = None):
-        """发送文本。携带 msg_id 为被动回复（msg_seq 递增支持同一消息多次回复，event_id 为前置事件 ID）。"""
+                        message_reference: dict | None = None, display: str | None = None):
+        """发送文本。携带 msg_id 为被动回复（msg_seq 递增支持同一消息多次回复，event_id 为前置事件 ID）。
+
+        群聊里的 @成员 标记（<qqbot-at-user id="member_openid" />）官方只在 markdown 消息生效，
+        塞进普通文本消息会被原样显示成标签文字，所以含 at 标记时改发 msg_type=2；
+        markdown 被平台拒绝（审核/权限）就退回普通文本，用 display 的 @昵称 纯文字，
+        保证消息一定发得出去、也只是少个高亮。
+        """
+        has_at = "qqbot-at-user" in content
+        if scene == "group" and has_at:
+            try:
+                resp = await self.api.post_group_message(
+                    group_openid=target, msg_type=2,
+                    markdown={"content": content},
+                    msg_id=msg_id, msg_seq=msg_seq, event_id=event_id,
+                    message_reference=message_reference,
+                )
+                runtime.outbound()
+                return resp
+            except Exception as e:  # noqa: BLE001
+                logger.warning("群 markdown @ 消息被拒，退回普通文本: %s", e,
+                               extra={"session": session_label(f"group:{target}")})
+                content = display or AT_TAG_RE.sub("", content).strip()
         if scene == "group":
             resp = await self.api.post_group_message(
                 group_openid=target, msg_type=0, content=content,

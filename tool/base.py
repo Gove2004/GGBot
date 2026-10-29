@@ -26,21 +26,30 @@ import re
 import threading
 from pathlib import Path
 
+from ggbot.util.logging_setup import clip
 from ggbot.util.session import session_label
 
 logger = logging.getLogger("ggbot.tools")
 
-# 模型偶尔把媒体写成方括号占位符进正文；这些不是媒体，发送前拦截
+# 模型偶尔把媒体写成方括号占位符进正文；这些不是媒体，发送前拦截。
+# 词表要覆盖模型自己编出来的叫法（[语音克隆] / [表情包] …）：漏一个就等于把方括号发给用户，
+# 而且这条脏文本会入库，被后续历史喂回模型，越用越像"这里的规矩就是这样"
+_PLACEHOLDER_WORDS = (
+    r"表情|表情包|语音|语音克隆|语音条|克隆语音|图片|视频|文件|邮件"
+    r"|emoji|emoticon|sticker|voice|audio|image|photo|video|file|mail"
+)
+# 入站富媒体在上下文里就长成 `[图片]（描述）` / `[语音 6ce72460]` 这样，模型照抄的是整套形状：
+# 括号里的 8 位短标识与紧跟的（描述）一起吞掉，否则余下一截孤立括号更像"这里允许写"
+_MEDIA_TOKEN = (
+    rf"[\[【(（]\s*(?:{_PLACEHOLDER_WORDS})(?:\s+[0-9a-fA-F]{{6,8}})?\s*[\]】)）]"
+    r"(?:\s*[（(][^）)]{0,120}[）)])?"
+)
 PLACEHOLDER_RE = re.compile(
-    r"^(?:\s*[\[【(（]\s*(?:表情|语音|图片|视频|文件|emoji|voice|image|video)\s*[\]】)）]"
-    r"\s*[。.!！?？~～…]*\s*)+$",
+    rf"^(?:\s*{_MEDIA_TOKEN}\s*[。.!！?？~～…]*\s*)+$",
     re.IGNORECASE,
 )
 # 同一类占位符夹在正常文字里（“哈哈[表情]”）时直接剔除，避免用户看到方括号
-PLACEHOLDER_INLINE_RE = re.compile(
-    r"[\[【(（]\s*(?:表情|语音|图片|视频|文件|emoji|voice|image|video)\s*[\]】)）]",
-    re.IGNORECASE,
-)
+PLACEHOLDER_INLINE_RE = re.compile(_MEDIA_TOKEN, re.IGNORECASE)
 # 正文开头的引用标记：[引用 关键词] / 【引用】；允许前面先写 @昵称（head 保留，不参与正文剥离）
 QUOTE_RE = re.compile(
     r"^\s*(?P<head>(?:@[\w\u4e00-\u9fff·._-]{1,32}\s*)*)"
@@ -149,12 +158,13 @@ class ToolRuntime:
 
     async def send_text(self, ctx: dict, content) -> dict:
         content = to_str(content).strip()
+        sid = ctx.get("session_id")
+        extra = {"session": session_label(sid)}
         content, reference = self._parse_quote(content, ctx)
         if not content:
             return {"ok": False, "error": "content 为空"}
         if PLACEHOLDER_RE.match(content):
-            logger.warning("拦截占位符文本: %s", content,
-                           extra={"session": session_label(ctx.get("session_id"))})
+            logger.warning("正文只有占位符，已拦截不发送: %s", clip(content, 40), extra=extra)
             return {
                 "ok": False,
                 "error": "不要用 [表情]/[语音]/[图片] 占位符；发表情调 send_sticker，"
@@ -162,42 +172,47 @@ class ToolRuntime:
             }
         cleaned = PLACEHOLDER_INLINE_RE.sub("", content).strip()
         if cleaned != content:
-            logger.warning("正文含媒体占位符，已剔除: %s", content,
-                           extra={"session": session_label(ctx.get("session_id"))})
+            # 只报被剔除的占位符，不复读整段正文（工具调用行里已经有了）
+            removed = " ".join(dict.fromkeys(PLACEHOLDER_INLINE_RE.findall(content)))
+            logger.warning("正文夹带占位符已剔除: %s（余文照常发送）", removed, extra=extra)
             content = cleaned
             if not content:
                 return {"ok": False, "error": "content 只剩占位符，请改用媒体工具发送"}
-        if ctx.get("scene") == "group":
-            content = self._apply_mentions(content, ctx)
+        # 入库与回传给模型的都用这份"人看的"文本；发给 QQ 的 wire 只在群聊里把
+        # @昵称 换成官方 at 标记（标记只在 markdown 消息生效，见 QQBot.send_text）
+        display = content
+        is_group = ctx.get("scene") == "group"
         # 模型偶尔用换行/空行把多句拼进一条，这里拆成多条依次发送，
         # 避免出现"A 空行 B"式的整段回复
-        segments = [s.strip() for s in re.split(r"\n+", content) if s.strip()] or [content]
+        segments = [s.strip() for s in re.split(r"\n+", display) if s.strip()] or [display]
         reply_cfg = getattr(self.cfg, "reply", {}) or {}
         gap = max(0.0, float(reply_cfg.get("segment_gap_sec", 2) or 0))
-        sid = ctx.get("session_id")
         for i, seg in enumerate(segments):
+            wire = self._apply_mentions(seg, ctx) if is_group else seg
             seq = ctx.get("msg_seq", 1)
             kwargs = {"message_reference": reference} if reference else {}
             try:
                 await self.bot.send_text(
-                    ctx["target"], seg, ctx["scene"], ctx.get("msg_id"), seq,
-                    ctx.get("event_id"), **kwargs
+                    ctx["target"], wire, ctx["scene"], ctx.get("msg_id"), seq,
+                    ctx.get("event_id"), display=seg, **kwargs
                 )
             except Exception as e:  # noqa: BLE001
                 if not ctx.get("msg_id"):
                     raise
                 # 被动回复失败（msg_id 过期等）→ 降级主动发送，确保送达；
                 # 主动通道不带引用，避免已失效的消息 ID 再触发一次失败
-                logger.warning("被动回复失败，降级主动发送: %s", e,
-                               extra={"session": session_label(ctx.get("session_id"))})
-                await self.bot.send_text(ctx["target"], seg, ctx["scene"], None, seq)
+                logger.warning("被动回复失败，降级主动发送: %s", e, extra=extra)
+                await self.bot.send_text(ctx["target"], wire, ctx["scene"], None, seq,
+                                         display=seg)
             ctx["msg_seq"] = seq + 1
             ctx["sent_any"] = True
             if sid:
                 self.storage.add_message(sid, "assistant", "bot", seg, status="sent")
             if gap and i < len(segments) - 1:
                 await asyncio.sleep(gap)
-        return {"ok": True, "sent": content}
+        # 不再单打"发送文本 N 条 / M 字"：工具调用行已经记过一次正文，
+        # 送达与否看有没有异常/降级行即可（同一信息只打一行）
+        return {"ok": True, "sent": display}
 
     def _parse_quote(self, content: str, ctx: dict) -> tuple[str, dict | None]:
         """解析开头的 [引用 关键词]：回查本会话消息并生成 QQ message_reference。"""
@@ -217,7 +232,11 @@ class ToolRuntime:
         return " ".join(p for p in (head, body) if p), ref
 
     def _apply_mentions(self, content: str, ctx: dict) -> str:
-        """把 @昵称 换成 QQ 的 <qqbot-at-user id="openid" />；查不到的人保持原样。"""
+        """把 @昵称 换成 QQ 的 <qqbot-at-user id="member_openid" />；查不到的人保持原样。
+
+        官方只在 markdown 消息里解析该标记，QQBot.send_text 负责切换通道，
+        被拒时退回显示文本；入库与日志用的始终是 @昵称 的可读原文。
+        """
         if self.storage is None:
             return content
         sid = ctx.get("session_id")

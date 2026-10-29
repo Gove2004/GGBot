@@ -38,6 +38,41 @@ def media_kind_label(content_type: str) -> str:
     return "文件" if c else "富媒体"
 
 
+MEDIA_ID_CHARS = 8
+_HEX = set("0123456789abcdefABCDEF")
+
+
+def media_id(filename: str | None) -> str:
+    """附件短标识：QQ 的哈希文件名取 8 位（与日志会话列同一套 8 位口径），
+    真人文件名保留原词干（最多 24 字）。
+
+    正文占位符、日志与 temp 落地文件名共用这一段，肉眼即可互相对上。
+    """
+    stem = Path(filename or "").stem.strip()
+    if len(stem) >= 16 and all(ch in _HEX for ch in stem):
+        return stem[:MEDIA_ID_CHARS]
+    return stem[:24]
+
+
+def attach_marker(content_type: str, filename: str | None) -> str:
+    """入站附件在正文里的占位符：[图片 6ce72460]；无文件名时退化为 [图片]。"""
+    label = media_kind_label(content_type)
+    mid = media_id(filename)
+    return f"[{label} {mid}]" if mid else f"[{label}]"
+
+
+def human_size(n: int | None) -> str:
+    """字节数转可读大小（日志用，避免一长串数字）。"""
+    if not n:
+        return "-"
+    num = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if num < 1024 or unit == "GB":
+            return f"{num:.0f} {unit}" if unit == "B" else f"{num:.1f} {unit}"
+        num /= 1024
+    return "-"
+
+
 def _secret(cfg) -> str:
     return str((cfg.web_cfg or {}).get("token") or "") or str((cfg.qq or {}).get("secret") or "")
 
