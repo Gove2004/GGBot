@@ -396,17 +396,53 @@ async function refreshStats() {
   qs("#m-today").textContent = d.messages_today != null ? d.messages_today : "—";
   const rt = d.runtime || {};
   const uptime = qs("#rt-uptime");
-  if (uptime) {
-    const vision = rt.vision_calls ? ` · 识图 ${fmtNum(rt.vision_calls)} 次` : "";
-    uptime.textContent = rt.uptime_sec != null ? `运行 ${fmtUptime(rt.uptime_sec)}${vision}` : "运行时长 —";
-  }
+  if (uptime) uptime.textContent = rt.uptime_sec != null ? `运行 ${fmtUptime(rt.uptime_sec)}` : "运行时长 —";
   qs("#rt-sessions").textContent = fmtNum(rt.sessions);
   qs("#rt-received").textContent = fmtNum(rt.received);
   qs("#rt-sent").textContent = fmtNum(rt.sent);
   qs("#rt-tools").textContent = fmtNum(rt.tool_calls);
   qs("#rt-llm").textContent = fmtNum(rt.llm_calls);
+  qs("#rt-vision").textContent = fmtNum(rt.vision_calls);
   qs("#rt-tokens").textContent = fmtNum(rt.tokens);
-  qs("#rt-cost").textContent = rt.cost_text || "—";
+  qs("#rt-prompt").textContent = fmtNum(rt.prompt_tokens);
+  qs("#rt-completion").textContent = fmtNum(rt.completion_tokens);
+  const promptToks = Number(rt.prompt_tokens) || 0;
+  const cachedToks = Number(rt.cached_tokens) || 0;
+  const cache = qs("#rt-cache");
+  if (cache) {
+    cache.textContent = promptToks > 0 ? `${Math.round((cachedToks / promptToks) * 100)}%` : "—";
+    cache.title = `缓存命中 ${fmtNum(cachedToks)} / 输入 ${fmtNum(promptToks)} tokens`;
+  }
+  const priced = rt.cost_text && rt.cost_text !== "-";
+  qs("#rt-cost").textContent = priced ? rt.cost_text : "—";
+  const hint = qs("#rt-price-hint");
+  if (hint) hint.textContent = priced ? "按 llm.pricing 单价估算" : "未配置单价 · 见设置页";
+  renderEnv(d.env);
+}
+
+function renderEnv(env) {
+  if (!env) return;
+  const side = qs("#side-model");
+  if (side) {
+    side.textContent = env.chat_model || "配置文件驱动";
+    side.title = `${env.chat_model} @ ${env.chat_host}`;
+  }
+  const set = (id, text, title) => {
+    const el = qs(id);
+    if (!el) return;
+    el.textContent = text == null ? "—" : String(text);
+    if (title !== undefined) el.title = title;
+  };
+  set("#env-chat", env.chat_model, env.chat_host);
+  set("#env-chat-host", env.chat_host);
+  set("#env-vision", env.vision_model || "未启用");
+  set("#env-vision-host", env.vision_model ? env.vision_host : "vision.enabled=false 或未填模型");
+  set("#env-memory", env.memory_mode === "向量" ? "向量检索" : "关键词检索");
+  set("#env-memory-model", env.memory_model || "未配置向量服务，记忆改用关键词检索");
+  set("#env-log", env.log_level);
+  set("#env-log-file", `${env.temp}/logs/ggbot.log`);
+  set("#env-db", env.db);
+  set("#env-temp", env.temp);
 }
 
 function renderDashSessions() {
@@ -414,24 +450,19 @@ function renderDashSessions() {
   if (!body) return;
   const live = {};
   ((state.status && state.status.sessions) || []).forEach((x) => { live[x.sid] = x; });
-  let rows = state.sessions.slice(0, 8).map((s) => {
-    const l = (s.live && s.live.state) ? s.live : (live[s.id] || { state: "offline", reason: "idle", remaining_sec: 0, idle_sec: null });
-    return `<tr>
-      <td>${sessChip(s.id)}</td>
-      <td>${stateBadge(l.state)}</td>
-      <td class="muted small">${esc(reasonLabel(l.reason))}</td>
-      <td class="mono">${l.remaining_sec != null ? Math.max(0, Math.round(l.remaining_sec)) + "s" : "—"}</td>
+  const row = (sid, l, pending) => `<tr>
+      <td>${sessChip(sid)}</td>
+      <td>${stateBadge(l.state)}<span class="cell-note">${esc(reasonLabel(l.reason))}</span></td>
+      <td class="col-num ${pending ? "warn" : "muted"}">${pending == null ? "—" : pending}</td>
+      <td class="col-num mono">${l.remaining_sec != null ? Math.max(0, Math.round(l.remaining_sec)) + "s" : "—"}</td>
       <td class="muted small">${fmtAgo(l.idle_sec)}</td>
     </tr>`;
+  let rows = state.sessions.slice(0, 8).map((s) => {
+    const l = (s.live && s.live.state) ? s.live : (live[s.id] || { state: "offline", reason: "idle", remaining_sec: 0, idle_sec: null });
+    return row(s.id, l, s.pending_count || 0);
   });
   if (!rows.length) {
-    rows = ((state.status && state.status.sessions) || []).slice(0, 8).map((l) => `<tr>
-      <td>${sessChip(l.sid)}</td>
-      <td>${stateBadge(l.state)}</td>
-      <td class="muted small">${esc(reasonLabel(l.reason))}</td>
-      <td class="mono">${l.remaining_sec != null ? Math.max(0, Math.round(l.remaining_sec)) + "s" : "—"}</td>
-      <td class="muted small">${fmtAgo(l.idle_sec)}</td>
-    </tr>`);
+    rows = ((state.status && state.status.sessions) || []).slice(0, 8).map((l) => row(l.sid, l, null));
   }
   body.innerHTML = rows.join("") || '<tr><td colspan="5" class="empty">暂无会话</td></tr>';
 }
@@ -522,6 +553,11 @@ async function openSessionDetail(sid) {
       const pending = m.status === "pending" ? " · 待处理" : "";
       return `<div class="chat ${role}"><div class="chat-meta">${senderCell(m)} · ${esc(fmtTs(m.ts))}${pending}</div>${esc(m.content || "（无文本）")}</div>`;
     }).join("");
+    const liveS = ((state.status && state.status.sessions) || []).find((x) => x.sid === sid);
+    const stateCell = liveS
+      ? `${stateBadge(liveS.state)}<span class="cell-note">${esc(reasonLabel(liveS.reason))} · 剩 ${Math.max(0, Math.round(liveS.remaining_sec || 0))}s</span>`
+      : `${stateBadge("offline")}<span class="cell-note">静默</span>`;
+    const summaryLen = (d.summary || "").length;
     pane.innerHTML = `<div class="detail-inner">
       <div class="detail-head">
         <div>
@@ -535,7 +571,9 @@ async function openSessionDetail(sid) {
       <div class="detail-stats">
         <span class="stat-chip">消息 <b>${s.message_count || 0}</b></span>
         <span class="stat-chip">待处理 <b>${s.pending_count || 0}</b></span>
-        <span class="stat-chip">更新 <b>${esc(fmtTs(s.updated_at))}</b></span>
+        <span class="stat-chip">历史摘要 <b>${summaryLen ? `${summaryLen} 字` : "无"}</b></span>
+        <span class="stat-chip">最近发言 <b>${esc(fmtTs(s.last_ts || s.updated_at))}</b></span>
+        <span class="stat-chip sess-state">作息 ${stateCell}</span>
       </div>
       <div class="detail-scroll">
         ${summary}
@@ -814,10 +852,12 @@ function renderTools() {
       .filter(([k]) => k !== "enabled")
       .map(([k, v]) => `${k}=${fmtCfgValue(v)}`)
       .join(" · ");
-    const lv = t.min_level >= 6 ? "锁" : `L${t.min_level}`;
+    const lv = levelLabel(t.min_level);
+    const adjusted = t.level_default != null && Number(t.min_level) !== Number(t.level_default);
+    const lvTitle = adjusted ? `代码默认 L${t.level_default}，已在权限页调整` : "门槛与代码默认一致";
     return `<div class="tool-card ${t.enabled ? "" : "off"}" data-cat="${esc(t.category || "")}">
       <div class="tool-head">
-        <div><div class="tool-name"><span class="tool-state ${t.enabled ? "on" : ""}"></span>${esc(t.name)} <span class="badge gray">${esc(toolCat(t.category))}</span> <span class="badge gray">${esc(lv)}</span></div>
+        <div><div class="tool-name"><span class="tool-state ${t.enabled ? "on" : ""}"></span>${esc(t.name)} <span class="badge gray">${esc(toolCat(t.category))}</span> <span class="badge ${adjusted ? "warn" : "gray"}" title="${esc(lvTitle)}">${esc(lv)}${adjusted ? " ↕" : ""}</span></div>
         <div class="tool-desc muted small">${esc(t.description)}</div></div>
         <button class="btn ${t.enabled ? "ghost" : "primary"} small"
           data-action="tool-toggle" data-tool="${esc(t.name)}" data-enabled="${t.enabled ? 1 : 0}"
@@ -884,6 +924,8 @@ function renderPermTools() {
     <td>
       <div class="mono">${esc(t.name)}</div>
       ${t.enabled ? "" : '<div class="muted small">已停用</div>'}
+      ${t.level_default != null && Number(t.min_level) !== Number(t.level_default)
+        ? `<div class="muted small">默认 L${t.level_default}</div>` : ""}
     </td>
     <td class="muted small col-sm-hide">${esc(toolCat(t.category))}</td>
     <td><select class="sel small-input" data-tool-level data-tool="${esc(t.name)}">${levelOptions(t.min_level, 1, state.lockedLevel)}</select></td>

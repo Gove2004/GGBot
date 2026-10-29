@@ -30,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ggbot.core.auth import LEVEL_LOCKED, LEVEL_NAMES, LEVEL_MAX, clamp_level
+from ggbot.core.config import BASE_DIR
 from ggbot.core.runtime_stats import runtime
 from ggbot.util.session import SYSTEM_LABEL, session_label
 
@@ -114,6 +115,7 @@ ALLOWED_SETTINGS = [
     "llm.request.top_p",
     "llm.request.max_tokens",
     "llm.request.thinking",
+    "behavior.presence.start_online",
     "behavior.presence.online_duration_sec",
     "behavior.presence.offline_interval_sec",
     "behavior.presence.online_duration_jitter",
@@ -133,6 +135,19 @@ ALLOWED_SETTINGS = [
     "llm.context.summary_threshold_tokens",
     "llm.context.archive_batch_messages",
     "llm.context.archive_enabled",
+    "vision.enabled",
+    "vision.model",
+    "vision.thinking",
+    "vision.prompt",
+    "vision.max_chars",
+    "vision.max_tokens",
+    "vision.timeout_sec",
+    "llm.pricing.currency",
+    "llm.pricing.input_per_mtok",
+    "llm.pricing.cached_input_per_mtok",
+    "llm.pricing.output_per_mtok",
+    "llm.pricing.peak_weekdays_only",
+    "llm.pricing.off_peak_multiplier",
     "web.log_level",
 ]
 
@@ -146,6 +161,33 @@ def mask_secrets(node):
     if isinstance(node, list):
         return [mask_secrets(v) for v in node]
     return node
+
+
+def _env_info(cfg) -> dict:
+    """面板「运行环境」摘要：模型名、服务域名与相对路径，不含任何密钥。"""
+    def host_of(url) -> str:
+        return urlparse(str(url or "")).netloc or ""
+
+    def rel(path) -> str:
+        resolved = Path(path).resolve()
+        try:
+            return resolved.relative_to(BASE_DIR).as_posix()
+        except ValueError:
+            return resolved.as_posix()
+
+    vision = cfg.vision
+    embedding = cfg.embedding
+    return {
+        "chat_model": cfg.model or "-",
+        "chat_host": host_of(cfg.llm.get("base_url")) or "-",
+        "vision_model": vision["model"] if vision["enabled"] else "",
+        "vision_host": host_of(vision["base_url"]),
+        "memory_model": embedding["model"] if embedding["enabled"] else "",
+        "memory_mode": "向量" if embedding["enabled"] else "关键词",
+        "log_level": str(cfg.web_cfg.get("log_level", "INFO")),
+        "db": rel(cfg.db_path),
+        "temp": rel(cfg.temp_dir),
+    }
 
 
 def _session_value(token: str) -> str:
@@ -355,6 +397,7 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         out["online_sessions"] = live.get("online_sessions", 0)
         out["state"] = live.get("state", "offline")
         out["runtime"] = runtime.snapshot()
+        out["env"] = _env_info(cfg)
         return out
 
     @app.get("/api/sessions")

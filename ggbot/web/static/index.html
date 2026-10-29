@@ -99,7 +99,7 @@
         <div><strong id="side-online">—</strong><small>在线会话</small></div>
         <div><strong id="side-pending">—</strong><small>待处理</small></div>
       </div>
-      <div class="side-ver">v0.1 · 配置文件驱动</div>
+      <div class="side-ver" id="side-model">配置文件驱动</div>
     </div>
   </aside>
 
@@ -159,18 +159,45 @@
           </div>
         </div>
 
-        <div class="card runtime-card">
-          <div class="card-head">
-            <div><h2>本次启动</h2><p class="card-sub" id="rt-uptime">运行时长 —</p></div>
+        <div class="grid-2">
+          <div class="card runtime-card">
+            <div class="card-head">
+              <div><h2>本次启动</h2><p class="card-sub" id="rt-uptime">运行时长 —</p></div>
+            </div>
+            <div class="rt-group">
+              <div class="rt-group-head"><h3>调用</h3><span class="muted small">重启归零</span></div>
+              <div class="runtime-grid">
+                <div class="rt-item"><span>活跃会话</span><strong id="rt-sessions">—</strong></div>
+                <div class="rt-item"><span>收到消息</span><strong id="rt-received">—</strong></div>
+                <div class="rt-item"><span>发送消息</span><strong id="rt-sent">—</strong></div>
+                <div class="rt-item"><span>工具调用</span><strong id="rt-tools">—</strong></div>
+                <div class="rt-item"><span>LLM 调用</span><strong id="rt-llm">—</strong></div>
+                <div class="rt-item"><span>识图调用</span><strong id="rt-vision">—</strong></div>
+              </div>
+            </div>
+            <div class="rt-group">
+              <div class="rt-group-head"><h3>开销</h3><span class="muted small" id="rt-price-hint">按 config.llm.pricing 估算</span></div>
+              <div class="runtime-grid">
+                <div class="rt-item"><span>Tokens 合计</span><strong id="rt-tokens">—</strong></div>
+                <div class="rt-item"><span>输入</span><strong id="rt-prompt">—</strong></div>
+                <div class="rt-item"><span>输出</span><strong id="rt-completion">—</strong></div>
+                <div class="rt-item"><span>缓存命中</span><strong id="rt-cache">—</strong></div>
+                <div class="rt-item"><span>费用</span><strong id="rt-cost">—</strong></div>
+              </div>
+            </div>
           </div>
-          <div class="runtime-grid">
-            <div class="rt-item"><span>会话</span><strong id="rt-sessions">—</strong></div>
-            <div class="rt-item"><span>收到消息</span><strong id="rt-received">—</strong></div>
-            <div class="rt-item"><span>发送消息</span><strong id="rt-sent">—</strong></div>
-            <div class="rt-item"><span>工具调用</span><strong id="rt-tools">—</strong></div>
-            <div class="rt-item"><span>LLM 调用</span><strong id="rt-llm">—</strong></div>
-            <div class="rt-item"><span>Tokens</span><strong id="rt-tokens">—</strong></div>
-            <div class="rt-item"><span>费用</span><strong id="rt-cost">—</strong></div>
+
+          <div class="card env-card">
+            <div class="card-head">
+              <div><h2>运行环境</h2><p class="card-sub">实际生效的模型与路径 · 密钥不外显</p></div>
+            </div>
+            <div class="env-list">
+              <div class="env-item"><span class="env-label">对话模型</span><span class="env-value" id="env-chat">—</span><span class="env-note" id="env-chat-host">—</span></div>
+              <div class="env-item"><span class="env-label">识图模型</span><span class="env-value" id="env-vision">—</span><span class="env-note" id="env-vision-host">—</span></div>
+              <div class="env-item"><span class="env-label">记忆检索</span><span class="env-value" id="env-memory">—</span><span class="env-note" id="env-memory-model">—</span></div>
+              <div class="env-item"><span class="env-label">日志等级</span><span class="env-value" id="env-log">—</span><span class="env-note" id="env-log-file">—</span></div>
+              <div class="env-item"><span class="env-label">数据位置</span><span class="env-value mono" id="env-db">—</span><span class="env-note mono" id="env-temp">—</span></div>
+            </div>
           </div>
         </div>
 
@@ -182,7 +209,7 @@
             </div>
             <div class="table-wrap">
               <table class="table">
-                <thead><tr><th>会话</th><th>状态</th><th>事件</th><th>剩余</th><th>空闲</th></tr></thead>
+                <thead><tr><th>会话</th><th>状态</th><th class="col-num">待处理</th><th class="col-num">剩余</th><th>空闲</th></tr></thead>
                 <tbody id="dash-sessions"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
               </table>
             </div>
@@ -294,6 +321,35 @@
           </div>
 
           <div class="card">
+            <div class="card-head"><div><h2>识图</h2><p class="card-sub">收图即描述 · 空白项沿用对话服务 · 本页改动需重启后生效</p></div></div>
+            <div class="form-grid">
+              <label class="field check-field"><input type="checkbox" class="chk" data-path="vision.enabled" data-kind="bool"><span>启用识图</span></label>
+              <label class="field"><span>模型</span><input class="input" data-path="vision.model" data-kind="str" placeholder="留空 = 用对话模型"></label>
+              <label class="field"><span>thinking</span>
+                <select class="sel" data-path="vision.thinking" data-kind="str">
+                  <option value="">沿用对话</option><option value="disabled">disabled</option><option value="enabled">enabled</option>
+                </select>
+              </label>
+              <label class="field"><span>描述字数</span><input class="input" data-path="vision.max_chars" data-kind="int" type="number" step="10" min="1"></label>
+              <label class="field"><span>max_tokens</span><input class="input" data-path="vision.max_tokens" data-kind="int" type="number" step="10" min="1"></label>
+              <label class="field"><span>超时 (s)</span><input class="input" data-path="vision.timeout_sec" data-kind="int" type="number" step="1" min="1"></label>
+              <label class="field wide"><span>提示词</span><input class="input" data-path="vision.prompt" data-kind="str"></label>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><div><h2>费用单价</h2><p class="card-sub">每百万 tokens 计价，用于仪表盘费用估算（闲时倍率仅影响之后的调用）</p></div></div>
+            <div class="form-grid">
+              <label class="field"><span>货币符号</span><input class="input" data-path="llm.pricing.currency" data-kind="str"></label>
+              <label class="field"><span>输入 / Mtok</span><input class="input" data-path="llm.pricing.input_per_mtok" data-kind="float" type="number" step="0.01" min="0"></label>
+              <label class="field"><span>缓存输入 / Mtok</span><input class="input" data-path="llm.pricing.cached_input_per_mtok" data-kind="float" type="number" step="0.01" min="0"></label>
+              <label class="field"><span>输出 / Mtok</span><input class="input" data-path="llm.pricing.output_per_mtok" data-kind="float" type="number" step="0.01" min="0"></label>
+              <label class="field"><span>闲时倍率</span><input class="input" data-path="llm.pricing.off_peak_multiplier" data-kind="float" type="number" step="0.05" min="0"></label>
+              <label class="field check-field"><input type="checkbox" class="chk" data-path="llm.pricing.peak_weekdays_only" data-kind="bool"><span>高峰仅工作日</span></label>
+            </div>
+          </div>
+
+          <div class="card">
             <div class="card-head"><div><h2>在线作息</h2><p class="card-sub">带随机抖动的拟人上下线</p></div></div>
             <div class="form-grid">
               <label class="field"><span>在线时长 (s)</span><input class="input" data-path="behavior.presence.online_duration_sec" data-kind="float" type="number" step="1"></label>
@@ -303,6 +359,7 @@
               <label class="field"><span>续期时长 (s)</span><input class="input" data-path="behavior.presence.renew_per_reply_sec" data-kind="float" type="number" step="1"></label>
               <label class="field"><span>单次续期上限 (s)</span><input class="input" data-path="behavior.presence.renew_max_sec" data-kind="float" type="number" step="10" min="0"></label>
               <label class="field"><span>续期抖动 (±)</span><input class="input" data-path="behavior.presence.renew_jitter" data-kind="float" type="number" step="0.05" min="0"></label>
+              <label class="field check-field"><input type="checkbox" class="chk" data-path="behavior.presence.start_online" data-kind="bool"><span>重启后首条消息立即上线</span></label>
               <label class="field check-field"><input type="checkbox" class="chk" data-path="behavior.presence.wake_on_at_message" data-kind="bool"><span>@ 消息立即唤醒</span></label>
               <label class="field check-field"><input type="checkbox" class="chk" data-path="behavior.presence.wake_on_c2c" data-kind="bool"><span>私聊立即唤醒</span></label>
               <label class="field check-field"><input type="checkbox" class="chk" data-path="behavior.presence.renew_on_reply" data-kind="bool"><span>回复后续期</span></label>

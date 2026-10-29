@@ -6,5 +6,6 @@
   "timeout_sec": 15,
   "max_results": 5,
   "fetch_max_chars": 6000,
-  "fetch_max_bytes": 2000000
+  "fetch_max_bytes": 2000000,
+  "read_max_chars": 1200
 }
