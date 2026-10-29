@@ -1,0 +1,71 @@
+name: deploy
+
+# push 到 master 就同步代码到云服务器并重启；也可在 Actions 页手动触发。
+# 需要在仓库 Secrets 里配（Settings → Secrets and variables → Actions → New repository secret）：
+#   DEPLOY_SSH_KEY   部署专用 SSH 私钥（私钥只存 GitHub，公钥写进服务器 authorized_keys）
+#   DEPLOY_SSH_HOST  服务器地址，如 1.2.3.4
+#   DEPLOY_SSH_USER  登录用户，不填按 root
+#   DEPLOY_SSH_PATH  项目目录，不填按 /root/GGBot
+#   DEPLOY_SSH_PORT  SSH 端口，不填按 22
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+      DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+      DEPLOY_SSH_PATH: ${{ secrets.DEPLOY_SSH_PATH }}
+      DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查 Secrets
+        run: |
+          [ -n "$DEPLOY_SSH_KEY" ] || { echo "缺少 secret: DEPLOY_SSH_KEY"; exit 1; }
+          [ -n "$DEPLOY_SSH_HOST" ] || { echo "缺少 secret: DEPLOY_SSH_HOST"; exit 1; }
+
+      - name: 写入 SSH 私钥并记录主机指纹
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "${DEPLOY_SSH_PORT:-22}" -H "$DEPLOY_SSH_HOST" >> ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy_key -p "${DEPLOY_SSH_PORT:-22}" \
+              "${DEPLOY_SSH_USER:-root}@${DEPLOY_SSH_HOST}" \
+              "test -d '${DEPLOY_SSH_PATH:-/root/GGBot}' && echo remote-ok"
+
+      - name: 同步代码（跳过密钥与运行时数据）
+        run: |
+          # 与 .gitignore 里的运行时项一致：这些文件既不同步，也不会被 --delete 清掉
+          cat > /tmp/exclude.txt <<'EOF'
+          .git/
+          .github/
+          .venv/
+          __pycache__/
+          *.pyc
+          config.json
+          *.db
+          *.db-wal
+          *.db-shm
+          .bot.lock
+          temp/
+          tool/chat/emoji/stickers/
+          tool/chat/emoji/user/
+          tool/chat/emoji/vectors.json
+          tool/chat/audio/
+          EOF
+          rsync -az --delete --exclude-from=/tmp/exclude.txt \
+            -e "ssh -i ~/.ssh/deploy_key -p ${DEPLOY_SSH_PORT:-22}" \
+            ./ "${DEPLOY_SSH_USER:-root}@${DEPLOY_SSH_HOST}:${DEPLOY_SSH_PATH:-/root/GGBot}/"
+
+      - name: 远端重启并做健康检查
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "${DEPLOY_SSH_PORT:-22}" \
+              "${DEPLOY_SSH_USER:-root}@${DEPLOY_SSH_HOST}" \
+              "bash '${DEPLOY_SSH_PATH:-/root/GGBot}/deploy/deploy_server.sh'"

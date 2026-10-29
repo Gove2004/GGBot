@@ -1,0 +1,20 @@
+# 一次性安装（在服务器上执行）：把本单元装进 systemd 并接管开机自启。
+#
+#   sudo bash deploy/install_service.sh
+#
+# 之后日常重启/部署都用 deploy/deploy_server.sh，不再需要 start_linux.sh。
+[Unit]
+Description=GGBot (QQ bot + Web panel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/GGBot
+ExecStart=/root/GGBot/.venv/bin/python main.py --log-level INFO
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONIOENCODING=utf-8
+
+[Install]
+WantedBy=multi-user.target

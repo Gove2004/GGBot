@@ -1,4 +1,4 @@
-# 新增依赖时把模块名同步进三个启动脚本的依赖探测（start.bat / start.sh / start_mac.command），
+# 新增依赖时把模块名同步进三个启动脚本的依赖探测（start_windows.bat / start_linux.sh / start_mac.command），
 # 否则环境缺包时脚本仍判定"依赖齐全"，直到运行到对应工具才报错
 qq-botpy==1.2.1
 openai>=1.0
