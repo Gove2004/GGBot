@@ -743,7 +743,9 @@ async function deleteMemory(id) {
 }
 
 async function tidyMemory() {
-  const ok = await confirmAction("合并重复记忆", "将合并相似度 ≥ 0.95 的记忆条目，保留更重要的一条。", "开始整理");
+  const ok = await confirmAction("合并重复记忆",
+    "按记忆条数自动放宽阈值（0.95 起，每多 50 条降 0.01，最低 0.86），合并近似重复条目，保留更重要的一条。",
+    "开始整理");
   if (!ok) return;
   try {
     const r = await api("/api/memories/tidy", { method: "POST" });

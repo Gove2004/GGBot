@@ -3,7 +3,7 @@
 - 嵌入走云端 OpenAI 兼容接口（POST /embeddings），无本地模型依赖
 - 向量存 SQLite（float32 BLOB），检索用余弦相似度（个人机器人记忆量级，暴力检索足够）
 - 写入去重：同会话内余弦 ≥0.95 视为同一条，更新原条目而非新增
-- 整理：合并余弦相似度超过阈值的近似重复记忆
+- 整理：合并近似重复记忆，阈值随记忆条数放宽（0.95 起，最低 0.86）
 - 未配置 embedding 时自动降级为关键词检索，不影响机器人启动
 """
 
@@ -17,6 +17,16 @@ import numpy as np
 logger = logging.getLogger("ggbot.memory")
 
 DEDUP_SCORE = 0.95
+
+# 整理（tidy）阈值：记忆越多越宽松。条数一多，同一件事的不同说法很难再撞上 0.95，
+# 固定阈值只会让整理越来越无效；按规模放宽，最低降到 TIDY_MIN，防止误合不相干条目。
+TIDY_BASE = 0.95
+TIDY_MIN = 0.86
+TIDY_PER = 50  # 每多 50 条放宽 0.01
+
+
+def _tidy_threshold(count: int) -> float:
+    return max(TIDY_MIN, TIDY_BASE - (count // TIDY_PER) * 0.01)
 
 
 def bigrams(text: str) -> set[str]:
@@ -217,11 +227,16 @@ class MemoryStore:
         scored.sort(key=lambda x: -x[0])
         return [self._result(m, s) for s, m in scored[:k]]
 
-    def tidy(self, threshold: float = 0.95) -> int:
-        """整理记忆：合并余弦相似度超过阈值的近似重复，保留更重要（importance 高/更新）的一条。"""
+    def tidy(self, threshold: float | None = None) -> int:
+        """整理记忆：合并余弦相似度超过阈值的近似重复，保留更重要（importance 高/更新）的一条。
+
+        threshold 不给就按当前记忆条数自动放宽（见 _tidy_threshold）。
+        """
         if not self.enabled:
             return 0
         memories = self.storage.get_all_memories()
+        if threshold is None:
+            threshold = _tidy_threshold(len(memories))
         vecs: dict[int, np.ndarray] = {}
         for i, m in enumerate(memories):
             if m.get("embedding"):
@@ -251,6 +266,9 @@ class MemoryStore:
                         removed_ids.append(a["id"])
                         break
         self.storage.delete_memories(removed_ids)
+        if removed_ids:
+            logger.info("记忆整理: 共 %d 条 · 阈值 %.2f · 合并 %d 条",
+                        len(memories), threshold, len(removed_ids))
         return len(removed_ids)
 
     def embed_status(self) -> dict:

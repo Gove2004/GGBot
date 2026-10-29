@@ -187,8 +187,9 @@ def cmd_memory_delete(storage: Storage, mid: str, yes: bool) -> None:
     print(f"已删除记忆 {mid}")
 
 
-def cmd_memory_tidy(memory: MemoryStore, threshold: float, yes: bool) -> None:
-    if not yes and not _confirm(f"合并相似度 ≥ {threshold} 的重复记忆？"):
+def cmd_memory_tidy(memory: MemoryStore, threshold: float | None, yes: bool) -> None:
+    label = f"≥ {threshold}" if threshold is not None else "自动（随记忆条数放宽 0.95→0.86）"
+    if not yes and not _confirm(f"合并相似度 {label} 的重复记忆？"):
         print("已取消")
         return
     removed = memory.tidy(threshold)
@@ -243,7 +244,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--yes", action="store_true")
 
     sp = msub.add_parser("tidy", help="合并近似重复记忆")
-    sp.add_argument("--threshold", type=float, default=0.95)
+    sp.add_argument("--threshold", type=float, default=None,
+                    help="相似度阈值；不填按记忆条数自动放宽（0.95 起，最低 0.86）")
     sp.add_argument("--yes", action="store_true")
 
     return p
