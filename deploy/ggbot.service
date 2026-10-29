@@ -15,6 +15,9 @@ ExecStart=/root/GGBot/.venv/bin/python main.py --log-level INFO
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONIOENCODING=utf-8
+# systemd 服务的 soft nofile 默认只有 1024，一个 SQLite 连接吃掉 db + -wal 两个 fd，
+# 会话一多就顶满（面板 accept 报 Errno 24）。hard 上限是 524288，这里抬到 65535。
+LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target

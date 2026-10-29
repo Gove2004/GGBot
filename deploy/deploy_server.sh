@@ -17,7 +17,13 @@ if [ ! -f .venv/requirements.sha ] || [ "$(cat .venv/requirements.sha)" != "$NEW
   echo "$NEW" > .venv/requirements.sha
 fi
 
-if systemctl is-active --quiet ggbot.service || [ -f /etc/systemd/system/ggbot.service ]; then
+if [ -f /etc/systemd/system/ggbot.service ]; then
+  # unit 也归仓库管：改了 LimitNOFILE、路径之类的，下一次部署自动跟上，不用重新跑 install_service.sh
+  if ! cmp -s deploy/ggbot.service /etc/systemd/system/ggbot.service; then
+    cp deploy/ggbot.service /etc/systemd/system/ggbot.service
+    systemctl daemon-reload
+    echo "[deploy] systemd unit 与仓库不一致，已更新并 daemon-reload"
+  fi
   systemctl restart ggbot.service
 else
   # 还没跑过 install_service.sh，退回旧的后台启动方式

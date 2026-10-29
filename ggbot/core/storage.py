@@ -1,6 +1,6 @@
 """SQLite 持久化层：会话、消息、记忆。
 
-全部落盘，重启不丢。线程安全：每个操作独立连接 + WAL。
+全部落盘，重启不丢。线程安全：每个操作一个连接（用完即关）+ WAL，读写都在 self._lock 里串行。
 """
 
 from __future__ import annotations
@@ -9,6 +9,8 @@ import json
 import sqlite3
 import threading
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -81,7 +83,6 @@ class Storage:
         self.db_path = str(db_path)
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._open_conns: list[sqlite3.Connection] = []
         with self._conn() as c:
             c.executescript(SCHEMA)
             self._ensure_columns(c)
@@ -101,23 +102,31 @@ class Storage:
         if "archived_upto" not in scols:
             c.execute("ALTER TABLE sessions ADD COLUMN archived_upto INTEGER DEFAULT 0")
 
-    def _conn(self) -> sqlite3.Connection:
+    @contextmanager
+    def _conn(self) -> Iterator[sqlite3.Connection]:
+        """一次操作一个连接：正常退出提交，异常时未提交的内容随 close 丢弃。
+
+        sqlite3 的连接当上下文管理器只管提交、不管关闭，所以必须自己兜住 close：
+        连接不关就等于每次调用泄漏一对文件描述符（ggbot.db 与 ggbot.db-wal），
+        进程 soft nofile 顶满后 Web accept 报 Errno 24，asyncio 失败即重试把 CPU 吃满。
+        """
         conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        self._open_conns.append(conn)
-        return conn
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
 
     def close(self) -> None:
-        """关闭全部连接（进程退出/测试清理时调用，释放文件锁）。"""
-        with self._lock:
-            for conn in self._open_conns:
-                try:
-                    conn.close()
-                except Exception:  # noqa: BLE001
-                    pass
-            self._open_conns.clear()
+        """收尾（进程退出、测试清理前调用）：把 WAL 归并回主库，-wal/-shm 随之清空。
+
+        连接随每次操作关闭，这里没有长驻连接要释放。
+        """
+        with self._lock, self._conn() as c:
+            c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
     # ---------- 会话 ----------
 
