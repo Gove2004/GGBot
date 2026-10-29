@@ -218,7 +218,11 @@ class Config:
         return node
 
     def set_by_path(self, dotted: str, value) -> bool:
-        """按 'a.b.c' 更新嵌套配置（dict 引用共享，Presence/LLM 等运行对象热生效）。"""
+        """按 'a.b.c' 更新已有配置项。
+
+        改的是 self.data 里的 dict 本身，运行对象每次现读，保存即生效；
+        路径中任一层不存在则返回 False（不新建键，避免误改结构）。
+        """
         parts = dotted.split(".")
         node = self.data
         for part in parts[:-1]:

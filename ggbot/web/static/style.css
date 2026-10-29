@@ -584,6 +584,8 @@ td.col-num.warn { color: var(--amber); }
 .badge.off, .badge.gray { color: var(--muted); }
 .badge.warn, .badge.pending { color: var(--amber); border-color: rgba(244, 183, 64, .35); background: rgba(244, 183, 64, .1); }
 .badge.fail { color: var(--red); border-color: rgba(255, 107, 107, .35); background: rgba(255, 107, 107, .1); }
+/* 设置页字段标签后的「需重启」小徽标（由 /api/config 的 restart 列表挂上） */
+.field .badge.restart-hint { margin-left: 6px; padding: 1px 7px; font-style: normal; }
 .role-user { color: var(--accent-2); }
 .role-assistant { color: var(--green); }
 .sess-label { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }

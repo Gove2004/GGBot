@@ -765,6 +765,18 @@ function setConfigDirty(dirty) {
   if (dirty) qs("#cfg-msg").textContent = "有未保存的修改，点击右侧保存";
 }
 
+function markRestartFields(paths) {
+  qsa(".field .restart-hint").forEach((el) => el.remove());
+  new Set(paths || []).forEach((path) => {
+    const label = qs(`[data-path="${path}"]`)?.closest(".field")?.querySelector("span");
+    if (!label) return;
+    const hint = document.createElement("i");
+    hint.className = "badge warn restart-hint";
+    hint.textContent = "需重启";
+    label.appendChild(hint);
+  });
+}
+
 async function loadConfig() {
   const d = await api("/api/config");
   qsa("[data-path]").forEach((el) => {
@@ -772,8 +784,9 @@ async function loadConfig() {
     if (el.type === "checkbox") el.checked = !!v;
     else if (v !== undefined && v !== null) el.value = v;
   });
+  markRestartFields(d.restart);
   setConfigDirty(false);
-  qs("#cfg-msg").textContent = "修改后点击保存，写回 config.json 并热生效";
+  qs("#cfg-msg").textContent = "修改后点击保存，写回 config.json 并热生效（标了「需重启」的除外）";
 }
 
 async function saveConfig() {
@@ -788,7 +801,8 @@ async function saveConfig() {
     else if (el.dataset.kind === "float") value = parseFloat(el.value);
     else value = el.value;
     if (numeric && !isFinite(value)) {
-      bad = el.closest(".field")?.querySelector("span")?.textContent || el.dataset.path;
+      // firstChild：徽标（需重启）是后加的节点，别把它拼进提示文案
+      bad = el.closest(".field")?.querySelector("span")?.firstChild?.textContent?.trim() || el.dataset.path;
     }
     items.push({ path: el.dataset.path, value });
   });

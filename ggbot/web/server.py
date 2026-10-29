@@ -151,6 +151,11 @@ ALLOWED_SETTINGS = [
     "web.log_level",
 ]
 
+# 白名单里仍需重启才生效的项：建连参数在进程启动时固定（面板据此打「需重启」标记）
+RESTART_SETTINGS = [
+    "vision.timeout_sec",
+]
+
 SECRET_KEYS = ("api_key", "secret", "appsecret", "token", "auth_code", "password")
 
 
@@ -643,7 +648,8 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
     @app.get("/api/config")
     async def get_config(request: Request, x_token: str | None = Header(default=None)):
         _auth(request, x_token)
-        return {"config": mask_secrets(cfg.data), "allowed": ALLOWED_SETTINGS}
+        return {"config": mask_secrets(cfg.data), "allowed": ALLOWED_SETTINGS,
+                "restart": RESTART_SETTINGS}
 
     @app.post("/api/config")
     async def update_config(
@@ -667,6 +673,8 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
                 continue
             if cfg.set_by_path(item.path, value):
                 updated.append(item.path)
+            else:
+                rejected.append(item.path)
         if "web.log_level" in updated:
             from ggbot.util.logging_setup import set_level
 

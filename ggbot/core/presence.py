@@ -146,21 +146,7 @@ class PresenceManager:
         self.memory = memory
         self.perms = Permissions(cfg, storage)
 
-        self.p = cfg.presence
-        self.r = cfg.reply
-        self.b = cfg.backlog
-        ctx_cfg = cfg.context
-        self._budget_tokens = int(ctx_cfg.get("summary_threshold_tokens", 128000))
-        self._history_limit = int(ctx_cfg.get("max_history_messages", 1024))
-        self._archive_batch = max(0, min(256, int(ctx_cfg.get("archive_batch_messages", 256))))
-        self._archive_enabled = (
-            bool(ctx_cfg.get("archive_enabled", True))
-            and self.memory is not None
-            and self._archive_batch > 0
-        )
         self._archive_tasks: dict[str, asyncio.Task] = {}
-        self._backlog_limit = int(self.b.get("max_scan_messages", 256))
-        self._online_limit = int(self.b.get("online_max_messages", 16))
 
         self.state = "offline"  # 兼容旧字段（面板聚合时不再使用单值）
         self._states: dict[str, _SessionState] = {}  # 每会话独立状态机
@@ -170,6 +156,49 @@ class PresenceManager:
         # 主动消息本地计数：平台群聊硬限制 20 条/分钟、1000 条/天，这里再留余量
         self._active_turns: dict[str, list[float]] = {}
         self._active_day: dict[str, tuple[str, int]] = {}
+
+    # ---------- 配置现读 ----------
+    # 每次访问都从 cfg 取，Web 面板改完即生效，不需要重启进程。
+
+    @property
+    def p(self) -> dict:
+        return self.cfg.presence
+
+    @property
+    def r(self) -> dict:
+        return self.cfg.reply
+
+    @property
+    def b(self) -> dict:
+        return self.cfg.backlog
+
+    @property
+    def _backlog_limit(self) -> int:
+        return int(self.b.get("max_scan_messages", 256))
+
+    @property
+    def _online_limit(self) -> int:
+        return int(self.b.get("online_max_messages", 16))
+
+    @property
+    def _history_limit(self) -> int:
+        return int(self.cfg.context.get("max_history_messages", 1024))
+
+    @property
+    def _budget_tokens(self) -> int:
+        return int(self.cfg.context.get("summary_threshold_tokens", 128000))
+
+    @property
+    def _archive_batch(self) -> int:
+        return max(0, min(256, int(self.cfg.context.get("archive_batch_messages", 256))))
+
+    @property
+    def _archive_enabled(self) -> bool:
+        return (
+            bool(self.cfg.context.get("archive_enabled", True))
+            and self.memory is not None
+            and self._archive_batch > 0
+        )
 
     def _state_of(self, sid: str) -> "_SessionState":
         """获取（或创建）会话状态机；超上限时清理最久未活动的离线会话。"""

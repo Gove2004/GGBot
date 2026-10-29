@@ -21,28 +21,71 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 
 class VisionClient:
+    """识图客户端。
+
+    模型与提示词参数每次现读 cfg.vision，面板改完即生效；
+    连接参数（api_key / base_url / timeout_sec）在建连时固定，改了要重启。
+    """
+
     def __init__(self, cfg, client=None):
         self.cfg = cfg
-        v = cfg.vision
-        self.enabled = bool(v["enabled"])
-        self.model = v["model"]
-        self.thinking = v.get("thinking") or ""
-        self.prompt = v["prompt"]
-        self.max_chars = v["max_chars"]
-        self.max_tokens = v["max_tokens"]
-        self.pricing = (cfg.llm.get("pricing") or {})
-        self.client = client
-        if self.enabled and client is None:
-            from openai import OpenAI
-
-            self.client = OpenAI(
-                api_key=v["api_key"],
-                base_url=v["base_url"],
-                timeout=v["timeout_sec"],
-                max_retries=0,
-            )
-        elif not self.enabled:
+        self._client = client
+        if cfg.vision["enabled"] and client is None:
+            self._client = self._connect()
+        elif not cfg.vision["enabled"]:
             logger.debug("识图未启用：vision 配置不完整或 enabled=false")
+
+    def _connect(self):
+        from openai import OpenAI
+
+        v = self.cfg.vision
+        return OpenAI(
+            api_key=v["api_key"],
+            base_url=v["base_url"],
+            timeout=v["timeout_sec"],
+            max_retries=0,
+        )
+
+    @property
+    def client(self):
+        return self._client
+
+    @property
+    def enabled(self) -> bool:
+        """现读：启动时关着、面板刚打开的，这里按当前配置补建连接。"""
+        if not self.cfg.vision["enabled"]:
+            return False
+        if self._client is None:
+            try:
+                self._client = self._connect()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("识图连接失败：vision 配置不完整（%s）", e)
+                return False
+        return True
+
+    @property
+    def model(self) -> str:
+        return self.cfg.vision["model"]
+
+    @property
+    def thinking(self) -> str:
+        return self.cfg.vision.get("thinking") or ""
+
+    @property
+    def prompt(self) -> str:
+        return self.cfg.vision["prompt"]
+
+    @property
+    def max_chars(self) -> int:
+        return self.cfg.vision["max_chars"]
+
+    @property
+    def max_tokens(self) -> int:
+        return self.cfg.vision["max_tokens"]
+
+    @property
+    def pricing(self) -> dict:
+        return self.cfg.llm.get("pricing") or {}
 
     def describe(self, path: Path | str, session: str | None = None) -> str | None:
         """同步调用（由调用方放进线程池）；返回纯文字描述，失败返回 None。"""
