@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 
-from ..base import Tool, to_str
+from ..base import Tool
+from ggbot.util.text import to_str
 
 
-class MemorySearch(Tool):
-    name = "memory_search"
+class MemoryFetch(Tool):
+    name = "memory_fetch"
     description = (
         "在长期记忆中检索，返回与 query 相关的记忆条目（默认语义检索，未配置向量服务时按关键词匹配）。"
         "想不起某个群友、某件事、某个话题的细节时先用它查，不要凭空猜"
@@ -21,7 +22,7 @@ class MemorySearch(Tool):
         },
         "required": ["query"],
     }
-    prompt_hint = "遇到“你还记得吗”“上次说的那个”或想不起某人某事时，先 memory_search 再回答。"
+    prompt_hint = "遇到“你还记得吗”“上次说的那个”或想不起某人某事时，先 memory_fetch 再回答。"
 
     async def run(self, args: dict, ctx: dict) -> dict:
         query = str(args.get("query") or "").strip()
@@ -34,8 +35,8 @@ class MemorySearch(Tool):
         return {"ok": True, "results": results}
 
 
-class MemoryWrite(Tool):
-    name = "memory_write"
+class MemorySave(Tool):
+    name = "memory_save"
     min_level = 2
     description = (
         "把值得长期记住的信息写入记忆库（例如某人的叫法、偏好、脾气、约定、重要日子、最近在忙的事）。"
@@ -50,7 +51,7 @@ class MemoryWrite(Tool):
         },
         "required": ["content"],
     }
-    prompt_hint = "对方聊到自己的名字/喜好/近况/约定时，主动 memory_write；别只记在脑子里。"
+    prompt_hint = "对方聊到自己的名字/喜好/近况/约定时，主动 memory_save；别只记在脑子里。"
 
     async def run(self, args: dict, ctx: dict) -> dict:
         content = to_str(args.get("content", "")).strip()
@@ -64,4 +65,4 @@ class MemoryWrite(Tool):
 
 
 def get_tools(rt):
-    return [MemorySearch(rt), MemoryWrite(rt)]
+    return [MemoryFetch(rt), MemorySave(rt)]

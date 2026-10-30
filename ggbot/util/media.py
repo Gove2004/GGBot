@@ -92,7 +92,7 @@ def _encode(cfg, p: Path) -> str | None:
         return "t/" + rel.as_posix()
     if p.is_relative_to(tools):
         rel = p.relative_to(tools)
-        if rel.parts[:2] != ("chat", "emoji"):
+        if rel.parts[:2] != ("media", "emoji"):
             return None  # 只放行表情素材，避免把工具配置/参考音频暴露到公网
         return "d/" + rel.as_posix()
     return None
@@ -111,7 +111,7 @@ def resolve_local(cfg, rel: str) -> Path | None:
         return None
     if tag == "t" and Path(rest).parts and Path(rest).parts[0] == "logs":
         return None
-    if tag == "d" and Path(rest).parts[:2] != ("chat", "emoji"):
+    if tag == "d" and Path(rest).parts[:2] != ("media", "emoji"):
         return None
     try:
         p = (root / rest).resolve()

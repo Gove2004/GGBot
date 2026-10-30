@@ -1,6 +1,6 @@
 """表情包 Tool：模型说一句想表达什么，向量在表情库里找最贴的一张发出去。
 
-素材与索引都在 tool/chat/emoji/（整目录复制即可迁移）：
+素材与索引都在 tool/media/emoji/（整目录复制即可迁移）：
 - stickers/  手动放入的素材
 - user/      用户投喂并同意收藏的素材
 - index.json 素材库索引 v3：{file, desc, source, added_at}（人看的、可手改、入库）
@@ -39,7 +39,7 @@ from ggbot.util.session import session_label
 logger = logging.getLogger("ggbot.tools.sticker")
 
 IMAGE_EXTS = {".gif", ".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-DATA_KEY = "chat/emoji"
+DATA_KEY = "media/emoji"
 RECENT_KEEP = 8         # 每个会话记住最近发过的张数，避免连着重复
 NEAR_TIE = 0.05         # 与最高分相差不到这个数的才算同一档，随机只在这档里挑
 DESC_MAX = 120
@@ -329,7 +329,7 @@ class StickerLibrary:
 
         items = await self.items()
         if not items:
-            return {"ok": False, "error": "表情库为空（素材放 tool/chat/emoji/stickers/，"
+            return {"ok": False, "error": "表情库为空（素材放 tool/media/emoji/stickers/，"
                                           "或用 sticker_save 收藏用户投喂的图）"}
         rows = await self.match(query, 6, items)
         if not rows:

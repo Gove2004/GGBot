@@ -141,12 +141,13 @@ class _RichC2CMessage(C2CMessage):
 
 
 class QQBot(botpy.Client):
-    def __init__(self, config, presence=None, intents=None):
+    def __init__(self, config, presence=None, intents=None, storage=None):
         # bot_log=None 保留 botpy 日志向根 logger 传播；ext_handlers=False 关闭
         # botpy 默认文件 handler（否则会在 cwd 生成 botpy.log）。
         super().__init__(intents=intents, timeout=30, bot_log=None, ext_handlers=False)
         self.cfg = config
         self.presence = presence
+        self.storage = storage
         self.temp_dir: Path = config.temp_dir
         self.vision = VisionClient(config)
         self._seen: set[str] = set()
@@ -227,10 +228,15 @@ class QQBot(botpy.Client):
         """入站唯一入口：去重 → 记录一条「收到 […]」日志 → 归一化 → 交给 presence。
 
         日志只在去重后打，因此 @事件与全量事件重复推送同一条消息时不会刷两行。
+        内存的 _seen 扛不过重启（每次发版都会重启一次），所以未命中时再查一次库：
+        重启窗口里平台重推同一条，库里已有记录就当作没看见，不再回第二遍。
         """
         msg_id = getattr(message, "id", None)
         if not msg_id or msg_id in self._seen:
             logger.debug("重复/空消息忽略 id=%s", msg_id)
+            return
+        if self.storage is not None and self.storage.message_exists(msg_id):
+            logger.debug("重复/空消息忽略 id=%s（库中已有，重启后重推）", msg_id)
             return
         self._seen.add(msg_id)
         logger.info("收到 [%s] @=%d: %s", self._who(message), 1 if is_at else 0,
@@ -560,13 +566,13 @@ class QQBot(botpy.Client):
                     inside = root
                     break
             if inside is None:
-                return False, "本地媒体只允许 temp/ 与 tool/chat/emoji/ 素材"
+                return False, "本地媒体只允许 temp/ 与 tool/media/emoji/ 素材"
             rel = p.relative_to(inside)
             if inside == temp_root and rel.parts[:1] == ("logs",):
                 return False, "本地媒体不能发送日志文件"
             if inside == tool_root:
-                if rel.parts[:2] != ("chat", "emoji"):
-                    return False, "本地媒体只允许 temp/ 与 tool/chat/emoji/ 素材"
+                if rel.parts[:2] != ("media", "emoji"):
+                    return False, "本地媒体只允许 temp/ 与 tool/media/emoji/ 素材"
                 if p.name == "config.json" or p.suffix.lower() in {".key", ".pem"}:
                     return False, "本地媒体不能发送配置/密钥文件"
             if not p.is_file():

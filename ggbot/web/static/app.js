@@ -829,8 +829,8 @@ async function saveConfig() {
 }
 
 /* ================= 工具 ================= */
-const TOOL_CATS = { chat: "对话", knowledge: "信息", fs: "文件", mail: "邮件", admin: "管理" };
-const TOOL_CAT_ORDER = ["chat", "knowledge", "fs", "mail", "admin"];
+const TOOL_CATS = { core: "控制", media: "富媒体", memory: "记忆", web: "联网", fs: "文件", mail: "邮件", admin: "管理" };
+const TOOL_CAT_ORDER = ["core", "media", "memory", "web", "fs", "mail", "admin"];
 function toolCat(cat) { return TOOL_CATS[cat] || cat || "其他"; }
 function toolOrder(cat) {
   const i = TOOL_CAT_ORDER.indexOf(cat);
@@ -871,12 +871,9 @@ function renderTools() {
     const lv = levelLabel(t.min_level);
     const adjusted = t.level_default != null && Number(t.min_level) !== Number(t.level_default);
     const lvTitle = adjusted ? `代码默认 L${t.level_default}，已在权限页调整` : "门槛与代码默认一致";
-    // llm_visible=false：模型的工具列表里没有它（send_text 由运行时代发正文），面板标「内部」
-    const inner = t.llm_visible === false
-      ? ' <span class="badge gray" title="不暴露给模型：正文由系统代发，模型看不到也调不到">内部</span>' : "";
     return `<div class="tool-card ${t.enabled ? "" : "off"}" data-cat="${esc(t.category || "")}">
       <div class="tool-head">
-        <div><div class="tool-name"><span class="tool-state ${t.enabled ? "on" : ""}"></span>${esc(t.name)} <span class="badge gray">${esc(toolCat(t.category))}</span>${inner} <span class="badge ${adjusted ? "warn" : "gray"}" title="${esc(lvTitle)}">${esc(lv)}${adjusted ? " ↕" : ""}</span></div>
+        <div><div class="tool-name"><span class="tool-state ${t.enabled ? "on" : ""}"></span>${esc(t.name)} <span class="badge gray">${esc(toolCat(t.category))}</span> <span class="badge ${adjusted ? "warn" : "gray"}" title="${esc(lvTitle)}">${esc(lv)}${adjusted ? " ↕" : ""}</span></div>
         <div class="tool-desc muted small">${esc(t.description)}</div></div>
         <button class="btn ${t.enabled ? "ghost" : "primary"} small"
           data-action="tool-toggle" data-tool="${esc(t.name)}" data-enabled="${t.enabled ? 1 : 0}"

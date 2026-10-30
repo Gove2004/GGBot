@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS actors(
     note TEXT,
     updated_at TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_messages_msg_id ON messages(msg_id);
 """
 
 

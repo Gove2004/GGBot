@@ -19,7 +19,8 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from ..base import Tool, to_str
+from ..base import Tool
+from ggbot.util.text import to_str
 
 DEFAULT_DENY = [
     "db",

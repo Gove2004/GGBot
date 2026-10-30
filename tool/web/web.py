@@ -377,7 +377,7 @@ def _low_relevance(query: str, results: list[dict]) -> bool:
 class WebSearch(Tool):
     name = "web_search"
     min_level = 2
-    data_name = "knowledge/web"
+    data_name = "web"
     description = (
         "联网搜索最新信息（新闻、天气、价格、赛事、资料等）。返回标题、链接、摘要，"
         "带发布时间的话给 published（YYYY-MM-DD）。read=true 时顺便把前几条的正文一起抓回来"
@@ -461,7 +461,7 @@ def _as_bool(value) -> bool:
 class WebFetch(Tool):
     name = "web_fetch"
     min_level = 2
-    data_name = "knowledge/web"
+    data_name = "web"
     config_owner = False
     toggleable = False
     description = (

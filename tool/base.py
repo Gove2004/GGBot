@@ -1,10 +1,10 @@
 """Tool 插件基座：一切能力都是 Tool。
 
 - Tool：一个可被 LLM 调用的能力（schema + 执行逻辑 + 自己的配置/数据目录）
-- ToolRuntime：给 Tool 提供配置、持久化目录、发送能力等公共依赖
+- ToolRuntime：给 Tool 提供配置、持久化目录、富媒体发送等公共依赖（正文通道不在这里，见 ggbot/core/outbound.py）
 - ToolRegistry：自动发现 tool/<分类>/ 下的插件，按配置开关动态挂载 schema
 
-分类即能力域：chat（对话与表达）/ knowledge（信息）/ fs（文件）/ mail（邮件）/ admin（管理）。
+分类即能力域：core（回合控制）/ media（富媒体）/ memory（记忆）/ web（联网）/ fs（文件）/ mail（邮件）/ admin（管理）。
 新增分类 = 新建一个含插件模块的子包。
 
 每个 Tool 声明 min_level（调用门槛，0-5 为发送者等级，6 为永久锁）；注册表按等级裁剪
@@ -17,56 +17,20 @@ tool/ 位于项目根目录且**自包含**：每个 toolset 目录同时存放�
 
 from __future__ import annotations
 
-import asyncio
 import importlib
 import json
 import logging
 import pkgutil
-import re
 import threading
 from pathlib import Path
 
-from ggbot.util.logging_setup import clip
 from ggbot.util.session import session_label
 
 logger = logging.getLogger("ggbot.tools")
 
-# 模型偶尔把媒体写成方括号占位符进正文；这些不是媒体，发送前拦截。
-# 词表要覆盖模型自己编出来的叫法（[语音克隆] / [表情包] …）：漏一个就等于把方括号发给用户，
-# 而且这条脏文本会入库，被后续历史喂回模型，越用越像"这里的规矩就是这样"
-_PLACEHOLDER_WORDS = (
-    r"表情|表情包|语音|语音克隆|语音条|克隆语音|图片|视频|文件|邮件"
-    r"|emoji|emoticon|sticker|voice|audio|image|photo|video|file|mail"
-)
-# 入站富媒体在上下文里就长成 `[图片]（描述）` / `[语音 6ce72460]` 这样，模型照抄的是整套形状：
-# 括号里的 8 位短标识与紧跟的（描述）一起吞掉，否则余下一截孤立括号更像"这里允许写"
-_MEDIA_TOKEN = (
-    rf"[\[【(（]\s*(?:{_PLACEHOLDER_WORDS})(?:\s+[0-9a-fA-F]{{6,8}})?\s*[\]】)）]"
-    r"(?:\s*[（(][^）)]{0,120}[）)])?"
-)
-PLACEHOLDER_RE = re.compile(
-    rf"^(?:\s*{_MEDIA_TOKEN}\s*[。.!！?？~～…]*\s*)+$",
-    re.IGNORECASE,
-)
-# 同一类占位符夹在正常文字里（“哈哈[表情]”）时直接剔除，避免用户看到方括号
-PLACEHOLDER_INLINE_RE = re.compile(_MEDIA_TOKEN, re.IGNORECASE)
-# 正文开头的引用标记：[引用 关键词] / 【引用】；允许前面先写 @昵称（head 保留，不参与正文剥离）
-QUOTE_RE = re.compile(
-    r"^\s*(?P<head>(?:@[\w\u4e00-\u9fff·._-]{1,32}\s*)*)"
-    r"[\[【]\s*引用(?:\s*[:：]?\s*([^\]】\n]*?))?\s*[\]】]\s*"
-)
-# @昵称：允许中文、字母数字、下划线与常见连接符，避免把邮箱/代码里的 @ 当成人
-AT_NAME_RE = re.compile(r"(?<![\w@])@([\w\u4e00-\u9fff·._-]{1,32})")
-
-
-def to_str(v) -> str:
-    if isinstance(v, str):
-        return v
-    return json.dumps(v, ensure_ascii=False)
-
 
 class ToolRuntime:
-    """Tool 的公共运行时：配置读写 + 数据目录 + 回复发送。"""
+    """Tool 的公共运行时：配置读写 + 数据目录 + 富媒体发送（正文走 ggbot.core.outbound）。"""
 
     def __init__(self, cfg, storage, memory, bot):
         self.cfg = cfg
@@ -156,98 +120,6 @@ class ToolRuntime:
 
     # ---------- 发送 ----------
 
-    async def send_text(self, ctx: dict, content) -> dict:
-        content = to_str(content).strip()
-        sid = ctx.get("session_id")
-        extra = {"session": session_label(sid)}
-        content, reference = self._parse_quote(content, ctx)
-        if not content:
-            return {"ok": False, "error": "content 为空"}
-        if PLACEHOLDER_RE.match(content):
-            logger.warning("正文只有占位符，已拦截不发送: %s", clip(content, 40), extra=extra)
-            return {
-                "ok": False,
-                "error": "不要用 [表情]/[语音]/[图片] 占位符；发表情调 send_sticker，"
-                         "发语音调 send_voice_clone，发图/视频调 send_image/send_video",
-            }
-        cleaned = PLACEHOLDER_INLINE_RE.sub("", content).strip()
-        if cleaned != content:
-            # 只报被剔除的占位符，不复读整段正文（发送行里记的就是剔除后的干净正文）
-            removed = " ".join(dict.fromkeys(PLACEHOLDER_INLINE_RE.findall(content)))
-            logger.warning("正文夹带占位符已剔除: %s（余文照常发送）", removed, extra=extra)
-            content = cleaned
-            if not content:
-                return {"ok": False, "error": "content 只剩占位符，请改用媒体工具发送"}
-        # 入库与回传给模型的都用这份"人看的"文本；发给 QQ 的 wire 只在群聊里把
-        # @昵称 换成官方 at 标记（标记只在 markdown 消息生效，见 QQBot.send_text）
-        display = content
-        is_group = ctx.get("scene") == "group"
-        # 模型偶尔用换行/空行把多句拼进一条，这里拆成多条依次发送，
-        # 避免出现"A 空行 B"式的整段回复
-        segments = [s.strip() for s in re.split(r"\n+", display) if s.strip()] or [display]
-        reply_cfg = getattr(self.cfg, "reply", {}) or {}
-        gap = max(0.0, float(reply_cfg.get("segment_gap_sec", 2) or 0))
-        for i, seg in enumerate(segments):
-            wire = self._apply_mentions(seg, ctx) if is_group else seg
-            seq = ctx.get("msg_seq", 1)
-            kwargs = {"message_reference": reference} if reference else {}
-            try:
-                await self.bot.send_text(
-                    ctx["target"], wire, ctx["scene"], ctx.get("msg_id"), seq,
-                    ctx.get("event_id"), display=seg, **kwargs
-                )
-            except Exception as e:  # noqa: BLE001
-                if not ctx.get("msg_id"):
-                    raise
-                # 被动回复失败（msg_id 过期等）→ 降级主动发送，确保送达；
-                # 主动通道不带引用，避免已失效的消息 ID 再触发一次失败
-                logger.warning("被动回复失败，降级主动发送: %s", e, extra=extra)
-                await self.bot.send_text(ctx["target"], wire, ctx["scene"], None, seq,
-                                         display=seg)
-            ctx["msg_seq"] = seq + 1
-            ctx["sent_any"] = True
-            logger.info("发送: %s", clip(seg, 200), extra=extra)
-            if sid:
-                self.storage.add_message(sid, "assistant", "bot", seg, status="sent")
-            if gap and i < len(segments) - 1:
-                await asyncio.sleep(gap)
-        # send_text 不暴露给模型，所以按"发出去的一条消息"记一行，不套工具调用格式；
-        # 送达与否只看有没有异常/降级行（同一信息只打一行）
-        return {"ok": True, "sent": display}
-
-    def _parse_quote(self, content: str, ctx: dict) -> tuple[str, dict | None]:
-        """解析开头的 [引用 关键词]：回查本会话消息并生成 QQ message_reference。"""
-        m = QUOTE_RE.match(content)
-        if not m:
-            return content, None
-        head = (m.group("head") or "").strip()
-        needle = (m.group(2) or "").strip()
-        sid = ctx.get("session_id")
-        target = None
-        if needle and self.storage is not None and sid:
-            target = self.storage.find_message_id(sid, needle)
-        if not target:
-            target = ctx.get("msg_id")
-        body = content[m.end():].strip()
-        ref = {"message_id": target, "ignore_get_message_error": True} if target else None
-        return " ".join(p for p in (head, body) if p), ref
-
-    def _apply_mentions(self, content: str, ctx: dict) -> str:
-        """把 @昵称 换成 QQ 的 <qqbot-at-user id="member_openid" />；查不到的人保持原样。
-
-        官方只在 markdown 消息里解析该标记，QQBot.send_text 负责切换通道，
-        被拒时退回显示文本；入库与日志用的始终是 @昵称 的可读原文。
-        """
-        if self.storage is None:
-            return content
-        sid = ctx.get("session_id")
-
-        def repl(m: re.Match) -> str:
-            openid = self.storage.find_sender_openid(m.group(1), sid)
-            return f'<qqbot-at-user id="{openid}" />' if openid else m.group(0)
-
-        return AT_NAME_RE.sub(repl, content)
-
     async def send_media(self, ctx: dict, file_type: int, source: str, label: str) -> dict:
         seq = ctx.get("msg_seq", 1)
         ok, detail = await self.bot.upload_and_send_media(
@@ -271,7 +143,7 @@ class Tool:
     """一个 Tool = 一份 schema + 一个执行器；配置/数据目录由 runtime 提供。"""
 
     name: str = ""
-    category: str = ""  # 所属能力域（由注册表按所在子包填充：chat/knowledge/fs/mail/admin）
+    category: str = ""  # 所属能力域（由注册表按所在子包填充：core/media/memory/web/fs/mail/admin）
     data_name: str = ""  # 数据/配置目录名，默认与工具名一致（send_email -> mail 时可覆盖）
     description: str = ""
     parameters: dict = {"type": "object", "properties": {}}
@@ -280,7 +152,6 @@ class Tool:
     prompt_hint: str = ""
     config_owner: bool = True   # 共享配置目录时，只由一个工具展示/承担配置
     toggleable: bool = True     # 共享配置的工具不单独启停
-    llm_visible: bool = True    # 是否出现在给模型的工具列表里（False=只能由运行时内部调用）
     min_level: int = 1          # 调用门槛（0-5 为发送者等级，6 = 永久锁）；可在 config.levels 覆盖
 
     def __init__(self, rt: ToolRuntime):
@@ -347,7 +218,7 @@ class ToolRegistry:
                 if mod.name.startswith("_"):
                     continue
                 if mod.ispkg and not (Path(pkg.__path__[0]) / mod.name / "__init__.py").is_file():
-                    continue  # 素材/数据目录不是插件包（如 chat/emoji、chat/audio）
+                    continue  # 素材/数据目录不是插件包（如 media/emoji、media/audio）
                 self._load_module(f"tool.{info.name}.{mod.name}", info.name)
 
     def _load_module(self, dotted: str, category: str) -> None:
@@ -377,17 +248,16 @@ class ToolRegistry:
         return tool
 
     def visible(self, level: int) -> list[tuple[Tool, int]]:
-        """某等级可见的工具（启用、门槛达标且对模型开放），按 (门槛, 分类, 名称) 稳定排序。
+        """某等级可见的工具（启用且门槛达标），按 (门槛, 分类, 名称) 稳定排序。
 
         排序固定是为了让不同等级的工具列表共享前缀：低等级用户的列表是高等级的前缀，
         厂商的前缀缓存命中率更高。6 级工具永远不会出现在任何人的列表里。
-        llm_visible=False 的工具（如 send_text）不进列表，模型看不到也调不到，只能由运行时内部调用。
         """
         level = max(0, min(6, int(level)))
         rows = [
             (t, t.required_level())
             for t in self.tools.values()
-            if t.is_enabled() and t.llm_visible and level >= t.required_level()
+            if t.is_enabled() and level >= t.required_level()
         ]
         rows.sort(key=lambda x: (x[1], x[0].category, x[0].name))
         return rows
@@ -408,7 +278,6 @@ class ToolRegistry:
                 "description": t.description,
                 "enabled": t.is_enabled(),
                 "toggleable": t.toggleable,
-                "llm_visible": bool(t.llm_visible),
                 "min_level": t.required_level(),
                 "level_default": int(t.min_level),
                 "config": t.config if t.config_owner else {},

@@ -55,10 +55,10 @@ jobs:
           *.db-shm
           .bot.lock
           temp/
-          tool/chat/emoji/stickers/
-          tool/chat/emoji/user/
-          tool/chat/emoji/vectors.json
-          tool/chat/audio/
+          tool/media/emoji/stickers/
+          tool/media/emoji/user/
+          tool/media/emoji/vectors.json
+          tool/media/audio/
           EOF
           rsync -az --delete --exclude-from=/tmp/exclude.txt \
             -e "ssh -i ~/.ssh/deploy_key -p ${DEPLOY_SSH_PORT:-22}" \

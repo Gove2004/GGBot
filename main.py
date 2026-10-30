@@ -137,7 +137,7 @@ async def main(cfg: Config | None = None) -> None:
         log.info("识图未启用: 图片只保留 [图片] 占位（检查 vision 配置）")
 
     intents = botpy.Intents(public_messages=True, public_guild_messages=True, message_audit=True)
-    bot = QQBot(cfg, presence=None, intents=intents)
+    bot = QQBot(cfg, presence=None, intents=intents, storage=storage)
     executor = ToolExecutor(cfg, storage, memory, bot)
     presence = PresenceManager(cfg, storage, llm, executor, bot, memory)
     bot.presence = presence

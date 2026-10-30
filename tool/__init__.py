@@ -1,9 +1,9 @@
 """Tool 执行器与 agent 循环。
 
-一切能力都是 Tool：插件按能力域放在项目根 tool/{chat,knowledge,fs,mail,admin}/，
+一切能力都是 Tool：插件按能力域放在项目根 tool/{core,media,memory,web,fs,mail,admin}/，
 启动时自动发现并按配置挂载 schema。每个 toolset 目录自包含代码、config.json 与持久化数据。
 每个 Tool 带 min_level 门槛：请求只下发当前发送者能用的 schema，执行器再按实际发送者校验。
-回合语义：模型只有一条说话通道——回复正文，由运行时逐行拆成消息发出（send_text 不暴露给模型）；
+回合语义：模型只有一条说话通道——回复正文，由 ggbot.core.outbound 逐行拆成消息发出（正文不是工具，模型无从调用）；
 媒体、沉默等才走工具（send_sticker / send_voice_clone / silence …），silence 主动不接话。
 """
 
@@ -14,15 +14,12 @@ import json
 import logging
 import re
 
-from tool.base import (
-    PLACEHOLDER_RE,
-    ToolRegistry,
-    ToolRuntime,
-    to_str,
-)
+from ggbot.core.outbound import Outbound
 from ggbot.core.runtime_stats import runtime
 from ggbot.util.logging_setup import clip
 from ggbot.util.session import oid8, session_label
+from ggbot.util.text import PLACEHOLDER_RE, to_str
+from tool.base import ToolRegistry, ToolRuntime
 
 logger = logging.getLogger("ggbot.tools")
 
@@ -59,12 +56,27 @@ class ToolExecutor:
 
     def __init__(self, cfg, storage, memory, bot):
         self.rt = ToolRuntime(cfg, storage, memory, bot)
+        self.outbound = Outbound(cfg, storage, bot)
         self.registry = ToolRegistry(self.rt)
         counts: dict[str, int] = {}
         for t in self.registry.tools.values():
             counts[t.category] = counts.get(t.category, 0) + 1
         summary = " / ".join(f"{k} {v}" for k, v in sorted(counts.items()))
         logger.info("工具就绪: %d 个（%s）", len(self.registry.tools), summary or "无")
+
+    async def send_text(self, ctx: dict, content) -> dict:
+        """正文通道：不是工具调用，模型的话由这里发出去。"""
+        sid = session_label(ctx.get("session_id"))
+        try:
+            result = await self.outbound.send(ctx, content)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("发送正文异常", extra={"session": sid})
+            ctx["tool_error"] = f"send_text: {e}"
+            return {"ok": False, "error": str(e)}
+        if isinstance(result, dict) and not result.get("ok", True):
+            logger.warning("发送未成功: %s", clip(str(result.get("error") or result), 120),
+                           extra={"session": sid})
+        return result
 
     def schemas(self, level: int) -> list[dict]:
         return self.registry.schemas(level)
@@ -101,12 +113,10 @@ class ToolExecutor:
                            _actor_label(actor), level, extra={"session": sid})
             return {"ok": False, "error": f"权限不足：{name} 需要 {need_label}，当前 L{level}"}
         brief = _args_brief(args)
-        internal = not tool.llm_visible
-        if not internal:
-            call = f"工具 {name}（admin={_actor_label(actor)}(L{level})"
-            call += f", {brief}）" if brief else "）"
-            # 特权工具（L3+）在 INFO 留痕，普通工具只在 DEBUG 展开参数
-            (logger.info if need >= 3 else logger.debug)(call, extra={"session": sid})
+        call = f"工具 {name}（admin={_actor_label(actor)}(L{level})"
+        call += f", {brief}）" if brief else "）"
+        # 特权工具（L3+）在 INFO 留痕，普通工具只在 DEBUG 展开参数
+        (logger.info if need >= 3 else logger.debug)(call, extra={"session": sid})
         try:
             result = await tool.run(args, ctx)
         except Exception as e:  # noqa: BLE001
@@ -114,9 +124,7 @@ class ToolExecutor:
             ctx["tool_error"] = f"{name}: {e}"
             return {"ok": False, "error": str(e)}
         if isinstance(result, dict) and not result.get("ok", True):
-            # 内部通道（send_text）不打工具行，失败也只说"发送未成功"
-            label = "发送未成功" if internal else f"工具 {name} 未成功"
-            logger.warning("%s: %s", label, clip(str(result.get("error") or result), 120),
+            logger.warning("工具 %s 未成功: %s", name, clip(str(result.get("error") or result), 120),
                            extra={"session": sid})
         return result
 
@@ -124,9 +132,9 @@ class ToolExecutor:
 async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int = 6) -> str:
     """function calling 循环：LLM 决策 → 执行工具 → 结果回传 → 继续，直到结束回合。
 
-    模型唯一的说话通道是回复正文（send_text 不进工具列表，避免"调一次工具又说一遍"）：
+    模型唯一的说话通道是回复正文（正文经 outbound 通道发出，不在工具列表里，避免"调一次工具又说一遍"）：
     回合结束条件（返回 NO_REPLY，调用方不会把文本当回复发送）：
-    - LLM 未调用工具：有文本一律按 send_text 发出（本轮调用过工具也照发，
+    - LLM 未调用工具：有文本一律按正文发出（本轮调用过工具也照发，
       工具往返之后的补充文本同样是要说的话），无文本直接结束；
     - LLM 同时给了工具和正文：先执行工具，再把正文发出去（"发张表情再补一句"是同一个动作）；
     - 某次工具调用是 silence → 立即结束，不再追加请求（沉默不该紧接着一句话）；
@@ -161,7 +169,7 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
             # 模型直接回文本一律照发：工具往返之后的补充文本同样是要说的话
             # （不另打一行说明——发出去的「发送: 」行本身就是记录）
             if content:
-                await executor.execute("send_text", {"content": content}, ctx)
+                await executor.send_text(ctx, content)
             else:
                 logger.debug("模型未调用工具，结束本轮", extra={"session": sid})
             return NO_REPLY
@@ -175,7 +183,7 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
             except json.JSONDecodeError:
                 args = {}
             if tc.function.name not in allowed:
-                # 模型调了没下发给它的工具（例如已收起来的 send_text）：不发出去，让它把话写进正文
+                # 模型调了没下发给它的工具（门槛不够、这次没进列表）：不发出去，让它把话写进正文
                 logger.warning("工具 %s 未下发给模型，调用被忽略", tc.function.name,
                                extra={"session": sid})
                 history.append({
@@ -196,6 +204,6 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
         # 工具和正文同轮出现时，正文同样是要说的话：媒体先落地，这句话跟在后面
         companion = (msg.content or "").strip()
         if companion:
-            await executor.execute("send_text", {"content": companion}, ctx)
+            await executor.send_text(ctx, companion)
     # 工具循环超限：兜底结束（不回复）
     return NO_REPLY
