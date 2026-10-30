@@ -18,6 +18,7 @@ from pathlib import Path
 
 import botpy
 
+from ggbot import __version__
 from ggbot.core.config import Config
 from ggbot.core.presence import PresenceManager
 from ggbot.core.storage import Storage
@@ -107,6 +108,7 @@ async def main(cfg: Config | None = None) -> None:
     log_level = getattr(cfg, "_log_level", None) or (cfg.web_cfg or {}).get("log_level", "INFO")
     setup_logging(cfg.log_file, log_level)
     log = logging.getLogger("ggbot.main")
+    log.info("GGBot v%s 启动", __version__)
     log.info("日志就绪: %s (level=%s)", _rel(cfg.log_file), log_level)
 
     if getattr(cfg, "_reset_db", False):

@@ -25,10 +25,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, WebSocket
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from ggbot import __version__
 from ggbot.core.auth import LEVEL_LOCKED, LEVEL_NAMES, LEVEL_MAX, clamp_level
 from ggbot.core.config import BASE_DIR
 from ggbot.core.runtime_stats import runtime
@@ -337,9 +338,12 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
     # 静态前端：web/index.html + /static/style.css + /static/app.js
     app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
-    @app.get("/", response_class=FileResponse)
+    @app.get("/", response_class=HTMLResponse)
     async def index():
-        return FileResponse(WEB_DIR / "index.html")
+        # 版本号只有一个来源（ggbot.__version__）：前端 index.html 保持可独立热改，
+        # 页面上的 {{VERSION}} 占位在返回时替换，不留一份会过期的硬编码
+        html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+        return HTMLResponse(html.replace("{{VERSION}}", __version__))
 
     # ---------- 本地媒体（QQ 富媒体上传用的签名 URL，无需 Cookie） ----------
 
