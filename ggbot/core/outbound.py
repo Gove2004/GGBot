@@ -42,7 +42,7 @@ class Outbound:
             logger.warning("正文只有占位符，已拦截不发送: %s", clip(content, 40), extra=extra)
             return {
                 "ok": False,
-                "error": "不要用 [表情]/[语音]/[图片] 占位符；发表情调 send_sticker，"
+                "error": "不要用 [表情]/[语音]/[图片] 占位符；发表情调 send_emoji，"
                          "发语音调 send_voice_clone，发图/视频调 send_image/send_video",
             }
         cleaned = PLACEHOLDER_INLINE_RE.sub("", content).strip()

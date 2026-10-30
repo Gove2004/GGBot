@@ -4,7 +4,7 @@
 启动时自动发现并按配置挂载 schema。每个 toolset 目录自包含代码、config.json 与持久化数据。
 每个 Tool 带 min_level 门槛：全部启用的工具都下发给模型（不按等级裁剪），执行器按实际发送者校验，权限不足直接失败。
 回合语义：模型只有一条说话通道——回复正文，由 ggbot.core.outbound 逐行拆成消息发出（正文不是工具，模型无从调用）；
-媒体、沉默等才走工具（send_sticker / send_voice_clone / silence …），silence 主动不接话。
+媒体、沉默等才走工具（send_emoji / send_voice_clone / silence …），silence 主动不接话。
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ NO_REPLY = "__NO_REPLY__"
 
 PLACEHOLDER_HINT = (
     "正文里写媒体占位词是无效的：方括号也好、圆括号也好，写出来只是文字，不会变成图片/语音/表情。"
-    "要发媒体就直接调用对应工具（send_sticker / send_voice_clone / send_image / send_video），"
+    "要发媒体就直接调用对应工具（send_emoji / send_voice_clone / send_image / send_video），"
     "只说一句人话即可。"
 )
 

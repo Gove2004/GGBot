@@ -8,7 +8,7 @@
 
 挑图不再靠情绪词表：把「笑死」归一成「开心」这类判断本来就该模型自己做，
 固定词表只会在模型没想到的说法上失灵。现在每条素材只有一句话描述 desc
-（sticker_save 收藏时由识图自动写，手动放进目录的先用文件名兜底），
+（emoji_save 收藏时由识图自动写，手动放进目录的先用文件名兜底），
 检索时把 query 和 desc 都 embedding，按余弦相似度取最贴的；
 没配 embedding 或向量缺失时降级成字面重合度匹配（复用记忆检索的二元组算法）。
 
@@ -36,7 +36,7 @@ from ggbot.llm.memory import bigrams
 from ggbot.util.logging_setup import clip
 from ggbot.util.session import session_label
 
-logger = logging.getLogger("ggbot.tools.sticker")
+logger = logging.getLogger("ggbot.tools.emoji")
 
 IMAGE_EXTS = {".gif", ".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 DATA_KEY = "media/emoji"
@@ -80,10 +80,10 @@ def _decode_vec(raw) -> np.ndarray | None:
     return vec if vec.size else None
 
 
-class StickerLibrary:
+class EmojiLibrary:
     """表情库本体：索引读写、语义检索、投喂入库、发送限流。
 
-    send_sticker / sticker_list / sticker_save 共用这一份状态（缓存与限流必须共享，
+    send_emoji / emoji_list / emoji_save 共用这一份状态（缓存与限流必须共享，
     否则三个工具各自的计数器互相看不见）。
     """
 
@@ -320,7 +320,7 @@ class StickerLibrary:
         if not query:
             return {"ok": False, "error": "query 不能为空：说清这一刻想表达什么"}
         limit = max(1, int(cfg.get("max_per_turn", 1) or 1))
-        if int(ctx.get("_sticker_count", 0)) >= limit:
+        if int(ctx.get("_emoji_count", 0)) >= limit:
             return {"ok": False, "error": f"本轮已发过表情，最多 {limit} 张"}
         gap = max(0.0, float(cfg.get("min_interval_sec", 10) or 0))
         now = time.monotonic()
@@ -330,7 +330,7 @@ class StickerLibrary:
         items = await self.items()
         if not items:
             return {"ok": False, "error": "表情库为空（素材放 tool/media/emoji/stickers/，"
-                                          "或用 sticker_save 收藏用户投喂的图）"}
+                                          "或用 emoji_save 收藏用户投喂的图）"}
         rows = await self.match(query, 6, items)
         if not rows:
             return {"ok": False, "error": "库里没有贴近这个说法的表情，直接说话就好"}
@@ -347,11 +347,11 @@ class StickerLibrary:
 
         result = await self.rt.send_media(ctx, 1, str(path), "表情")
         if result.get("ok"):
-            ctx["_sticker_count"] = int(ctx.get("_sticker_count", 0)) + 1
+            ctx["_emoji_count"] = int(ctx.get("_emoji_count", 0)) + 1
             self._last_sent[sid] = now
             recent.append(picked["file"])
             # 把发出去的那张长什么样回给模型：它下一轮才知道库里有什么、该怎么说
-            result["sticker"] = {"name": Path(picked["file"]).name,
+            result["emoji"] = {"name": Path(picked["file"]).name,
                                  "desc": picked["desc"], "score": picked["score"]}
         return result
 
@@ -427,17 +427,17 @@ class StickerLibrary:
                           for r in rows]}
 
 
-class _StickerTool(Tool):
+class _EmojiTool(Tool):
     data_name = DATA_KEY
     default_config = DEFAULT_CONFIG
 
-    def __init__(self, rt, lib: StickerLibrary):
+    def __init__(self, rt, lib: EmojiLibrary):
         super().__init__(rt)
         self.lib = lib
 
 
-class SendSticker(_StickerTool):
-    name = "send_sticker"
+class SendEmoji(_EmojiTool):
+    name = "send_emoji"
     description = (
         "从本地表情库挑最贴的一张发出去，用来说语气、代替干打字。"
         "query 写一句你想表达的东西+想要的画面（如「无语到想翻白眼」「恭喜对方，热烈一点」），"
@@ -456,8 +456,8 @@ class SendSticker(_StickerTool):
         return await self.lib.send(args, ctx)
 
 
-class StickerList(_StickerTool):
-    name = "sticker_list"
+class EmojiList(_EmojiTool):
+    name = "emoji_list"
     config_owner = False
     toggleable = False
     description = (
@@ -476,8 +476,8 @@ class StickerList(_StickerTool):
         return await self.lib.list_items(args)
 
 
-class StickerSave(_StickerTool):
-    name = "sticker_save"
+class EmojiSave(_EmojiTool):
+    name = "emoji_save"
     min_level = 2
     config_owner = False
     toggleable = False
@@ -500,5 +500,5 @@ class StickerSave(_StickerTool):
 
 
 def get_tools(rt):
-    lib = StickerLibrary(rt)
-    return [SendSticker(rt, lib), StickerList(rt, lib), StickerSave(rt, lib)]
+    lib = EmojiLibrary(rt)
+    return [SendEmoji(rt, lib), EmojiList(rt, lib), EmojiSave(rt, lib)]

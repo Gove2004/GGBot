@@ -77,7 +77,8 @@ done <<< "$files"
 import json
 from pathlib import Path
 
-RENAME = {"memory_search": "memory_fetch", "memory_write": "memory_save"}
+RENAME = {"memory_search": "memory_fetch", "memory_write": "memory_save",
+          "send_sticker": "send_emoji", "sticker_list": "emoji_list", "sticker_save": "emoji_save"}
 paths = list(Path("tool").rglob("config.json"))
 for p in paths:
     try:
