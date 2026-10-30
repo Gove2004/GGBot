@@ -214,7 +214,7 @@ class _GenTool(Tool):
 
 class GenerateImage(_GenTool):
     name = "generate_image"
-    min_level = 2
+    min_level = 4
     description = (
         "按文字描述生成一张图片并发送，对方想看某个画面、或想把群里已有的图改一版时用。"
         "想改图把它的本地路径放进 refs——上下文里 [图片 … local=…] 的 local 就是本地路径。"
@@ -286,7 +286,7 @@ class GenerateImage(_GenTool):
 
 class GenerateVideo(_GenTool):
     name = "generate_video"
-    min_level = 3
+    min_level = 4
     config_owner = False
     toggleable = False
     description = (
