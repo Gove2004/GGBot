@@ -198,7 +198,6 @@ class FsRead(FsBase):
         },
         "required": ["action"],
     }
-    prompt_hint = "要看本机文件时用 fs_read（列目录/读文件/找文件/搜内容），只能访问配置的根目录。"
     min_level = 3
 
     async def run(self, args: dict, ctx: dict) -> dict:
@@ -413,7 +412,6 @@ class FsWrite(FsBase):
         },
         "required": ["action"],
     }
-    prompt_hint = "要新建或修改文件时用 fs_write；覆盖已有文件需显式 overwrite=true，不能删除文件。"
     min_level = 4
     config_owner = False
     toggleable = False

@@ -45,7 +45,7 @@ class VoiceClone(Tool):
     description = (
         "用固定参考音色把一段话合成语音并发送（比文字更有温度）。"
         "适合撒娇、安慰、问候、道晚安、分享开心事；私聊比群聊更合适，正事不要用语音。"
-        "一次聊天一条就够，文本控制在 2-3 句、10-25 字以内"
+        "一次聊天一条就够，文本控制在 2-3 句、10-25 字以内，像随手录的一句话，别念稿"
     )
     parameters = {
         "type": "object",
@@ -65,10 +65,6 @@ class VoiceClone(Tool):
         "max_retries": 2,
         "max_chars": 60,
     }
-    prompt_hint = (
-        "对方明显低落、求安慰、撒娇，或你要道晚安、分享开心事时，优先考虑发一条短语音，"
-        "比只打字更有温度；语音要短、有情绪起伏，像随手录的；一次聊天不连发多条。"
-    )
 
     def _ref_path(self) -> Path:
         raw = str(self.config.get("reference_voice_path") or "voice_ref.wav")

@@ -45,7 +45,8 @@ class SendEmail(Tool):
     description = (
         "通过 SMTP 发送邮件。用户明确要求发邮件时直接调用，不要在调用前自己判断能不能发；"
         "收件人直接传用户给的地址，工具会校验白名单并返回具体原因。"
-        "支持纯文本/HTML 正文与多个附件（附件只能是 temp 目录下已生成的文件）"
+        "支持纯文本/HTML 正文与多个附件（附件只能是 temp 目录下已生成的文件）；"
+        "绝不把配置、密钥、数据库文件当附件发出去"
     )
     parameters = {
         "type": "object",
@@ -78,10 +79,6 @@ class SendEmail(Tool):
         "max_attachments": 3,
         "max_attachment_mb": 10,
     }
-    prompt_hint = (
-        "用户要发邮件就直接调 send_email，别先自己断言发不了；收件人只能从白名单/默认收件人里选；"
-        "绝不把配置、密钥、数据库当附件外发。"
-    )
 
     def is_enabled(self) -> bool:
         if not super().is_enabled():

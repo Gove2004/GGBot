@@ -7,8 +7,9 @@
 分类即能力域：core（回合控制）/ media（富媒体）/ memory（记忆）/ web（联网）/ fs（文件）/ mail（邮件）/ admin（管理）。
 新增分类 = 新建一个含插件模块的子包。
 
-每个 Tool 声明 min_level（调用门槛，0-5 为发送者等级，6 为永久锁）；注册表按等级裁剪
-下发给模型的 schema，执行器再按实际发送者校验一次——前者省 token，后者才是安全边界。
+每个 Tool 声明 min_level（调用门槛，0-5 为发送者等级，6 为永久锁）。全部启用的工具都会下发给模型，
+**不按发送者等级裁剪**：工具列表对所有会话一致，才能真正复用厂商的前缀缓存；
+门槛由执行器在调用时校验，权限不足直接失败返回。6 级（永久锁）不进任何列表。
 
 tool/ 位于项目根目录且**自包含**：每个 toolset 目录同时存放代码、config.json
 与持久化数据（索引、素材、参考音频），整目录复制即可迁移；运行产物在 temp/tool/<name>/。
@@ -149,7 +150,6 @@ class Tool:
     parameters: dict = {"type": "object", "properties": {}}
     default_config: dict = {}
     enabled_by_default: bool = True
-    prompt_hint: str = ""
     config_owner: bool = True   # 共享配置目录时，只由一个工具展示/承担配置
     toggleable: bool = True     # 共享配置的工具不单独启停
     min_level: int = 1          # 调用门槛（0-5 为发送者等级，6 = 永久锁）；可在 config.levels 覆盖
@@ -247,27 +247,18 @@ class ToolRegistry:
             return None
         return tool
 
-    def visible(self, level: int) -> list[tuple[Tool, int]]:
-        """某等级可见的工具（启用且门槛达标），按 (门槛, 分类, 名称) 稳定排序。
+    def dispatched(self) -> list[Tool]:
+        """下发给模型的全部工具（启用即可见，不看发送者等级），按 (门槛, 分类, 名称) 稳定排序。
 
-        排序固定是为了让不同等级的工具列表共享前缀：低等级用户的列表是高等级的前缀，
-        厂商的前缀缓存命中率更高。6 级工具永远不会出现在任何人的列表里。
+        排序固定让所有会话拿到同一份列表：这份列表和静态人设一起构成请求前缀，
+        厂商的上下文缓存才命中得了。6 级（永久锁）永远不出现在任何人的列表里。
         """
-        level = max(0, min(6, int(level)))
-        rows = [
-            (t, t.required_level())
-            for t in self.tools.values()
-            if t.is_enabled() and level >= t.required_level()
-        ]
-        rows.sort(key=lambda x: (x[1], x[0].category, x[0].name))
+        rows = [t for t in self.tools.values() if t.is_enabled() and t.required_level() <= 5]
+        rows.sort(key=lambda t: (t.required_level(), t.category, t.name))
         return rows
 
-    def schemas(self, level: int) -> list[dict]:
-        return [t.schema() for t, _ in self.visible(level)]
-
-    def hints(self, level: int) -> str:
-        lines = [f"- {t.name}：{t.prompt_hint}" for t, _ in self.visible(level) if t.prompt_hint]
-        return "\n".join(lines) or "（无）"
+    def schemas(self) -> list[dict]:
+        return [t.schema() for t in self.dispatched()]
 
     def list_info(self) -> list[dict]:
         out = []

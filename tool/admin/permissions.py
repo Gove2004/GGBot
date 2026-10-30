@@ -73,7 +73,8 @@ class ManagePermission(Tool):
         "等级：0 禁止（消息被丢弃）/ 1 受限（只能聊天）/ 2 普通（联网、记忆、发图、语音）/ "
         "3 特权（读文件、发邮件）/ 4 心腹（写文件、清空上下文）/ 5 归属（管理权限）。"
         "对方只描述能力时按此换算，比如“让他能改文件”→4，“只能看文件”→3，"
-        "“能发邮件”→3，“取消权限/拉黑”→0；说不清要哪一级就先问一句，或调 help 列出六级让对方选。"
+        "“能发邮件”→3，“取消权限/拉黑”→0；说不清要哪一级就先问一句，或调 help 列出六级让对方选；"
+        "对方问“权限怎么分”就照 help 的内容回答。"
     )
     parameters = {
         "type": "object",
@@ -95,11 +96,6 @@ class ManagePermission(Tool):
         },
         "required": ["action"],
     }
-    prompt_hint = (
-        "归属者要授权/降权/拉黑/解禁时用 manage_permission，直接按昵称或 8 位 id 找人不要求 openid；"
-        "对方只说能力（“能改文件”“只读”“拉黑”）就换算成等级；"
-        "不确定成员或等级先 list/help；对方问“权限怎么分”时用 help 的内容回答。"
-    )
 
     async def run(self, args: dict, ctx: dict) -> dict:
         actor = ctx.get("actor") or {}

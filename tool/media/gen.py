@@ -216,8 +216,9 @@ class GenerateImage(_GenTool):
     name = "generate_image"
     min_level = 2
     description = (
-        "按文字描述生成一张图片并发送。想改群里已有的图，把它的本地路径放进 refs——"
-        "上下文里 [图片 … local=…] 的 local 就是本地路径。描述写清主体、风格、光线，一次一张"
+        "按文字描述生成一张图片并发送，对方想看某个画面、或想把群里已有的图改一版时用。"
+        "想改图把它的本地路径放进 refs——上下文里 [图片 … local=…] 的 local 就是本地路径。"
+        "描述写清主体、风格、光线；一次一张，生成要几十秒，别连着刷屏"
     )
     parameters = {
         "type": "object",
@@ -239,10 +240,6 @@ class GenerateImage(_GenTool):
         },
         "required": ["prompt"],
     }
-    prompt_hint = (
-        "有人让你画一张图、想看某个画面，或想把群友发的图改一版时用；"
-        "生图要几十秒，一次只出一张，别连着刷屏。"
-    )
 
     def _synth(self, prompt: str, refs: list[str], ratio: str, size: str) -> Path:
         cfg = self.config
@@ -293,8 +290,9 @@ class GenerateVideo(_GenTool):
     config_owner = False
     toggleable = False
     description = (
-        "生成一段短视频并发送。不填 refs 是文生视频；填一张是拿它当首帧让画面动起来；"
-        "填两张是首帧到尾帧的过渡。seconds 控制时长（4–12 秒），一次一段"
+        "生成一段短视频并发送，只在对方明确想看动态画面时用（比生图慢得多、也更贵）。"
+        "不填 refs 是文生视频；填一张是拿它当首帧让画面动起来；"
+        "填两张是首帧到尾帧的过渡。seconds 控制时长（4–12 秒），一次一段，别连着刷屏"
     )
     parameters = {
         "type": "object",
@@ -320,9 +318,6 @@ class GenerateVideo(_GenTool):
         },
         "required": ["prompt"],
     }
-    prompt_hint = (
-        "视频比图片慢得多、成本也高，只在对方明确想看动态画面时用；一次一段，别连着刷屏。"
-    )
 
     def _size(self) -> str:
         cfg = self.config

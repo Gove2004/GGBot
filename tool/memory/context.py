@@ -12,15 +12,12 @@ class ClearContext(Tool):
     min_level = 4
     data_name = "memory"
     description = (
-        "清空当前会话的上下文：删除本会话的全部消息与历史摘要，长期记忆不受影响。"
-        "只在对方明确要求清空上下文、忘掉刚才聊的、重新开始、不要留着这些记录时调用；"
+        "清空当前会话的上下文：删除本会话的全部消息，长期记忆不受影响。"
+        "只在对方明确要求清空上下文、忘掉刚才聊的、重新开始、不要留着这些记录时调用，"
+        "按返回的条数如实告知；只是问“还记不记得某事”应该用 memory_fetch，不要清上下文。"
         "只能清空自己所在的这个会话，清不掉别的会话。"
     )
     parameters = {"type": "object", "properties": {}}
-    prompt_hint = (
-        "对方说“清空上下文”“把刚才聊的忘掉”“重新开始”时调 clear_context，"
-        "按返回的条数如实告知；只是问“还记不记得某事”用 memory_fetch，不要清上下文。"
-    )
 
     async def run(self, args: dict, ctx: dict) -> dict:
         actor = ctx.get("actor") or {}

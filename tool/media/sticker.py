@@ -442,7 +442,7 @@ class SendSticker(_StickerTool):
         "从本地表情库挑最贴的一张发出去，用来说语气、代替干打字。"
         "query 写一句你想表达的东西+想要的画面（如「无语到想翻白眼」「恭喜对方，热烈一点」），"
         "系统按语义匹配；库里没有贴近的会直接返回失败，那时说话就行，别硬凑或反复换词试。"
-        "一次回复最多一张"
+        "一次回复最多一张，同一句正文可以照发；对方在说正事时别用表情打岔"
     )
     parameters = {
         "type": "object",
@@ -451,12 +451,6 @@ class SendSticker(_StickerTool):
         },
         "required": ["query"],
     }
-    prompt_hint = (
-        "有语气可表达时先想表情：send_sticker 用一句话描述你想说的是什么感觉（不用管文件名），"
-        "系统按语义从库里挑最像的一张，可以再补一句文字，同一轮最多一张。"
-        "返回「库里没有」就是真没有，别再换词重试；对方说正事时不要用表情打岔。"
-        "只有用户明确投喂并同意收藏时才能调用 sticker_save。"
-    )
 
     async def run(self, args: dict, ctx: dict) -> dict:
         return await self.lib.send(args, ctx)
@@ -466,7 +460,6 @@ class StickerList(_StickerTool):
     name = "sticker_list"
     config_owner = False
     toggleable = False
-    prompt_hint = ""
     description = (
         "看看表情库里有什么素材。query 留空按入库时间列出全部（最多 limit 条），"
         "给了 query 就按语义相似度排序并带上匹配分"
@@ -488,7 +481,6 @@ class StickerSave(_StickerTool):
     min_level = 2
     config_owner = False
     toggleable = False
-    prompt_hint = ""
     description = (
         "把用户明确投喂并同意收藏的图片收进表情库（只接受 temp 目录下的图片路径）。"
         "描述默认由识图自动生成，只在识图没开或识别不准时传 desc 覆盖。"

@@ -16,7 +16,6 @@ class CurrentTime(Tool):
         "或写带日期的文案时调用，不要凭记忆猜"
     )
     parameters = {"type": "object", "properties": {}}
-    prompt_hint = "涉及今天几号、现在几点、星期几，或要写带时间的文案时，先调 time 取当前时间。"
 
     async def run(self, args: dict, ctx: dict) -> dict:
         now = datetime.now().astimezone()

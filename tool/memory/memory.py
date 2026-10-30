@@ -12,7 +12,7 @@ class MemoryFetch(Tool):
     name = "memory_fetch"
     description = (
         "在长期记忆中检索，返回与 query 相关的记忆条目（默认语义检索，未配置向量服务时按关键词匹配）。"
-        "想不起某个群友、某件事、某个话题的细节时先用它查，不要凭空猜"
+        "对方问“你还记得吗”“上次说的那个”，或你想不起某个群友、某件事、某个话题的细节时先查它，不要凭空猜"
     )
     parameters = {
         "type": "object",
@@ -22,7 +22,6 @@ class MemoryFetch(Tool):
         },
         "required": ["query"],
     }
-    prompt_hint = "遇到“你还记得吗”“上次说的那个”或想不起某人某事时，先 memory_fetch 再回答。"
 
     async def run(self, args: dict, ctx: dict) -> dict:
         query = str(args.get("query") or "").strip()
@@ -51,7 +50,6 @@ class MemorySave(Tool):
         },
         "required": ["content"],
     }
-    prompt_hint = "对方聊到自己的名字/喜好/近况/约定时，主动 memory_save；别只记在脑子里。"
 
     async def run(self, args: dict, ctx: dict) -> dict:
         content = to_str(args.get("content", "")).strip()

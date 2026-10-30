@@ -2,7 +2,7 @@
 
 一切能力都是 Tool：插件按能力域放在项目根 tool/{core,media,memory,web,fs,mail,admin}/，
 启动时自动发现并按配置挂载 schema。每个 toolset 目录自包含代码、config.json 与持久化数据。
-每个 Tool 带 min_level 门槛：请求只下发当前发送者能用的 schema，执行器再按实际发送者校验。
+每个 Tool 带 min_level 门槛：全部启用的工具都下发给模型（不按等级裁剪），执行器按实际发送者校验，权限不足直接失败。
 回合语义：模型只有一条说话通道——回复正文，由 ggbot.core.outbound 逐行拆成消息发出（正文不是工具，模型无从调用）；
 媒体、沉默等才走工具（send_sticker / send_voice_clone / silence …），silence 主动不接话。
 """
@@ -78,11 +78,8 @@ class ToolExecutor:
                            extra={"session": sid})
         return result
 
-    def schemas(self, level: int) -> list[dict]:
-        return self.registry.schemas(level)
-
-    def hints(self, level: int) -> str:
-        return self.registry.hints(level)
+    def schemas(self) -> list[dict]:
+        return self.registry.schemas()
 
     def list_tools(self) -> list[dict]:
         return self.registry.list_info()
@@ -129,8 +126,12 @@ class ToolExecutor:
         return result
 
 
-async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int = 6) -> str:
+async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int = 6,
+                     base_len: int | None = None) -> str:
     """function calling 循环：LLM 决策 → 执行工具 → 结果回传 → 继续，直到结束回合。
+
+    工具列表是全部启用工具（对所有会话一致），权限只在实际调用时校验，不够就是失败返回。
+    base_len 由调用方给出：messages 里属于「稳定前缀 + 历史」的条数，其余算本轮新增。
 
     模型唯一的说话通道是回复正文（正文经 outbound 通道发出，不在工具列表里，避免"调一次工具又说一遍"）：
     回合结束条件（返回 NO_REPLY，调用方不会把文本当回复发送）：
@@ -140,15 +141,13 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
     - 某次工具调用是 silence → 立即结束，不再追加请求（沉默不该紧接着一句话）；
     - 达到 max_rounds。
     """
-    level = int((ctx.get("actor") or {}).get("level") or 0)
     sid = session_label(ctx.get("session_id"))
-    tools = executor.schemas(level)
+    tools = executor.schemas()
     if not tools:
-        logger.warning("没有可用的工具（等级 L%d），跳过本轮", level, extra={"session": sid})
+        logger.warning("没有启用的工具，跳过本轮", extra={"session": sid})
         return NO_REPLY
-    allowed = {s["function"]["name"] for s in tools}
     history = list(messages)
-    base_len = max(0, len(messages) - 1)
+    base_len = (len(history) - 1) if base_len is None else max(0, min(int(base_len), len(history)))
     retried_placeholder = False
     for round_no in range(max_rounds):
         resp = await asyncio.to_thread(
@@ -182,16 +181,6 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
                 args = json.loads(tc.function.arguments or "{}")
             except json.JSONDecodeError:
                 args = {}
-            if tc.function.name not in allowed:
-                # 模型调了没下发给它的工具（门槛不够、这次没进列表）：不发出去，让它把话写进正文
-                logger.warning("工具 %s 未下发给模型，调用被忽略", tc.function.name,
-                               extra={"session": sid})
-                history.append({
-                    "role": "tool", "tool_call_id": tc.id,
-                    "content": json.dumps({"ok": False, "error": f"{tc.function.name} 不可调用；"
-                                        "要说的话直接写在回复正文里，系统会替你发出去"}, ensure_ascii=False),
-                })
-                continue
             result = await executor.execute(tc.function.name, args, ctx)
             history.append({
                 "role": "tool",
