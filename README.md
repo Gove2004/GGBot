@@ -22,7 +22,7 @@ GGBot/
 │   └── ggbot.db         # SQLite 持久化：会话/消息/记忆（运行时生成，gitignored）
 ├── tool/                # Tool 自包含目录：每个 toolset = 代码 + config.json + 持久化数据（整目录可复制迁移）
 │   ├── core/            #   silence（显式收轮）/ time
-│   ├── media/           #   富媒体：send_sticker / sticker_list / sticker_save / send_image / send_video / send_voice_clone / generate_image / generate_video
+│   ├── media/           #   富媒体：send_emoji / emoji_list / emoji_save / send_image / send_video / send_voice_clone / generate_image / generate_video
 │   │   ├── emoji/       #     表情配置 + index.json（素材+描述）+ vectors.json（向量缓存，gitignored）+ stickers/ + user/
 │   │   ├── audio/       #     语音克隆配置（MiMo key）+ voice_ref.wav（参考音频）
 │   │   └── generate/    #     生图/生视频配置（Agnes key、默认比例/尺寸/时长上限）
@@ -145,7 +145,7 @@ LLM 与 embedding 都不绑定厂商：DeepSeek、OpenAI、通义、SiliconFlow�
 - 各工具的 `tool/<分类>/config.json` 在首次运行时按代码里的 `default_config` 自动生成，新增字段自动补齐；模板见同目录 `config.example.json`。
 - 含密钥的工具配置（MiMo key、Agnes key、SMTP 授权码、Tavily key）不入库；邮件收件人白名单、语音克隆、表情限流、搜索服务、文件沙箱等可在 Web「工具」页或直接改配置文件；生图/生视频的比例、尺寸与时长上限只改 `tool/media/generate/config.json`（面板工具页没有逐工具的参数编辑）。
 - **调用门槛**：每个工具的默认门槛写在代码里（`min_level`），可在 `tool/<分类>/config.json → levels` 单独覆盖（1–6，6 = 永久锁）；发送者等级在 Web「权限」页设置。详见「权限与工具门槛」。
-- 可选素材与凭据不入库，缺失时对应工具自动视为未启用：表情素材放 `tool/media/emoji/stickers/`（默认空库；手动放进去的图只有文件名兜底描述，挑图质量差，建议用 `sticker_save` 让识图补写一句话描述）、用户投喂存在 `tool/media/emoji/user/`、语音参考音频放 `tool/media/audio/voice_ref.wav`、生图/生视频要 `tool/media/generate/config.json → api_key`（Agnes AI）。
+- 可选素材与凭据不入库。**部署时就定好的东西缺失 = 工具未启用**（不进下发列表）：生图/生视频要 `tool/media/generate/config.json → api_key`（Agnes AI），语音克隆要 MiMo `api_key` 且 `tool/media/audio/voice_ref.wav` 在位。**会随聊天长大的素材不做下发条件**：表情库默认空，为空时 `send_emoji` 照样下发、调用时才如实返回"表情库为空"并给出放素材的路径（素材放 `tool/media/emoji/stickers/`，手动放进去的图只有文件名兜底描述，挑图质量差，建议用 `emoji_save` 让识图补写一句话描述；用户投喂存 `tool/media/emoji/user/`）。
 
 ### 5. 启动
 
@@ -207,7 +207,7 @@ unit 里有 `LimitNOFILE=65535`：systemd 拉起的服务 soft nofile 默认只�
   - 识图两条、各司其职：`识图 deepseek-flash 请求 1402 | 输出 26 | 命中 - | 费用 ¥0.0032`（只有数字）+ `图片已识别 6ce72460: 一只橘猫趴在窗台上…`（描述全文只在这一行出现，超长显式补省略号）
   - 上下文一条：`上下文预算: 历史 40 / 1024 条 · 估算 5951 / 128000 tokens`（「历史」是本轮注入的历史消息条数，「估算」是整次请求的 tokens；预算只做观测，窗口按条数截断，不再按它压缩历史）
   - LLM 两条：`LLM 请求 5951 tokens (工具 329 | 历史 456 | 新增 215)` / `LLM 响应 11 tokens (命中 5504/5951 (92%) | 费用 ¥0.0045)`。请求总数取服务商返回的 `usage.prompt_tokens`，响应数是 `completion_tokens`；请求行括号里的工具/历史/新增三段来自本地估算，按比例缩放到服务商总数（三段之和 = 总数），便于看本轮新增占比；不再标第几次调用；服务商没返回 usage 时总数与三段一起加 `≈` 明确是估算；同一回合出现两条是工具往返的追加请求；命中率与费用按 `llm.pricing` 估算，未配单价显示 `-`
-  - 工具一条（模型调用的工具，唯一形态）：`工具 send_sticker（admin=小明/54019C24(L2), query=笑死）`——只有**模型调用的工具**走这个形状：调用者（`admin=`）、等级与全部参数只出现在这一行（单值 120 字、整行 200 字截断；密钥都不是工具参数，不会进日志）。L3 及以上特权工具升 INFO，普通工具留在 DEBUG。异常各一条：`工具 fs_write 拒绝: 需要 L4，当前 小明/54019C24(L2)` / `工具 xxx 不存在（模型编造的工具名）` / `工具 fs_read 未成功: <错误>`；模型凭空调用一个注册表里没有的名字（例如旧的 `send_text`）也只留这一条 `不存在`，不会被执行
+  - 工具一条（模型调用的工具，唯一形态）：`工具 send_emoji（admin=小明/54019C24(L2), query=笑死）`——只有**模型调用的工具**走这个形状：调用者（`admin=`）、等级与全部参数只出现在这一行（单值 120 字、整行 200 字截断；密钥都不是工具参数，不会进日志）。L3 及以上特权工具升 INFO，普通工具留在 DEBUG。异常各一条：`工具 fs_write 拒绝: 需要 L4，当前 小明/54019C24(L2)` / `工具 xxx 不存在（模型编造的工具名）` / `工具 fs_read 未成功: <错误>`；模型凭空调用一个注册表里没有的名字（例如旧的 `send_text`）也只留这一条 `不存在`，不会被执行
   - 发出正文一条：`发送: 在忙 稍后找你`——正文通道不是工具（住在 `ggbot/core/outbound.py`，也不暴露给模型），所以**不套工具格式**：实际发出的每条消息一行（正文带换行拆成多条时也是一条一行），INFO 级，不带 `admin=`（谁在说话看「收到」行与会话列就够了）。同一轮模型既调了工具又写了正文 → 先一条 `工具 …`、再一条 `发送: …`
   - 生图/生视频各一条（只报数字，口径同识图行）：`生图 2K/16:9 1.4 MB（12.3s）` / `生视频 720P/9:16 6s 3.1 MB（96.3s 耗时）`——档位、画幅、时长、成品大小与等待时间都只在这一行，提示词看上一条工具调用行；成品送达另有一条 `发送图片: gen_….png` / `发送视频: gen_….mp4`，失败只留 `生图失败: …` / `生视频失败: …`
   - 正文只出现一次：正常发出就是那条 `发送: ` 行，不再补"发送成功"确认行。只有出问题才另留痕——占位符拦截只报标记：`正文夹带占位符已剔除: [表情]（余文照常发送）` / `正文只有占位符，已拦截不发送: [表情]` / `发送未成功: <原因>`；被动回复过期降级主动发送记一条 `被动回复失败，降级主动发送: …`；群聊 @ 成员若被平台拒收 markdown 会有一条 `群 markdown @ 消息被拒，退回普通文本: …`；富媒体仍是 `发送语音: …` 一条
@@ -345,12 +345,12 @@ stateDiagram-v2
 |---|---|---|---|
 | core | `silence` | 本轮主动不接话：不发任何东西并立即结束回合（可选 `reason` 只进日志），给模型一个"沉默"的正当动作 | 无 |
 | core | `time` | 当前日期 / 时间 / 星期 / 时区 | 无 |
-| media | `send_sticker` | 用一句话说明想表达什么（`query`），向量在素材库里找最贴的一张发出去；低于 `min_score` 就没有贴合的，改用说话 | `emoji/config.json`、`emoji/index.json`、`emoji/vectors.json`、`emoji/stickers/`、`emoji/user/` |
-| media | `sticker_list` / `sticker_save` | 按同一套检索查看可用素材 / 收藏用户投喂的图（收藏时由识图自动写描述） | 与 `send_sticker` 同组（不单独启停） |
+| media | `send_emoji` | 用一句话说明想表达什么（`query`），向量在素材库里找最贴的一张发出去；低于 `min_score` 就没有贴合的，改用说话 | `emoji/config.json`、`emoji/index.json`、`emoji/vectors.json`、`emoji/stickers/`、`emoji/user/` |
+| media | `emoji_list` / `emoji_save` | 按同一套检索查看可用素材 / 收藏用户投喂的图（收藏时由识图自动写描述） | 与 `send_emoji` 同组（不单独启停） |
 | media | `send_image` / `send_video` | 发送图片 / 视频（URL 或本地文件，本地走 base64 直传） | 无 |
 | media | `send_voice_clone` | MiMo 声音克隆 TTS（参考音频克隆音色，L2） | `audio/config.json`、`audio/voice_ref.wav` |
-| media | `generate_image` | Agnes 文生图，生成完直接发（L2）；带 `refs`（temp/ 或 emoji/ 素材的本地路径）就是改图或跟风格 | `generate/config.json`（Agnes key、`image_size` / `image_ratio` / `max_refs`） |
-| media | `generate_video` | Agnes 生视频（L3）：不填 refs 文生视频，填一张当首帧让静图动起来，填两张做首尾帧过渡；时长 4–12 秒 | 同上（与 `generate_image` 同组，不单独启停） |
+| media | `generate_image` | Agnes 文生图，生成完直接发（L4 心腹）；带 `refs`（temp/ 或 emoji/ 素材的本地路径）就是改图或跟风格 | `generate/config.json`（Agnes key、`image_size` / `image_ratio` / `max_refs`） |
+| media | `generate_video` | Agnes 生视频（L4 心腹）：不填 refs 文生视频，填一张当首帧让静图动起来，填两张做首尾帧过渡；时长 4–12 秒 | 同上（与 `generate_image` 同组，不单独启停） |
 | memory | `memory_fetch` / `memory_save` | 向量记忆检索 / 沉淀 | 无 |
 | memory | `clear_context` | 清空**本会话**上下文：删除全部消息并把归档游标归零，长期记忆不动（L4 心腹） | 无 |
 | web | `web_search` / `web_fetch` | 联网搜索（Bing RSS / SearXNG / Tavily；`read=true` 顺带抓回前 3 条正文；结果与关键词几乎不沾边时返回 `note` 让模型换词或承认不确定）/ 抓取网页正文（`urls` 可批量并发，最多 5 个） | `config.json`（搜索服务、超时、抓取上限、`read_max_chars`） |
@@ -373,7 +373,7 @@ stateDiagram-v2
 
 - 每个 Tool 的配置在 `tool/<分类>/config.json`：读取时与默认值合并、保留未知字段、自动补齐新增默认项；`enabled=false` 即从下发列表里消失
 - **无默认配置的工具**（`silence` 等）在首次被停用时才落盘 `{"enabled": false}`，不产生空配置/空目录
-- **共享配置组**：表情三件套同一份 `tool/media/emoji/config.json`，`sticker_list`/`sticker_save` 标记 `config_owner=false, toggleable=false`，面板显示"同组"
+- **共享配置组**：表情三件套同一份 `tool/media/emoji/config.json`，`emoji_list`/`emoji_save` 标记 `config_owner=false, toggleable=false`，面板显示"同组"
 - 持久化数据（索引、素材、参考音频）与代码同目录，在 `tool/<分类>/`（如 `media/emoji`、`media/audio`、`web`）；运行产物（TTS/下载/生成）在 `temp/tool/<key>/`，随 temp TTL 清理
 - **迁移**：复制 `tool/<分类>/` 整个目录即可带走该 toolset 的代码 + 配置 + 数据，无需同步数据库或其他目录
 - **Web 开关**：面板「工具」页按分类排序列出全部 Tool、描述与脱敏配置，可即时启停（`POST /api/tools/{name}/toggle`，密钥字段返回 `***`）
@@ -388,9 +388,9 @@ stateDiagram-v2
 - 检索：`query` 与每条 `desc` 都 embedding，按余弦相似度取最贴的一张；`min_score`（默认 0.50）之下视为库里没有贴合的表情，直接让模型说话——实测该厂商相似度分布很挤，完全不相干的说法也能拿到 0.47，阈值调松就会乱发表情。与最高分相差不到 `NEAR_TIE`(0.05) 的才算同一档，只在这一档里随机，并避开该会话最近 8 张
 - `query_instruct`：Qwen3-Embedding 这类模型要求查询侧带任务说明、文档侧不带，代码按 `Instruct: …\nQuery: …` 组装查询。同一批 5 张素材实测：带 instruct 命中 4 个说法，不带只命中 3 个。只影响查询向量，素材 `desc` 仍是原文，换厂商改文案或留空即可
 - 降级：未配置 embedding 或向量缺失时改用字面重合度（复用记忆检索的二元组算法，匹配 `desc` + 文件名），此时不受 `min_score` 约束
-- 描述来源：`sticker_save` 收藏时由识图模型自动写一句；手动放进 `stickers/` 的只有文件名兜底（下划线/连字符当空格），**关键词能碰上、向量基本挑不准**，建议先让机器人收藏或补一句 `desc`
+- 描述来源：`emoji_save` 收藏时由识图模型自动写一句；手动放进 `stickers/` 的只有文件名兜底（下划线/连字符当空格），**关键词能碰上、向量基本挑不准**，建议先让机器人收藏或补一句 `desc`
 - 节制：`max_per_turn`（默认 1，按回合计数）/ `min_interval_sec`（默认 10s，按会话）双重限流；prompt 提示"对方说正事时不要用表情"；库为空时调用直接返回"表情库为空"并给出放素材的路径，模型据此改走说话
-- 入库：`sticker_save` 只接受 `temp/` 下的图片，按内容摘要（sha1 前 12 位）去重后复制到 `tool/media/emoji/user/`，原子更新索引与向量；`max_user_stickers` 默认 200；仅限用户明确同意收藏的图
+- 入库：`emoji_save` 只接受 `temp/` 下的图片，按内容摘要（sha1 前 12 位）去重后复制到 `tool/media/emoji/user/`，原子更新索引与向量；`max_user_stickers` 默认 200；仅限用户明确同意收藏的图
 
 ### 语音（media/audio）
 
@@ -407,7 +407,8 @@ stateDiagram-v2
 - 参考图（`refs`）只收 `temp/` 与 `tool/media/emoji/` 下的本地路径（整份转 base64 data URL 发给接口，单张 8MB 封顶），不接受外部 URL：群友发的图本来就落地在 `temp/`，工具不必再自己去下载，少一处 SSRF；越界路径、`config.json`、`.key`/`.pem` 一律拒绝
 - 生图的 `refs` 是改图/跟风格，最多 `max_refs` 张；生视频只取首尾帧——一张当首帧（让静图动起来），两张当首帧+尾帧（做过渡），第三张先拒。官方文档的参考模式（`reference`）要求素材公网可达，本地图没法直链，所以不走那条路
 - 产物落在 `temp/tool/media/generate/`（`gen_<毫秒>.png` / `.mp4`），随 temp TTL 清理；发送走既有 `send_media`（图片 file_type=1、视频 file_type=2），入库标记仍是 `[图片]` / `[视频]`
-- `api_key` 为空时两个工具都视为未启用（配置里 `enabled=true` 也不会下发 schema），与语音克隆同一口径
+- `api_key` 为空时两个工具都视为未启用（配置里 `enabled=true` 也不进下发列表），与语音克隆同一口径
+- 门槛都是 **L4（心腹）**：一次生成要等几十秒到一分多钟、也是真花钱，普通人喊一句"给我画个图"不该让机器人排队烧额度；`tool/media/generate/config.json → levels` 可按需下调
 - 生图一次 POST 拿结果；生视频是异步任务：`POST /videos`（`mode` 取 `text` 或 `keyframe`）→ `GET /agnesapi?video_id=…&model_name=…` 轮询到 `completed` → 下载成品，状态里没有现成 `url` 字段时递归找 `.mp4`/`.mov` 地址，再退回 `GET /videos/{task_id}`。POST 提交失败（实测的 `503 video_queue_full`、限流）按 `max_retries` 退避重试，队列是暂时的
 
 ### 联网（web）
@@ -451,10 +452,10 @@ stateDiagram-v2
 | 等级 | 名称 | 默认可调用 |
 |---|---|---|
 | 0 | 禁止 | 消息直接丢弃，不回复、不入库 |
-| 1 | 受限 | `send_sticker`、`sticker_list`、`silence`、`memory_fetch`、`time` |
-| 2 | 普通 | 加上 `memory_save`、`sticker_save`、`web_search`、`web_fetch`、`send_image`、`send_video`、`send_voice_clone`、`generate_image` |
-| 3 | 特权 | 加上 `fs_read`（文件只读）、`send_email`、`generate_video` |
-| 4 | 心腹 | 加上 `fs_write`（文件写入）、`clear_context`（清空本会话上下文） |
+| 1 | 受限 | `send_emoji`、`emoji_list`、`silence`、`memory_fetch`、`time` |
+| 2 | 普通 | 加上 `memory_save`、`emoji_save`、`web_search`、`web_fetch`、`send_image`、`send_video`、`send_voice_clone` |
+| 3 | 特权 | 加上 `fs_read`（文件只读）、`send_email` |
+| 4 | 心腹 | 加上 `fs_write`（文件写入）、`clear_context`（清空本会话上下文）、`generate_image`、`generate_video`（生成要等、也真花钱，收到心腹一档） |
 | 5 | 归属 | 默认与 4 相同，另加 `manage_permission`（调整他人等级）；可把任意工具门槛下调到 5 以下形成差异 |
 
 ### 工具门槛（1–6）
@@ -521,7 +522,7 @@ stateDiagram-v2
 [PASS] llm_chat          # LLM 真实调用（实测 DeepSeek deepseek-flash，thinking=disabled 生效）
 [PASS] tools_schema      # 19 个 Tool 插件自动发现 + schema 校验 + 启用状态过滤
 [PASS] tool_layout       # 根目录 tool/ 按分类包自动发现（core/media/memory/web/fs/mail/admin）+ 嵌套数据目录（media/emoji、media/audio、media/generate、web、mail、fs）+ config-less 工具 toggle 生效 + 正文通道不在 registry 里
-[PASS] gen_tools         # Agnes 生图/生视频：无 api_key 时不进下发列表、生图 L2 生视频 L3（填上 key 后两个一并下发，不再按等级裁剪）、参数与比例校验、参考图只允许 temp/ 与 emoji/ 素材（配置/密钥/越界路径拒绝）、时长收进 4–12 秒与配置上限、flash 档锁 720P、文生视频/首帧/首尾帧三种载荷（禁传 width/num_frames）、轮询 completed/failed/超时、503 退避重试、产物落 temp/tool/media/generate 并按 file_type 发出
+[PASS] gen_tools         # Agnes 生图/生视频：无 api_key 时不进下发列表、生图与生视频都是 L4 心腹（填上 key 后两个一并下发，不再按等级裁剪）、参数与比例校验、参考图只允许 temp/ 与 emoji/ 素材（配置/密钥/越界路径拒绝）、时长收进 4–12 秒与配置上限、flash 档锁 720P、文生视频/首帧/首尾帧三种载荷（禁传 width/num_frames）、轮询 completed/failed/超时、503 退避重试、产物落 temp/tool/media/generate 并按 file_type 发出
 [PASS] permissions       # 发送者等级解析（未登记→默认 2、空 id→0）、owners 引导不覆盖面板设置、全量下发（每个等级拿到同一份列表、6 级永久锁不进列表、没有工具提示词注入）、门槛覆盖、执行期拒绝/放行/未知工具/永久锁；正文通道不是工具（不在 registry 里）
 [PASS] fs_tools          # 文件沙箱（../ 与绝对路径越界拒绝）、db/tool 配置/密钥拒绝、列出时隐藏受保护项、读写/搜索限额、原子覆盖、BOM、二进制拒绝、find/grep、fs_read L3 / fs_write L4
 [PASS] media_paths       # 本地媒体只允许 temp/ 与 tool/media/emoji/，日志、其他工具目录与配置/密钥拒绝发送
@@ -529,7 +530,7 @@ stateDiagram-v2
 [PASS] assistant_persist # 发送成功后 assistant 消息入库；pending 不进历史；本轮消息独立标注（防逐条重答旧消息）
 [PASS] tool_plugin       # 插件配置隔离（send_email→tool/mail）、共享配置同组不可单独启停、/api/tools 密钥脱敏
 [PASS] media_signed      # 签名媒体 URL：有效链接可读、篡改/过期/目录穿越/config.json 均拒绝
-[PASS] sticker_library   # 表情库（v3）：向量挑图（含 min_score 拒发/近档随机/temp 投喂识图入库去重）→ 未配 embedding 降级二元组关键词匹配 → v2 moods 自动迁移、手改 desc 后旧向量作废只重算那一条，外加空库提示、max_per_turn 与 min_interval 限流、重启后复用 vectors 缓存不重复计费
+[PASS] emoji_library     # 表情库（v3）：向量挑图（含 min_score 拒发/近档随机/temp 投喂识图入库去重）→ 未配 embedding 降级二元组关键词匹配 → v2 moods 自动迁移、手改 desc 后旧向量作废只重算那一条，外加空库提示、max_per_turn 与 min_interval 限流、重启后复用 vectors 缓存不重复计费
 [PASS] voice_clone       # MiMo 真实合成（mimo-v2.5-tts-voiceclone）产出 wav
 [PASS] email_tool        # SMTP 真实自测发送 + 收件人白名单 + 附件仅限 temp/并拦截敏感文件
 [PASS] text_split        # 正文通道把带换行的内容拆成多条依次发送（msg_seq 递增、每条单独入库）
@@ -537,7 +538,7 @@ stateDiagram-v2
 [PASS] voice_silk        # MiMo wav 24kHz/单声道 → pysilk 编码出 #!SILK_V3 头（207KB→9.5KB）
 [PASS] qq_face_clean     # QQ 表情富文本还原为 [表情:文字] + @还原为 @昵称/8 位 id、自己的 @ 剔除
 [PASS] tool_loop         # function calling 端到端：AI 调用 memory_save 真实入库
-[PASS] tool_choice       # 真实 LLM 触发率（新提示词 + 全量下发，只观察不执行）：自我介绍→memory_save、回忆→memory_fetch 照旧命中；去掉工具提示词注入后，「哈哈哈哈哈」不再顺手调 send_sticker、「好难受」不再调 send_voice_clone——本轮只发正文，靠 description 里的触发场景兜
+[PASS] tool_choice       # 真实 LLM 触发率（新提示词 + 全量下发，只观察不执行）：自我介绍→memory_save、回忆→memory_fetch 照旧命中；去掉工具提示词注入后，「哈哈哈哈哈」不再顺手调 send_emoji、「好难受」不再调 send_voice_clone——本轮只发正文，靠 description 里的触发场景兜
 [PASS] agent_fallback    # 回合只有一条说话通道：只有正文→运行时走正文通道发出；正文+工具同轮→两条都发且不重复（工具在前、正文在后）；模型自己调 send_text（注册表里根本没有）→ 按「未知工具 send_text」回一条、一次都不发；空正文/纯占位符→静默结束（占位符同回合纠正一次）；silence 调用后立即收轮，全程只有一次 LLM 请求
 [PASS] config_read       # 纯配置文件驱动（无环境变量）+ temp/db 路径
 [PASS] config_generic    # deepseek→llm 自动迁移、缺失配置按模板生成、embedding 可选（关键词降级）、LLM 厂商无关且缺项明确报错、39 个 Web 设置路径均存在且在白名单（白名单不含 api_key/base_url/token 类凭据路径）

@@ -62,12 +62,15 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   → 生成与普通转发对模型是同一件事"这里出现了一张图"；再加一套标记就要动词表、日志和测试三处。
 - **参数只留 prompt / refs / ratio / seconds**：`image_size`、`video_size` 这些放配置里由部署方定，
   模型不该在一次聊天里挑分辨率。→ 少一个参数就少一种失败与一段 token；生图/生视频已经慢，别把回合浪费在调参上。
-- **生图 L2、生视频 L3**：视频慢一个数量级、成本也高，门槛先收紧，`config.levels` 可放开。
+- **生图、生视频都 L4（心腹）**：一次要等几十秒到一分多钟，也是真花钱——"替群里做一件有成本的事"该跟 `fs_write`、
+  `clear_context` 同档，而不是跟发一张现成图（`send_image`，L2）同档。生图原来只比生视频低一档，但排队和扣费的差别
+  只是数量级，值得区分的是"能不能花我的额度"，所以两档并成一档。`config.levels` 可按群放开。
 - **参考图（`refs`）只收 `temp/` 与 `tool/media/emoji/` 下的本地路径，工具自己不抓外部 URL**
   → 群友发的图本来就落地在 temp/，接口对两种输入都收（公网 URL 或 base64），去拉网图等于白加一处 SSRF 面。
   改动时注意：白名单口径与 `send_image` 本地媒体一致（temp 排除 logs、拒 `config.json`/`.key`/`.pem`），两处要同进同退。
-- **`api_key` 为空 = 未启用**（配置里 `enabled=true` 也不进下发列表），与语音克隆缺 key、表情库缺素材同一条口径：
-  没素材/没凭据就别让模型调，省一轮必然失败的往返。
+- **凭据与固定素材缺失 = 未启用**（`api_key` 为空、或语音克隆缺 `audio/voice_ref.wav`，配置里 `enabled=true` 也不进下发列表）
+  → 这些都是部署时就定好、运行中基本不变的东西，判定一次就够，没凭据/没素材就别让模型调，省一轮必然失败的往返。
+  **会随聊天长大的素材不套这条口径**：表情库为空时 `send_emoji` 照样下发，调用时才如实失败（详见「工具与权限」的空表情库那条）。
 - **接口的字段口径以当期文档为准，别照旧脚本抄**：Agnes 视频 7 月那版吃 `width`/`height`/`num_frames`/`frame_rate`，
   2.5 版把这些列为禁止字段（传了 400），改成 `mode` + `seconds`（字符串 4–12 秒）+ `size` 档位 + `aspect_ratio`，
   轮询也要多带 `model_name`；`agnes-video-v2.0` 直接从分组下架（404）。→ 这类第三方生成接口会整版换参数，
@@ -93,9 +96,13 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 - **目录名、数据目录名、工具名是三套外部契约**：分类目录决定 `category`（面板分组与排序），`data_name` 决定配置与素材落点
   （`.gitignore`、deploy 的 rsync 排除项都按它写），工具名出现在人设提示词、`config.levels` 键与测试断言里。
   → 本轮 `chat/knowledge` 拆成 `core/media/memory/web`，数据目录 `chat/gen`→`media/generate`、`knowledge/web`→`web`，
-  `memory_write`/`memory_search` 改名 `memory_save`/`memory_fetch`。
+  `memory_write`/`memory_search` 改名 `memory_save`/`memory_fetch`，表情三件套跟着所在数据目录改名
+  `send_sticker`/`sticker_list`/`sticker_save` → `send_emoji`/`emoji_list`/`emoji_save`（模块 `tool/media/sticker.py`→`emoji.py`）。
   改动时注意：换目录要在**每台机器各搬一次**已有数据（素材、参考音频、含密钥的 `config.json`），搬漏一次等于工具"未启用"；
   换工具名会让 `config.levels` 里的旧键静默失效（回到代码默认门槛），迁移脚本 `deploy/migrate_tool_dirs.sh` 一起做这两件事。
+  只换工具名时数据契约别顺手改：`data_name`、素材子目录 `emoji/stickers/`、配置键 `max_user_stickers` 全部留着——
+  它们各自对应磁盘上真实存在的东西和服务器上已写好的配置，改名等于要搬文件；`emoji.py` 与数据目录 `emoji/` 同名是安全的
+  （同包内模块文件优先于无 `__init__.py` 的目录，实测 `import tool.media.emoji` 拿到的是 `.py`）。
 - **门槛只在执行期生效**：发送者等级 0–5（`permissions`），工具 `min_level` 1–6（6=永久锁）。启用的工具**一律全量下发**，
   不按等级裁剪 schema，按 (门槛, 分类, 名称) 固定排序，好让所有会话拿到同一份列表；越权调用由执行器直接失败返回
   「权限不足：{name} 需要 L4，当前 L2」，未知工具名返回「未知工具 {name}」。
@@ -104,7 +111,9 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   改动时注意：`config.levels` 覆盖的是门槛值而不是可见性，别把它当开关用（`enabled=false` 才是不进列表的理由）。
 - **管理动作要能被口语调用**：`manage_permission` 支持昵称/8 位 id/openid、等级词、重名给候选、越级与同级保护，
   并有 `list`/`help`——不要让管理员猜参数。
-- **表情库为空时不暴露 `send_sticker`**：没素材就别让模型调，省一轮失败。
+- **空表情库照样下发 `send_emoji`**：调用时才如实返回「表情库为空（素材放 `tool/media/emoji/stickers/`…）」，模型改用说话就行。
+  → 早期是"没素材就不给看 schema"，但那要每次请求扫一遍目录才能让列表稳定；素材会长会删，把它当下发条件等于每轮重算列表、
+    正好劈开缓存前缀。凭据（Agnes/MiMo key）不一样，它只在部署时变，所以仍按 `enabled` 决定进不进列表。
 
 ## 联网搜索
 
