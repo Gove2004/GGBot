@@ -220,11 +220,12 @@ class QQBot(botpy.Client):
         （测试群机器人唯一），之后切回精确匹配。"""
         me = self._mentioned_self(message)
         sid = session_label(f"group:{message.group_openid}")
-        # passive_ok 固定 False：全量事件的 event_id 不能用于被动回复（40034027），只能主动发送
-        await self._route(message, sid, is_at=me, passive_ok=False)
+        # 全量事件（GROUP_MESSAGE_CREATE）：消息 id 官方文档写明可被动回复，跟着一起传的 event_id
+        # 反而被平台拒（40034027），所以这条路径按可回处理，但不带 event_id
+        await self._route(message, sid, is_at=me, passive_ok=True, use_event_id=False)
 
     async def _route(self, message, sid: str, is_at: bool = False,
-                     passive_ok: bool = False) -> None:
+                     passive_ok: bool = False, use_event_id: bool = True) -> None:
         """入站唯一入口：去重 → 记录一条「收到 […]」日志 → 归一化 → 交给 presence。
 
         日志只在去重后打，因此 @事件与全量事件重复推送同一条消息时不会刷两行。
@@ -243,7 +244,8 @@ class QQBot(botpy.Client):
                     clip(self._message_text(message), 80), extra={"session": sid})
         if len(self._seen) > self._max_seen:
             self._seen = set(list(self._seen)[-self._max_seen // 2 :])
-        inbound = await self._normalize(message, is_at=is_at, passive_ok=passive_ok)
+        inbound = await self._normalize(message, is_at=is_at, passive_ok=passive_ok,
+                                       use_event_id=use_event_id)
         if inbound is None:
             logger.warning("消息归一化失败，跳过 id=%s", msg_id)
             return
@@ -254,7 +256,8 @@ class QQBot(botpy.Client):
 
     # ---------- 归一化 ----------
 
-    async def _normalize(self, message, is_at: bool = False, passive_ok: bool | None = None) -> dict | None:
+    async def _normalize(self, message, is_at: bool = False, passive_ok: bool | None = None,
+                         use_event_id: bool = True) -> dict | None:
         is_group = isinstance(message, GroupMessage)
         if is_group:
             key = f"group:{message.group_openid}"
@@ -276,15 +279,15 @@ class QQBot(botpy.Client):
         content = await self._describe_images(content, attachments, key)
         content = self._transcribe_voices(content, attachments, key)
         # is_at：事件来源（group_at/c2c=True）优先；全量消息用 mentions / content <@> 兜底匹配 bot_openid
-        # passive_ok：只有 @事件/C2C 事件的消息可用 msg_id+event_id 被动回复；
-        #   全量事件（GROUP_MESSAGE_CREATE）的 event_id 平台拒绝用于被动回复（40034027），只能主动
+        # passive_ok：@事件/C2C 事件带 msg_id+event_id 被动回复；全量事件（GROUP_MESSAGE_CREATE）
+        #   只用 msg_id（use_event_id=False），带 event_id 会被平台拒（40034027）
         is_at = bool(is_at or self._mentioned_self(message))
         if passive_ok is None:
             passive_ok = is_at
         return {
             "msg_id": message.id,
             "msg_seq": getattr(message, "msg_seq", None),
-            "event_id": getattr(message, "event_id", None),
+            "event_id": getattr(message, "event_id", None) if use_event_id else None,
             "key": key,
             "scene": scene,
             "target": target,

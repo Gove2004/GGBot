@@ -1,4 +1,4 @@
-"""SQLite 持久化层：会话、消息、记忆。
+"""SQLite 持久化层：会话、消息、记忆、提醒。
 
 全部落盘，重启不丢。线程安全：每个操作一个连接（用完即关）+ WAL，读写都在 self._lock 里串行。
 """
@@ -55,7 +55,21 @@ CREATE TABLE IF NOT EXISTS actors(
     note TEXT,
     updated_at TEXT
 );
+CREATE TABLE IF NOT EXISTS reminders(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    owner TEXT,
+    owner_name TEXT,
+    notify TEXT,
+    notify_name TEXT,
+    due_ts INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT,
+    fired_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_messages_msg_id ON messages(msg_id);
+CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, due_ts);
 """
 
 
@@ -288,6 +302,22 @@ class Storage:
             ).fetchall()
         return [_row_to_dict(r) for r in reversed(rows)]
 
+    def latest_replyable_message(self, session_id: str, since: str) -> dict | None:
+        """本会话窗口内最近一条可被动回复的用户消息（被动回复锚点）。
+
+        ts 是 "YYYY-MM-DD HH:MM:SS"，字典序即时间序，所以过期判断直接拿字符串比。
+        """
+        if not session_id:
+            return None
+        with self._lock, self._conn() as c:
+            row = c.execute(
+                "SELECT msg_id, event_id, ts FROM messages WHERE session_id=? AND role='user' "
+                "AND passive_ok=1 AND msg_id IS NOT NULL AND msg_id<>'' AND ts>=? "
+                "ORDER BY id DESC LIMIT 1",
+                (session_id, since),
+            ).fetchone()
+        return dict(row) if row else None
+
     def find_message_id(self, session_id: str, needle: str) -> str | None:
         """按正文关键词找本会话最近一条有 msg_id 的消息（用于引用回复）。"""
         needle = (needle or "").strip()
@@ -443,6 +473,65 @@ class Storage:
                 (int(limit),),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ---------- 提醒 ----------
+
+    def add_reminder(self, session_id: str, owner: str | None, owner_name: str | None,
+                     notify: str | None, notify_name: str | None, due_ts: int, text: str) -> int:
+        """落一条待触发的提醒；due_ts 是到期的 unix 秒（跨时区/重启都比较得动）。"""
+        with self._lock, self._conn() as c:
+            cur = c.execute(
+                "INSERT INTO reminders(session_id, owner, owner_name, notify, notify_name, "
+                "due_ts, text, status, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (session_id, owner, owner_name, notify, notify_name,
+                 int(due_ts), text, "pending", _now()),
+            )
+            return int(cur.lastrowid)
+
+    def get_reminder(self, rid: int) -> dict | None:
+        with self._lock, self._conn() as c:
+            row = c.execute("SELECT * FROM reminders WHERE id=?", (int(rid),)).fetchone()
+        return dict(row) if row else None
+
+    def list_reminders(self, session_id: str | None = None, status: str | None = "pending",
+                       limit: int = 50) -> list[dict]:
+        sql = "SELECT * FROM reminders WHERE 1=1"
+        params: list = []
+        if session_id:
+            sql += " AND session_id=?"
+            params.append(session_id)
+        if status:
+            sql += " AND status=?"
+            params.append(status)
+        sql += " ORDER BY due_ts ASC LIMIT ?"
+        params.append(int(limit))
+        with self._lock, self._conn() as c:
+            return [dict(r) for r in c.execute(sql, params).fetchall()]
+
+    def due_reminders(self, now_ts: int, limit: int = 20) -> list[dict]:
+        """到期待触发的提醒（含停机期间错过的，由调用方按宽限决定发不发）。"""
+        with self._lock, self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM reminders WHERE status='pending' AND due_ts<=? "
+                "ORDER BY due_ts ASC LIMIT ?",
+                (int(now_ts), int(limit)),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_reminders(self, session_id: str, status: str = "pending") -> int:
+        with self._lock, self._conn() as c:
+            return c.execute(
+                "SELECT COUNT(*) FROM reminders WHERE session_id=? AND status=?",
+                (session_id, status),
+            ).fetchone()[0]
+
+    def finish_reminder(self, rid: int, status: str, fired_at: str | None = None) -> None:
+        """把提醒置为 fired / cancelled / expired；只动 pending 的行，避免重复触发。"""
+        with self._lock, self._conn() as c:
+            c.execute(
+                "UPDATE reminders SET status=?, fired_at=? WHERE id=? AND status='pending'",
+                (status, fired_at, int(rid)),
+            )
 
     # ---------- 记忆 ----------
 
