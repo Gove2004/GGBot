@@ -18,7 +18,7 @@ from ggbot.core.outbound import Outbound
 from ggbot.core.runtime_stats import runtime
 from ggbot.util.logging_setup import clip
 from ggbot.util.session import oid8, session_label
-from ggbot.util.text import PLACEHOLDER_RE, to_str
+from ggbot.util.text import PLACEHOLDER_RE, SILENCE_RE, to_str
 from tool.base import ToolRegistry, ToolRuntime
 
 logger = logging.getLogger("ggbot.tools")
@@ -139,6 +139,7 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
       工具往返之后的补充文本同样是要说的话），无文本直接结束；
     - LLM 同时给了工具和正文：先执行工具，再把正文发出去（"发张表情再补一句"是同一个动作）；
     - 某次工具调用是 silence → 立即结束，不再追加请求（沉默不该紧接着一句话）；
+    - 正文整条只是沉默标志（模型把「不接话」写成了字样）→ 按 silence 同等处理，绝不发出去；
     - 达到 max_rounds。
     """
     sid = session_label(ctx.get("session_id"))
@@ -157,6 +158,13 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
         calls = msg.tool_calls or []
         if not calls:
             content = (msg.content or "").strip()
+            if content and SILENCE_RE.match(content):
+                # 意图就是不接话，和调 silence 同等处理：不发正文、也不再问一次
+                # （追问只会换来一句硬凑的收尾话，正是要避免的）
+                logger.info("正文只有沉默标志，按不接话结束本轮: %s", clip(content, 40),
+                            extra={"session": sid})
+                ctx["silence"] = True
+                return NO_REPLY
             if content and PLACEHOLDER_RE.match(content):
                 logger.warning("模型用占位符代替工具调用: %s", content[:40], extra={"session": sid})
                 if not retried_placeholder and round_no + 1 < max_rounds:
@@ -192,7 +200,10 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
                 return NO_REPLY
         # 工具和正文同轮出现时，正文同样是要说的话：媒体先落地，这句话跟在后面
         companion = (msg.content or "").strip()
-        if companion:
+        if companion and SILENCE_RE.match(companion):
+            logger.info("正文只有沉默标志，本轮只发工具产物: %s", clip(companion, 40),
+                        extra={"session": sid})
+        elif companion:
             await executor.send_text(ctx, companion)
     # 工具循环超限：兜底结束（不回复）
     return NO_REPLY
