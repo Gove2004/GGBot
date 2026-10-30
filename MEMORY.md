@@ -34,7 +34,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 
 ## 上下文、历史与记忆
 
-- **历史里只存"看得见的消息"**：文本按段存、媒体存 `[表情]`/`[图片 …]` 这类标记；工具动作（搜索、写记忆、读文件）不进历史。
+- **历史里只存"看得见的消息"**：文本按段存、媒体存 `[表情]`/`[图片 …]` 这类标记；工具动作（搜索、写记忆、清上下文）不进历史。
   → 好处是下一回合读到的是聊天记录本身，不是执行日志。已知代价：模型看不到自己上回合搜过什么，可能重复检索。
 - **窗口满才归档，归档只写记忆、不再产摘要**：`llm.context.max_history_messages`（默认 1024）截条数，窗口外的最旧消息
   按 `archive_overflow_messages`（默认 512）一轮消化一批、每批 `archive_batch_messages`（默认 64）交给后台 LLM 提炼成
@@ -67,8 +67,8 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   → 生成与普通转发对模型是同一件事"这里出现了一张图"；再加一套标记就要动词表、日志和测试三处。
 - **参数只留 prompt / refs / ratio / seconds**：`image_size`、`video_size` 这些放配置里由部署方定，
   模型不该在一次聊天里挑分辨率。→ 少一个参数就少一种失败与一段 token；生图/生视频已经慢，别把回合浪费在调参上。
-- **生图、生视频都 L4（心腹）**：一次要等几十秒到一分多钟，也是真花钱——"替群里做一件有成本的事"该跟 `fs_write`、
-  `clear_context` 同档，而不是跟发一张现成图（`send_image`，L2）同档。生图原来只比生视频低一档，但排队和扣费的差别
+- **生图、生视频都 L4（心腹）**：一次要等几十秒到一分多钟，也是真花钱——"替群里做一件有成本的事"该跟 `clear_context`
+  同档，而不是跟发一张现成图（`send_image`，L2）同档。生图原来只比生视频低一档，但排队和扣费的差别
   只是数量级，值得区分的是"能不能花我的额度"，所以两档并成一档。`config.levels` 可按群放开。
 - **参考图（`refs`）只收 `temp/` 与 `tool/media/emoji/` 下的本地路径，工具自己不抓外部 URL**
   → 群友发的图本来就落地在 temp/，接口对两种输入都收（公网 URL 或 base64），去拉网图等于白加一处 SSRF 面。
@@ -102,9 +102,15 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 
 ## 工具与权限
 
-- **一切皆 Tool**，按能力域放在根目录 `tool/{core,schedule,media,memory,web,fs,mail,admin}/`，每个目录自包含代码 + `config.json` + 数据；
+- **一切皆 Tool**，按能力域放在根目录 `tool/{core,schedule,media,memory,web,mail,admin}/`，每个目录自包含代码 + `config.json` + 数据；
   拷走文件夹就能迁移。`silence`/`time` 属于回合控制所以进 `core`，`schedule` 单独成类（"排一件事等会儿做"跟回合控制不是一回事，还要配巡检间隔与宽限），
   富媒体（表情/图/视频/语音/生成）合在 `media`，记忆与上下文合在 `memory`，联网单独成类，`mail` 保持独立不并进别的分类。
+- **文件读写分类（`tool/fs`）已整体删除**：机器人只做"在群里说话 + 联网查 + 发媒体"，不再替人操作服务器上的文件，Agent 方向暂时不做。
+  → 留着就等于一份带密钥读取面、一套沙箱拒绝清单和两个特权工具位（L3/L4），而这些代码长期没人用；删的时候连 `fs` 的
+  schema、`config.example.json`、等级说明与本地测试一起删净，`temp/test_tool_layout.py` 断言仓库里不再残留 `tool/fs` 目录。
+  改动时注意：面板分类映射（`static/js/tools.js` 的 `TOOL_CATS`/`TOOL_CAT_ORDER`）、`manage_permission` 的六级能力文案、
+  README 的等级表都要跟着分类表走；线上那台 `tool/fs/config.json` 被 rsync 的 `config.json` 排除项护着，`--delete` 清不掉，
+  目录壳要手动删（没有 `__init__.py` 就不会被注册表发现，只是留个空壳）。
 - **目录名、数据目录名、工具名是三套外部契约**：分类目录决定 `category`（面板分组与排序），`data_name` 决定配置与素材落点
   （`.gitignore`、deploy 的 rsync 排除项都按它写），工具名出现在人设提示词、`config.levels` 键与测试断言里。
   → 本轮 `chat/knowledge` 拆成 `core/media/memory/web`，数据目录 `chat/gen`→`media/generate`、`knowledge/web`→`web`，
@@ -192,7 +198,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 
 - `db/config.json` 与 `tool/**/config.json` 有密钥（AppSecret、LLM/Embedding/MiMo/SMTP/搜索 key、`web.token`），
   `.gitignore` 已忽略；日志、面板、提示词都不出现明文密钥（`GET /api/config` 脱敏）。
-- `tool/fs` 不能读配置、密钥与数据库文件；发送本地媒体只允许 `temp/` 与 `tool/media/emoji/`；邮件收件人白名单、附件只走 temp 运行时文件。
+- 发送本地媒体只允许 `temp/` 与 `tool/media/emoji/`；邮件收件人白名单、附件只走 temp 运行时文件。
 - 面板：Cookie 登录（HttpOnly+SameSite）、每 IP 限流、CSP 无内联脚本、WS 鉴权、`trust_proxy` 默认关（防伪造 XFF 绕过限流）。
   `web.host=0.0.0.0` 时面板对整个公网可见，上云要么配 `web.token`，要么只绑 127.0.0.1 走反代。
 - **部署走 GitHub Actions：push master → rsync → 远端 `deploy/deploy_server.sh` 重启 + 健康检查**（细节见 README「部署到云服务器」）。
@@ -214,6 +220,19 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 - **版本号只有一处：`ggbot.__version__`。** 页面标题、登录卡、侧栏徽标写的是 `{{VERSION}}`，`GET /` 返回前一次性替换；
   启动日志第一行也打它。→ 前端是可独立热改的静态文件，硬编码第二份版本号一定会过期，
   而面板显示的版本对不上部署版本，等于排查时多一个假线索。改动时注意：发版只改 `ggbot/__init__.py`。
+- **前端按页拆在 `static/js/`（18 个）与 `static/css/`（6 个），没有打包步骤，靠 `index.html` 的引用顺序拼回来。**
+  脚本仍是经典脚本（不是 module），全局 `const/function` 跨文件可见，所以顺序 = 原来单个 `app.js` 的行序，
+  `events.js` 必须最后（它挂 DOMContentLoaded 并 `boot()`）；样式表 `responsive.css` 必须最后（层叠覆盖）。
+  → 用户要求「不要全堆在三个文件」，而拆分的唯一风险就是漏引/错序——`temp/test_web_reminders.py` 里那半截
+  就是守这个的：引用的文件必须存在、`js/` 与 `css/` 里不许有没被引用的文件、首尾顺序钉死。
+  改动时注意：**新增一页要同时动五处**（`index.html` 的 section + nav、`util.js` 的 `PAGE_META`、
+  `nav.js` 的 `switchPage` 分支、`refresh.js` 的 `refreshAll`、`poll.js`/`events.js` 的入口），少一处就是点了没反应。
+- **「提醒」页只读 + 取消，不在面板上排提醒。** 设提醒仍然只有对话里那三个工具，`when` 的解析只有一份实现。
+  → 面板再长一套时间输入就是第二个真相源，用户要的只是"看看挂着什么、点掉某条"。
+  改动时注意：取消走 `storage.finish_reminder(rid, "cancelled")`，它只改 `pending` 的行，
+  巡检循环每轮现读表，所以网页上点掉后到点不会再发；`pending_total` 是**全会话**的待触发数（给页面计数用），
+  不随 `session_id` 筛选变化，别把它当"当前列表长度"用。手机端 8 列藏 3 列后仍给表 `min-width: 520px`，
+  宁可横向滚动也不让中文正文挤成一字一行。
 
 ## 验证约定
 
