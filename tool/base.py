@@ -4,7 +4,7 @@
 - ToolRuntime：给 Tool 提供配置、持久化目录、富媒体发送等公共依赖（正文通道不在这里，见 ggbot/core/outbound.py）
 - ToolRegistry：自动发现 tool/<分类>/ 下的插件，按配置开关动态挂载 schema
 
-分类即能力域：core（回合控制）/ schedule（定时）/ media（富媒体）/ memory（记忆）/ web（联网）/ fs（文件）/ mail（邮件）/ admin（管理）。
+分类即能力域：core（回合控制）/ schedule（定时）/ media（富媒体）/ memory（记忆）/ web（联网）/ mail（邮件）/ admin（管理）。
 新增分类 = 新建一个含插件模块的子包。
 
 每个 Tool 声明 min_level（调用门槛，0-5 为发送者等级，6 为永久锁）。全部启用的工具都会下发给模型，
@@ -144,7 +144,7 @@ class Tool:
     """一个 Tool = 一份 schema + 一个执行器；配置/数据目录由 runtime 提供。"""
 
     name: str = ""
-    category: str = ""  # 所属能力域（由注册表按所在子包填充：core/media/memory/web/fs/mail/admin）
+    category: str = ""  # 所属能力域（由注册表按所在子包填充：core/media/memory/web/mail/admin）
     data_name: str = ""  # 数据/配置目录名，默认与工具名一致（send_email -> mail 时可覆盖）
     description: str = ""
     parameters: dict = {"type": "object", "properties": {}}

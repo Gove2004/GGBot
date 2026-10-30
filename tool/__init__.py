@@ -1,6 +1,6 @@
 """Tool 执行器与 agent 循环。
 
-一切能力都是 Tool：插件按能力域放在项目根 tool/{core,schedule,media,memory,web,fs,mail,admin}/，
+一切能力都是 Tool：插件按能力域放在项目根 tool/{core,schedule,media,memory,web,mail,admin}/，
 启动时自动发现并按配置挂载 schema。每个 toolset 目录自包含代码、config.json 与持久化数据。
 每个 Tool 带 min_level 门槛：全部启用的工具都下发给模型（不按等级裁剪），执行器按实际发送者校验，权限不足直接失败。
 回合语义：模型只有一条说话通道——回复正文，由 ggbot.core.outbound 逐行拆成消息发出（正文不是工具，模型无从调用）；
