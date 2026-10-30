@@ -1,7 +1,7 @@
 """Web 控制面板：FastAPI + WebSocket + 静态前端（ggbot/web/static）。
 
-前端与后端分离：ggbot/web/static/{index.html,style.css,app.js}，经 /static 托管，可独立修改热加载。
-功能：在线状态、会话与上下文、消息流、记忆（检索/写入/编辑/整理）、配置热更新、日志查看。
+前端与后端分离：ggbot/web/static/{index.html,css/*.css,js/*.js}，经 /static 托管，可独立修改热加载。
+功能：在线状态、会话与上下文、消息流、记忆（检索/写入/编辑/整理）、提醒、配置热更新、日志查看。
 
 鉴权（安全）：
 - 登录：POST /api/login 校验 config.web.token，成功后写入 HttpOnly + SameSite=Strict Cookie，
@@ -335,7 +335,7 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
             response.headers["Cache-Control"] = "no-store"
         return response
 
-    # 静态前端：web/index.html + /static/style.css + /static/app.js
+    # 静态前端：/static/css/*.css 与 /static/js/*.js（index.html 按顺序引用，加载顺序 = 原来单文件的行序）
     app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
     @app.get("/", response_class=HTMLResponse)
@@ -471,6 +471,41 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         return storage.recent_messages_global(
             min(max(limit, 1), 500), session_id=session_id or None, role=role or None
         )
+
+    # ---------- 提醒 ----------
+    # 表里的那份是唯一真相（巡检循环也读它），所以这里只提供查看与取消，不另存一份状态。
+
+    @app.get("/api/reminders")
+    async def reminders(
+        request: Request,
+        status: str = "pending",
+        session_id: str | None = None,
+        limit: int = 200,
+        x_token: str | None = Header(default=None),
+    ):
+        _auth(request, x_token)
+        st = None if status in ("", "all") else status
+        items = await asyncio.to_thread(
+            storage.list_reminders, session_id or None, st, min(max(limit, 1), 500)
+        )
+        pending = await asyncio.to_thread(storage.list_reminders, None, "pending", 500)
+        return {"items": items, "pending_total": len(pending)}
+
+    @app.post("/api/reminders/{rid}/cancel")
+    async def cancel_reminder(
+        rid: int,
+        request: Request,
+        x_token: str | None = Header(default=None),
+    ):
+        _auth(request, x_token)
+        row = await asyncio.to_thread(storage.get_reminder, rid)
+        if not row:
+            raise HTTPException(status_code=404, detail="reminder not found")
+        if row["status"] != "pending":
+            raise HTTPException(status_code=400, detail=f"#{rid} 已经是 {row['status']}，不用再取消")
+        # finish_reminder 只动 pending 的行，置为 cancelled 后巡检就不会再触发它
+        await asyncio.to_thread(storage.finish_reminder, rid, "cancelled")
+        return {"ok": True}
 
     # ---------- 记忆 ----------
 

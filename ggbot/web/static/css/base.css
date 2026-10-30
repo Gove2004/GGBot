@@ -1,0 +1,68 @@
+/* GGBot 控制台 —— 暗色玻璃质感后台 */
+:root {
+  color-scheme: dark;
+  --bg: #080c12;
+  --bg-soft: #0c121b;
+  --panel: rgba(18, 25, 35, .82);
+  --panel-solid: #111823;
+  --panel-2: #16202e;
+  --panel-3: #1d293a;
+  --border: #223047;
+  --border-soft: #1a2534;
+  --line: rgba(255, 255, 255, .065);
+  --text: #e9eef7;
+  --muted: #93a4b8;
+  --faint: #61738a;
+  --accent: #6aa8ff;
+  --accent-2: #34d3ee;
+  --green: #39d98a;
+  --amber: #f4b740;
+  --red: #ff6b6b;
+  --violet: #a78bfa;
+  --radius: 18px;
+  --radius-sm: 11px;
+  --ring: 0 0 0 3px rgba(106, 168, 255, .18);
+  --mono: "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --shadow-sm: 0 8px 24px rgba(0, 0, 0, .22);
+  --shadow-md: 0 16px 44px rgba(0, 0, 0, .32);
+  --shadow-lg: 0 30px 80px rgba(0, 0, 0, .5);
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  color: var(--text);
+  font: 14px/1.55 var(--sans);
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(rgba(255, 255, 255, .017) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, .017) 1px, transparent 1px),
+    radial-gradient(1000px 520px at 92% -12%, rgba(52, 211, 238, .09), transparent 62%),
+    radial-gradient(860px 500px at 2% -6%, rgba(106, 168, 255, .09), transparent 58%),
+    linear-gradient(180deg, #090e15, #070b11 70%);
+  background-size: 46px 46px, 46px 46px, auto, auto, auto;
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+::selection { background: rgba(106, 168, 255, .3); color: #fff; }
+
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: var(--accent); }
+code { font-family: var(--mono); font-size: 12px; color: var(--accent-2); }
+
+.hidden { display: none !important; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.mono { font-family: var(--mono); font-size: 12px; }
+.grow { flex: 1 1 auto; min-width: 0; }
+
+/* ================= 焦点 ================= */
+:focus-visible {
+  outline: 2px solid rgba(106, 168, 255, .65);
+  outline-offset: 2px;
+}
+

@@ -6,7 +6,12 @@
 <meta name="theme-color" content="#080c12">
 <meta name="color-scheme" content="dark">
 <title>GGBot 控制台 v{{VERSION}}</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/css/base.css">
+<link rel="stylesheet" href="/static/css/login.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<link rel="stylesheet" href="/static/css/layout.css">
+<link rel="stylesheet" href="/static/css/pages.css">
+<link rel="stylesheet" href="/static/css/responsive.css">
 </head>
 <body>
 
@@ -89,6 +94,10 @@
         <button class="nav-item" data-page="logs">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>
           <span>运行日志</span>
+        </button>
+        <button class="nav-item" data-page="reminders">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16v-5a6 6 0 0 1 12 0v5l2 3H4l2-3Z"/><path d="M10 21a2 2 0 0 0 4 0"/></svg>
+          <span>提醒</span>
         </button>
       </div>
     </nav>
@@ -472,6 +481,32 @@
         </div>
       </section>
 
+      <!-- 提醒 -->
+      <section id="page-reminders" class="page hidden">
+        <div class="card">
+          <div class="card-head">
+            <div><h2>提醒</h2><p class="card-sub">到点原样发回所在会话<span id="rem-count"></span></p></div>
+            <div class="head-ops">
+              <select id="rem-status" class="sel small-input" title="按状态筛选提醒">
+                <option value="pending" selected>待触发</option>
+                <option value="all">全部</option>
+                <option value="fired">已触发</option>
+                <option value="cancelled">已取消</option>
+                <option value="expired">已过期</option>
+              </select>
+              <select id="rem-session" class="sel small-input" title="按会话筛选提醒"></select>
+              <button class="btn ghost small" data-action="refresh-reminders">刷新</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th class="col-narrow">编号</th><th>会话</th><th class="col-sm-hide">提醒谁</th><th>正文</th><th class="col-sm-hide">到期</th><th class="col-sm-hide">倒计时</th><th>状态</th><th class="col-actions"></th></tr></thead>
+              <tbody id="rem-body"><tr><td colspan="8" class="empty">加载中…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
     </main>
   </div>
 </div>
@@ -491,6 +526,23 @@
   </div>
 </div>
 
-<script src="/static/app.js"></script>
+<script src="/static/js/util.js"></script>
+<script src="/static/js/api.js"></script>
+<script src="/static/js/ui.js"></script>
+<script src="/static/js/auth.js"></script>
+<script src="/static/js/poll.js"></script>
+<script src="/static/js/fmt.js"></script>
+<script src="/static/js/nav.js"></script>
+<script src="/static/js/dash.js"></script>
+<script src="/static/js/sessions.js"></script>
+<script src="/static/js/messages.js"></script>
+<script src="/static/js/memory.js"></script>
+<script src="/static/js/settings.js"></script>
+<script src="/static/js/tools.js"></script>
+<script src="/static/js/permissions.js"></script>
+<script src="/static/js/logs.js"></script>
+<script src="/static/js/reminders.js"></script>
+<script src="/static/js/refresh.js"></script>
+<script src="/static/js/events.js"></script>
 </body>
 </html>

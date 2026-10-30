@@ -1,0 +1,158 @@
+/* ================= 桌面侧栏收起 ================= */
+@media (min-width: 901px) {
+  .app.rail .sidebar { width: 78px; flex-basis: 78px; }
+  .app.rail .side-brand { justify-content: center; padding: 18px 0; }
+  .app.rail .side-brand > div { display: none; }
+  .app.rail .side-nav { padding: 16px 12px; }
+  .app.rail .nav-label { display: none; }
+  .app.rail .nav-group { margin-bottom: 8px; }
+  .app.rail .nav-group + .nav-group { padding-top: 10px; border-top: 1px solid var(--border-soft); }
+  .app.rail .nav-item { justify-content: center; gap: 0; padding: 10px 0; font-size: 0; }
+  .app.rail .nav-item > span { display: none; }
+  .app.rail .nav-item svg { width: 19px; height: 19px; }
+  .app.rail .nav-item.active::before { left: -12px; }
+  .app.rail .side-live span:last-child, .app.rail .side-stat-row, .app.rail .side-ver { display: none; }
+  .app.rail .side-foot { align-items: center; padding: 16px 0; }
+}
+
+/* ================= 响应式 ================= */
+@media (max-width: 1080px) {
+  .dash-top { grid-template-columns: minmax(0, 1fr); }
+  .dash-top .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .dash-top .metrics .metric:last-child:nth-child(odd) { grid-column: auto; }
+  .grid-2 { grid-template-columns: minmax(0, 1fr); }
+  .settings-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 900px) {
+  body { background-attachment: scroll; }
+  .menu-btn { display: inline-grid; }
+  .rail-btn { display: none; }
+  .sidebar {
+    position: fixed; left: 0; top: 0; bottom: 0;
+    width: min(260px, 84vw); flex-basis: auto;
+    transform: translateX(-100%); transition: transform .22s ease;
+    box-shadow: 20px 0 60px rgba(0, 0, 0, .5);
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .side-overlay { position: fixed; inset: 0; z-index: 35; background: rgba(0, 0, 0, .48); backdrop-filter: blur(2px); }
+  .content { padding: 16px 14px 22px; }
+  .hero { flex-direction: column; align-items: flex-start; }
+  .hero-side { align-items: flex-start; text-align: left; }
+  .hero-progress { width: 100%; min-width: 180px; }
+  .topbar {
+    padding-left: max(14px, env(safe-area-inset-left));
+    padding-right: max(14px, env(safe-area-inset-right));
+    height: 60px; flex-basis: 60px;
+  }
+  .page-sub { display: none; }
+  .table-wrap.tall { max-height: calc(100dvh - 200px); }
+  .small-input { width: 130px; }
+  .master-detail { grid-template-columns: minmax(0, 1fr); height: auto; }
+  .session-list { max-height: 320px; }
+  .detail-pane { min-height: 420px; }
+  .stream-wrap, .log-wrap { max-height: calc(100dvh - 200px); }
+}
+
+@media (max-width: 620px) {
+  .topbar { padding: 0 10px; gap: 8px; }
+  .topbar-actions { gap: 2px; }
+  .topbar-actions .pill { display: none; }
+  .icon-btn { width: 40px; height: 40px; }
+  .page-heading h1 { font-size: 16px; }
+
+  .content { padding: 12px 10px 20px; padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
+  .card { padding: 15px 14px; border-radius: 15px; }
+  .card-head { margin-bottom: 12px; gap: 10px; }
+  .card-head .head-ops { width: 100%; gap: 6px; }
+  .head-ops .small-input {
+    flex: 1 1 128px; width: auto; min-width: 0;
+    height: 40px; font-size: 16px;
+  }
+  #page-logs .head-ops .check-field { min-height: 40px; }
+  .tool-row { gap: 6px; }
+
+  .input, .sel, textarea, .small-input { font-size: 16px; }
+  .input, .sel { height: 42px; }
+  .btn { min-height: 38px; }
+  .btn.small { min-height: 34px; }
+
+  .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+  .dash-top .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+  .metric { padding: 13px 13px 12px; }
+  .metric strong { font-size: 22px; }
+
+  .runtime-card { padding: 14px 14px 15px; }
+  .runtime-grid { gap: 8px; grid-template-columns: repeat(auto-fit, minmax(94px, 1fr)); }
+  .rt-item { padding: 8px 10px; }
+  .rt-item strong { font-size: 15px; }
+  .env-item { grid-template-columns: 74px minmax(0, 1fr); padding: 8px 10px; }
+  .env-value { font-size: 12.5px; }
+  .col-num { width: 60px; }
+
+  .hero { padding: 18px 16px; }
+  .hero-title { font-size: 25px; }
+  .countdown { font-size: 31px; }
+  .hero-sub { font-size: 12.5px; }
+
+  .session-list { max-height: 260px; }
+  .detail-pane { min-height: 0; height: 68vh; }
+  .detail-head { flex-direction: column; }
+  .detail-head .row-actions { opacity: 1; }
+  .detail-head, .detail-stats { padding-left: 14px; padding-right: 14px; }
+  .detail-scroll { padding: 14px; }
+  .chat { max-width: 92%; }
+
+  .log-wrap { max-height: calc(100dvh - 196px); min-height: 200px; }
+  .log-head { display: none; }
+  .log-line {
+    grid-template-columns: auto auto minmax(0, 1fr);
+    grid-template-areas:
+      "ts lv sess"
+      "msg msg msg";
+    gap: 3px 8px;
+    padding: 8px 10px;
+    font-size: 11px;
+  }
+  .log-ts { grid-area: ts; }
+  .log-lv { grid-area: lv; }
+  .log-sess { grid-area: sess; display: block; }
+  .log-msg { grid-area: msg; margin-top: 2px; }
+
+  .table th, .table td { padding: 8px 9px; }
+  .col-sm-hide { display: none; }
+  .table td.msg { max-width: 220px; }
+  .table td .badge { white-space: nowrap; }
+  #page-dash .table th:nth-child(5), #page-dash .table td:nth-child(5) { display: none; }
+  #page-reminders .table { min-width: 520px; }   /* 藏掉三列后仍要横向滚动，否则正文被挤成一字一行 */
+
+  .save-bar { flex-direction: column; align-items: stretch; bottom: 0; padding: 12px 14px; }
+  .form-grid { grid-template-columns: 1fr; }
+  .settings-grid { gap: 12px; }
+
+  .login-screen { padding: 16px; }
+  .login-card { padding: 28px 20px 22px; }
+  .login-card h1 { font-size: 22px; }
+
+  .modal-root { padding: 10px; }
+  .modal { max-height: calc(100dvh - 20px); border-radius: 16px; }
+  .modal-head { padding: 14px 16px; }
+  .modal-body { padding: 16px; }
+  .modal-foot { padding: 12px 16px; }
+
+  .toast-stack { left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); }
+  .toast { max-width: none; min-width: 0; }
+  .chip-row { gap: 6px; }
+  .chip { height: 30px; padding: 0 10px; font-size: 11.5px; }
+  .tool-grid { grid-template-columns: 1fr; }
+}
+
+@media (hover: none) {
+  .row-actions { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  .toast-bar { animation: none; }
+}
