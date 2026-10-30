@@ -105,7 +105,7 @@ async def main(cfg: Config | None = None) -> None:
         raise RuntimeError("缺少 QQ 凭据：请在 db/config.json 填写 appid / appsecret")
     lock_path = Path(cfg.db_path).parent / ".bot.lock"
     _acquire_singleton(lock_path)
-    log_level = getattr(cfg, "_log_level", None) or (cfg.web_cfg or {}).get("log_level", "INFO")
+    log_level = getattr(cfg, "_log_level", None) or (cfg.web_cfg or {}).get("log_level", "DEBUG")
     setup_logging(cfg.log_file, log_level)
     log = logging.getLogger("ggbot.main")
     log.info("GGBot v%s 启动", __version__)

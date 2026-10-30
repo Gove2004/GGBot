@@ -17,7 +17,7 @@
 - 发送不再补确认行：一行「发送: 正文」就是记录本身；拦截、降级、发送未成功才另留痕
 - LLM 两行只报数量：请求行 = 服务商输入 tokens + 工具/历史/新增三段（本地估算按比例缩放到总数），
   响应行 = 输出 tokens + 缓存命中 + 费用，不打第 N 次
-- 等级：root 按配置设置（默认 INFO，可调 DEBUG/WARNING/ERROR）；set_level 热切换
+- 等级：root 按配置设置（默认 DEBUG，可调 INFO/WARNING/ERROR）；set_level 热切换
 - DEBUG 用于业务排查；第三方库（botpy/openai/httpx/httpcore2/uvicorn）固定 WARNING，避免连接/报文刷屏
 """
 
@@ -68,7 +68,7 @@ class SessionFormatter(logging.Formatter):
         return super().format(record)
 
 
-def setup_logging(log_file: Path, level: str = "INFO", console: bool = True) -> None:
+def setup_logging(log_file: Path, level: str = "DEBUG", console: bool = True) -> None:
     """初始化根 logger：文件（轮转）+ 可选控制台。幂等，可重复调用。"""
     log_file.parent.mkdir(parents=True, exist_ok=True)
     root = logging.getLogger()

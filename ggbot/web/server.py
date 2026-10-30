@@ -191,7 +191,7 @@ def _env_info(cfg) -> dict:
         "vision_host": host_of(vision["base_url"]),
         "memory_model": embedding["model"] if embedding["enabled"] else "",
         "memory_mode": "向量" if embedding["enabled"] else "关键词",
-        "log_level": str(cfg.web_cfg.get("log_level", "INFO")),
+        "log_level": str(cfg.web_cfg.get("log_level", "DEBUG")),
         "db": rel(cfg.db_path),
         "temp": rel(cfg.temp_dir),
     }
@@ -698,7 +698,7 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
     async def get_logs(
         request: Request,
         lines: int = 200,
-        level: str = "INFO",
+        level: str = "DEBUG",
         session: str | None = None,
         q: str | None = None,
         x_token: str | None = Header(default=None),

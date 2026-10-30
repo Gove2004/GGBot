@@ -95,10 +95,9 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 - **发正文不暴露给模型，日志里就不该长得像工具调用**——它是"系统替模型说了一句话"，
   所以按发出结果记，失败只说 `发送未成功: …`，不再出现 `工具 send_text（admin=…, content=…）`。
 - 每行都带调用方会话列（工具/LLM/识图/作息都是），特权工具（L3+）INFO、空转上下线降 DEBUG。
-- **想看 DEBUG 只有一个开关：面板的「日志等级」（`web.log_level`，保存即热生效）**。`deploy/ggbot.service` 的
-  `ExecStart` 不带 `--log-level`。→ 线上曾因为它写着 `--log-level INFO`，启动参数盖掉了配置，
-  日志文件里一条 DEBUG 都没有，面板选 DEBUG 就"什么都没看到"，看着像筛选坏了，其实是等级根本没打开。
-  改动时注意：手工起 `start_*.sh` 才用 `--log-level DEBUG` 这个参数，别把它抄进 unit。
+- **默认等级是 DEBUG**（代码兜底、`config.example.json`、本地与线上的 `db/config.json` 四处一致），要 quieter 就在面板「日志等级」里切，保存即热生效。
+  → 用户两次报「看不到 DEBUG」，原因有叠加的两层，改一层没用：**文件里没写**（以前默认 INFO，且 `deploy/ggbot.service` 曾钉死 `--log-level INFO`——启动参数盖掉配置，unit 里现在不带这个参数）；**界面又默认筛掉**（日志页下拉和 `GET /api/logs` 的 `level` 都曾默认 `INFO 及以上`）。现在两处默认都是 DEBUG。
+  改动时注意：手工起 `start_*.sh` 才用 `--log-level DEBUG` 这个参数，别把它抄进 unit；DEBUG 只放业务行，第三方库固定 WARNING，体积靠 5MB × 5 轮转封顶。
 - 改动时注意：措辞被 `temp/test_log_format.py` 锁住，改文案要同步改测试。
 
 ## 工具与权限
