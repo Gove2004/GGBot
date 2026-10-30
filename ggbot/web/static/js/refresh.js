@@ -7,7 +7,7 @@ async function refreshAll() {
     guarded("stats", refreshStats),
     guarded("sessions", refreshSessions),
     guarded("recent", refreshDashRecent),
-    guarded("messages", refreshMessages),
+    guarded("emojis", refreshEmojis),
     guarded("memories", refreshMemories),
     guarded("config", loadConfig),
     guarded("permissions", refreshPermissions),

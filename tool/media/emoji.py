@@ -111,6 +111,21 @@ class EmojiLibrary:
     def config(self) -> dict:
         return self.rt.load_config(DATA_KEY, DEFAULT_CONFIG)
 
+    def image_path(self, rel: str) -> Path | None:
+        """把 Web 传来的相对路径解析成素材文件；不在库里、不是图片或已被删掉都返回 None。"""
+        if not rel or rel.startswith(("/", "\\")) or "\x00" in rel:
+            return None
+        root = self.root.resolve()
+        try:
+            p = (root / rel).resolve()
+        except OSError:
+            return None
+        if p.parent != root and root not in p.parents:
+            return None
+        if p.suffix.lower() not in IMAGE_EXTS or not p.is_file():
+            return None
+        return p
+
     # ---------- 索引读写 ----------
 
     def _stamp(self) -> tuple[int, int]:

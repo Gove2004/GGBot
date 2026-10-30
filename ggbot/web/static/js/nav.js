@@ -20,12 +20,11 @@ function switchPage(name) {
     guarded("recent", refreshDashRecent);
   } else if (name === "sessions") {
     guarded("sessions", refreshSessions);
-  } else if (name === "messages") {
-    guarded("sessions", refreshSessions);
-    guarded("messages", refreshMessages);
   } else if (name === "memory") {
     guarded("sessions", refreshSessions);
     guarded("memories", refreshMemories);
+  } else if (name === "emojis") {
+    guarded("emojis", refreshEmojis);
   } else if (name === "settings") {
     guarded("config", loadConfig);
   } else if (name === "permissions") {

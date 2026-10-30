@@ -32,8 +32,8 @@ document.addEventListener("click", async (event) => {
     case "refresh-sessions":
       guarded("sessions", refreshSessions);
       break;
-    case "refresh-messages":
-      guarded("messages", refreshMessages);
+    case "refresh-emojis":
+      guarded("emojis", refreshEmojis);
       break;
     case "refresh-logs":
       guarded("logs", refreshLogs);
@@ -100,6 +100,9 @@ document.addEventListener("click", async (event) => {
     case "remind-cancel":
       cancelReminder(id);
       break;
+    case "emoji-view":
+      openEmoji(el.dataset.file);
+      break;
     case "save-config":
       saveConfig();
       break;
@@ -151,9 +154,8 @@ document.addEventListener("DOMContentLoaded", () => {
   setRail(rail);
 
   qs("#sess-q").addEventListener("input", renderSessions);
-  qs("#msg-session").addEventListener("change", () => guarded("messages", refreshMessages));
-  qs("#msg-role").addEventListener("change", () => guarded("messages", refreshMessages));
-  qs("#msg-limit").addEventListener("change", () => guarded("messages", refreshMessages));
+  qs("#emoji-q").addEventListener("input", renderEmojis);
+  qs("#emoji-source").addEventListener("change", renderEmojis);
   qs("#mem-session").addEventListener("change", () => guarded("memories", refreshMemories));
   qs("#rem-session").addEventListener("change", () => guarded("reminders", refreshReminders));
   qs("#rem-status").addEventListener("change", () => guarded("reminders", refreshReminders));

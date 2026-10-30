@@ -51,7 +51,7 @@ function populateSessionSelects() {
   const opts = state.sessions.map((s) =>
     `<option value="${esc(s.id)}">${esc(s.label || labelFromKey(s.id))} · ${esc(String(s.id).split(":")[1] || "").slice(0, 8)}</option>`
   ).join("");
-  [["#msg-session", "全部会话"], ["#mem-session", "全部作用域"], ["#rem-session", "全部会话"]].forEach(([sel, label]) => {
+  [["#mem-session", "全部作用域"], ["#rem-session", "全部会话"]].forEach(([sel, label]) => {
     const el = qs(sel);
     if (!el) return;
     const cur = el.value;

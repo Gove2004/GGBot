@@ -10,8 +10,8 @@ const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
 const PAGE_META = {
   dash: ["仪表盘", "运行概览与实时状态"],
   sessions: ["会话与上下文", "每个群 / 私聊的历史与消息"],
-  messages: ["消息流", "跨会话的最近消息记录"],
   memory: ["向量记忆", "长期记忆的语义检索与维护"],
+  emojis: ["表情包", "本地素材库 · 目录里有什么就能发什么"],
   settings: ["设置", "配置热更新，写回 config.json"],
   permissions: ["权限", "发送者等级与工具调用门槛"],
   tools: ["工具", "一切皆 Tool · 独立配置 / 持久化数据 / 动态挂载"],
@@ -37,6 +37,7 @@ const state = {
   memItems: [],
   memoryQuery: "",
   memoryUseSearch: false,
+  emojiItems: [],
   loading: {},
   timers: [],
   confirmResolve: null,

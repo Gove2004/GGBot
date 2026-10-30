@@ -1,7 +1,7 @@
 """Web 控制面板：FastAPI + WebSocket + 静态前端（ggbot/web/static）。
 
 前端与后端分离：ggbot/web/static/{index.html,css/*.css,js/*.js}，经 /static 托管，可独立修改热加载。
-功能：在线状态、会话与上下文、消息流、记忆（检索/写入/编辑/整理）、提醒、配置热更新、日志查看。
+功能：在线状态、会话与上下文、记忆（检索/写入/编辑/整理）、表情包浏览、提醒、配置热更新、日志查看。
 
 鉴权（安全）：
 - 登录：POST /api/login 校验 config.web.token，成功后写入 HttpOnly + SameSite=Strict Cookie，
@@ -22,7 +22,7 @@ import re
 import secrets
 import time
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, WebSocket
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -470,6 +470,49 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         _auth(request, x_token)
         return storage.recent_messages_global(
             min(max(limit, 1), 500), session_id=session_id or None, role=role or None
+        )
+
+    # ---------- 表情包 ----------
+    # 素材目录是唯一真相，和 emoji_list / send_emoji 读同一份索引，所以这里只浏览、不增删。
+
+    def _emoji_lib():
+        ex = getattr(presence, "executor", None)
+        tool = ex.registry.tools.get("send_emoji") if ex is not None else None
+        return getattr(tool, "lib", None)
+
+    @app.get("/api/emojis")
+    async def emojis(request: Request, x_token: str | None = Header(default=None)):
+        _auth(request, x_token)
+        lib = _emoji_lib()
+        if lib is None:
+            return {"items": []}
+        rows = await lib.items()
+        return {
+            "items": [
+                {
+                    "file": r["file"],
+                    "desc": r["desc"],
+                    "source": r["source"],
+                    "added_at": r["added_at"],
+                    "url": f"/emoji/{quote(r['file'])}",
+                }
+                for r in rows
+            ]
+        }
+
+    # 缩略图不放 /api 下：一屏几十张图会被 API 的 IP 限流（240 次/10s）误伤
+    @app.get("/emoji/{rel:path}", response_class=FileResponse)
+    async def emoji_image(
+        rel: str, request: Request, x_token: str | None = Header(default=None)
+    ):
+        _auth(request, x_token)
+        lib = _emoji_lib()
+        p = lib.image_path(rel) if lib is not None else None
+        if p is None:
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(
+            p,
+            headers={"Cache-Control": "private, max-age=3600", "Content-Disposition": "inline"},
         )
 
     # ---------- 提醒 ----------

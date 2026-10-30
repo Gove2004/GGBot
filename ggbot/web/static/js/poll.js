@@ -10,7 +10,6 @@ function startPolling() {
     if (document.hidden) return;
     guarded("stats", refreshStats);
     guarded("sessions", refreshSessions);
-    if (state.page === "messages") guarded("messages", refreshMessages);
     if (state.page === "dash") guarded("recent", refreshDashRecent);
     if (state.page === "reminders") guarded("reminders", refreshReminders);
   }, 1000));

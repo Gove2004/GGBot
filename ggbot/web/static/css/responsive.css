@@ -52,7 +52,7 @@
   .master-detail { grid-template-columns: minmax(0, 1fr); height: auto; }
   .session-list { max-height: 320px; }
   .detail-pane { min-height: 420px; }
-  .stream-wrap, .log-wrap { max-height: calc(100dvh - 200px); }
+  .log-wrap, .emoji-wrap { max-height: calc(100dvh - 200px); }
 }
 
 @media (max-width: 620px) {
@@ -146,6 +146,12 @@
   .chip-row { gap: 6px; }
   .chip { height: 30px; padding: 0 10px; font-size: 11.5px; }
   .tool-grid { grid-template-columns: 1fr; }
+
+  /* 手机上素材网格跟着页面一起滚，不再套一层内滚动 */
+  .emoji-wrap { max-height: none; overflow: visible; }
+  .emoji-grid { grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); gap: 9px; }
+  .emoji-thumb { height: 96px; }
+  .emoji-thumb img { max-height: 96px; }
 }
 
 @media (hover: none) {

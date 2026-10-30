@@ -63,10 +63,6 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H8l-4 4V5Z"/></svg>
           <span>会话与上下文</span>
         </button>
-        <button class="nav-item" data-page="messages">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
-          <span>消息流</span>
-        </button>
       </div>
 
       <div class="nav-group">
@@ -74,6 +70,10 @@
         <button class="nav-item" data-page="memory">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0-3 11v4h6v-4a6 6 0 0 0-3-11Z"/><path d="M9 21h6"/></svg>
           <span>向量记忆</span>
+        </button>
+        <button class="nav-item" data-page="emojis">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9 10h.01M15 10h.01"/><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0"/></svg>
+          <span>表情包</span>
         </button>
       </div>
 
@@ -227,7 +227,7 @@
           <div class="card">
             <div class="card-head">
               <div><h2>最近消息</h2><p class="card-sub">最新 8 条对话</p></div>
-              <button class="btn ghost small" data-page="messages">查看全部</button>
+              <button class="btn ghost small" data-page="sessions">按会话查看</button>
             </div>
             <div id="dash-recent" class="mini-list"><div class="empty">加载中…</div></div>
           </div>
@@ -250,28 +250,6 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H8l-4 4V5Z"/></svg>
               <p>选择左侧会话查看上下文</p>
             </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 消息流 -->
-      <section id="page-messages" class="page hidden">
-        <div class="card">
-          <div class="card-head">
-            <div><h2>消息流</h2><p class="card-sub">跨会话的最近消息记录</p></div>
-            <div class="head-ops">
-              <select id="msg-session" class="sel small-input"><option value="">全部会话</option></select>
-              <select id="msg-role" class="sel small-input">
-                <option value="">全部角色</option><option value="user">成员</option><option value="assistant">机器人</option>
-              </select>
-              <select id="msg-limit" class="sel small-input">
-                <option>30</option><option>50</option><option>100</option><option>200</option>
-              </select>
-              <button class="btn ghost small" data-action="refresh-messages">刷新</button>
-            </div>
-          </div>
-          <div class="stream-wrap">
-            <div id="msg-body" class="stream"><div class="empty">加载中…</div></div>
           </div>
         </div>
       </section>
@@ -309,6 +287,26 @@
               <tbody id="mem-body"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
             </table>
           </div>
+        </div>
+      </section>
+
+      <!-- 表情包 -->
+      <section id="page-emojis" class="page hidden">
+        <div class="card">
+          <div class="card-head">
+            <div><h2>表情包</h2><p class="card-sub" id="emoji-total">本地素材库 · 加载中…</p></div>
+            <div class="head-ops">
+              <input id="emoji-q" class="input small-input search-input" placeholder="按描述 / 文件名…">
+              <select id="emoji-source" class="sel small-input">
+                <option value="">全部来源</option><option value="builtin">内置</option><option value="user">收藏</option>
+              </select>
+              <button class="btn ghost small" data-action="refresh-emojis">刷新</button>
+            </div>
+          </div>
+          <div class="emoji-wrap">
+            <div id="emoji-body" class="emoji-grid"><div class="empty">加载中…</div></div>
+          </div>
+          <p class="card-sub">素材直接放在 <span class="mono">tool/media/emoji</span> 的 stickers/（内置）和 user/（收藏）里：丢进图片就会出现，删掉就消失。模型发消息时按描述做语义匹配，描述可以在索引里手改。</p>
         </div>
       </section>
 
@@ -535,8 +533,8 @@
 <script src="/static/js/nav.js"></script>
 <script src="/static/js/dash.js"></script>
 <script src="/static/js/sessions.js"></script>
-<script src="/static/js/messages.js"></script>
 <script src="/static/js/memory.js"></script>
+<script src="/static/js/emojis.js"></script>
 <script src="/static/js/settings.js"></script>
 <script src="/static/js/tools.js"></script>
 <script src="/static/js/permissions.js"></script>
