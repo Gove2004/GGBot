@@ -9,7 +9,7 @@ const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
 
 const PAGE_META = {
   dash: ["仪表盘", "运行概览与实时状态"],
-  sessions: ["会话与上下文", "每个群 / 私聊的历史摘要与消息"],
+  sessions: ["会话与上下文", "每个群 / 私聊的历史与消息"],
   messages: ["消息流", "跨会话的最近消息记录"],
   memory: ["向量记忆", "长期记忆的语义检索与维护"],
   settings: ["设置", "配置热更新，写回 config.json"],
@@ -494,12 +494,12 @@ function renderSessions() {
   const q = (qs("#sess-q").value || "").trim().toLowerCase();
   const rows = state.sessions.filter((s) => {
     if (!q) return true;
-    return [s.label, s.id, s.summary, s.last_message].some((v) => String(v || "").toLowerCase().includes(q));
+    return [s.label, s.id, s.last_message].some((v) => String(v || "").toLowerCase().includes(q));
   });
   const top = list.scrollTop;
   list.innerHTML = rows.map((s) => {
     const l = s.live || { state: "offline", reason: "idle", remaining_sec: 0, idle_sec: null };
-    const preview = s.summary || s.last_message || "—";
+    const preview = s.last_message || "—";
     return `<button class="session-item${s.id === state.selectedSession ? " active" : ""}" data-action="session-view" data-sid="${esc(s.id)}">
       <div class="session-top">${sessChip(s.id)}${stateBadge(l.state)}</div>
       <div class="session-preview">${esc(preview)}</div>
@@ -545,9 +545,6 @@ async function openSessionDetail(sid) {
     const d = await api(`/api/sessions/${encodeURIComponent(sid)}/messages?limit=100`);
     if (state.selectedSession !== sid) return;
     const s = d.session || {};
-    const summary = d.summary
-      ? `<div class="modal-section"><h3>历史摘要</h3><div class="summary-box">${esc(d.summary)}</div></div>`
-      : "";
     const chats = (d.messages || []).map((m) => {
       const role = m.role === "assistant" ? "assistant" : "user";
       const pending = m.status === "pending" ? " · 待处理" : "";
@@ -557,7 +554,6 @@ async function openSessionDetail(sid) {
     const stateCell = liveS
       ? `${stateBadge(liveS.state)}<span class="cell-note">${esc(reasonLabel(liveS.reason))} · 剩 ${Math.max(0, Math.round(liveS.remaining_sec || 0))}s</span>`
       : `${stateBadge("offline")}<span class="cell-note">静默</span>`;
-    const summaryLen = (d.summary || "").length;
     pane.innerHTML = `<div class="detail-inner">
       <div class="detail-head">
         <div>
@@ -571,12 +567,10 @@ async function openSessionDetail(sid) {
       <div class="detail-stats">
         <span class="stat-chip">消息 <b>${s.message_count || 0}</b></span>
         <span class="stat-chip">待处理 <b>${s.pending_count || 0}</b></span>
-        <span class="stat-chip">历史摘要 <b>${summaryLen ? `${summaryLen} 字` : "无"}</b></span>
         <span class="stat-chip">最近发言 <b>${esc(fmtTs(s.last_ts || s.updated_at))}</b></span>
         <span class="stat-chip sess-state">作息 ${stateCell}</span>
       </div>
       <div class="detail-scroll">
-        ${summary}
         <div class="modal-section"><h3>最近消息</h3><div class="chat-list">${chats || '<div class="empty">暂无消息</div>'}</div></div>
       </div>
     </div>`;
@@ -587,7 +581,7 @@ async function openSessionDetail(sid) {
 }
 
 async function clearSession(sid) {
-  const ok = await confirmAction("清空上下文", `将删除该会话的全部消息与历史摘要，长期记忆不受影响。`, "清空");
+  const ok = await confirmAction("清空上下文", `将删除该会话的全部消息，长期记忆不受影响。`, "清空");
   if (!ok) return;
   try {
     const r = await api(`/api/sessions/${encodeURIComponent(sid)}/context`, { method: "DELETE" });

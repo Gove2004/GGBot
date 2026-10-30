@@ -132,7 +132,8 @@ ALLOWED_SETTINGS = [
     "behavior.backlog.max_scan_messages",
     "behavior.backlog.online_max_messages",
     "llm.context.max_history_messages",
-    "llm.context.summary_threshold_tokens",
+    "llm.context.token_budget",
+    "llm.context.archive_overflow_messages",
     "llm.context.archive_batch_messages",
     "llm.context.archive_enabled",
     "vision.enabled",
@@ -434,7 +435,6 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         row["label"] = session_label(sid)
         return {
             "session": row,
-            "summary": storage.get_summary(sid),
             "messages": storage.get_recent_messages(sid, min(max(limit, 1), 500)),
         }
 
