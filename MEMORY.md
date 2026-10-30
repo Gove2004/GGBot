@@ -198,6 +198,9 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   `web.host=0.0.0.0` 时面板对整个公网可见，上云要么配 `web.token`，要么只绑 127.0.0.1 走反代。
 - **部署走 GitHub Actions：push master → rsync → 远端 `deploy/deploy_server.sh` 重启 + 健康检查**（细节见 README「部署到云服务器」）。
   同步排除 `config.json`/`*.db`/`temp/`/素材目录，服务器上的密钥和对话库不会被覆盖。
+  → 同一条排除规则有个反直觉的后果：**旧工具目录只要还剩一个 `config.json` 就删不掉**，
+  `rsync --delete` 不会碰被排除的文件，代码早就没有的目录壳会一年年留在服务器上（本次就查到 `tool/chat`/`tool/knowledge`/`tool/send_text`）。
+  改名/换分类目录后要顺手 SSH 核对 `ls tool/` 与代码是否一致，多出来的目录先确认配置与新路径逐键相同、再移进 `temp/_cleanup_<日期>/` 隔离（别直接 `rm`，temp 有 TTL 会自己清）。
   服务器进程统一交给 systemd（`deploy/install_service.sh`），装完要删掉 crontab 的 `@reboot start.sh` 行，否则抢单实例锁。
 
 ## 面板（web）
