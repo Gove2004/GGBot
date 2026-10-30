@@ -198,8 +198,10 @@ class PresenceManager:
 
     @property
     def _archive_overflow(self) -> int:
-        """窗口满后一次最多消化多少条窗口外历史（按 _archive_batch 分批，装不下就下轮接着消化）。"""
-        return max(0, min(4096, int(self.cfg.context.get("archive_overflow_messages", 512))))
+        """窗口满时一次从窗口最旧的一端消化多少条（按 _archive_batch 分批）。
+        上限卡在一个批次之外，保证消化后窗口里至少还剩一批历史。"""
+        n = max(0, min(4096, int(self.cfg.context.get("archive_overflow_messages", 512))))
+        return min(n, max(0, self._history_limit - self._archive_batch))
 
     @property
     def _archive_enabled(self) -> bool:
@@ -580,15 +582,18 @@ class PresenceManager:
         if level <= 0:
             return ""
         digest = await self._memory_block(sid, msgs[-1] if msgs else ctx_msg)
-        # 多取一些候选，剔除本轮 pending 后再截到窗口上限，保证窗口真正装满；
-        # 多出的旧消息用于判断窗口是否已满并触发自动归档
-        fetch_n = self._history_limit + max(10, len(msgs)) + self._archive_overflow
+        # 窗口只装「归档游标之后」的最近 max_history_messages 条：多取一些候选剔除本轮 pending，
+        # 保证窗口真正装满
+        fetch_n = self._history_limit + max(10, len(msgs))
         history = self.storage.get_recent_messages(sid, fetch_n)
-        rows = [h for h in history if (h.get("status") or "") != "pending"]
+        cursor = self.storage.get_archive_cursor(sid)
+        rows = [h for h in history if (h.get("status") or "") != "pending" and h["id"] > cursor]
         window = rows[-self._history_limit:] if self._history_limit > 0 else []
-        if window and len(rows) >= self._history_limit:
-            # 窗口已满：把游标之后、窗口之前的旧消息交给后台分批写入记忆，不阻塞本轮回复
-            self._schedule_archive(sid, window[0]["id"])
+        keep_from = len(window) - self._archive_overflow
+        if len(window) >= self._history_limit and keep_from > 0:
+            # 窗口已满：把窗口最旧的 keep_from 条交给后台分批写入记忆，不阻塞本轮回复。
+            # 消化完窗口空出一截，尾巴那段逐字节不动，缓存前缀只在消化这一次整体失效
+            self._schedule_archive(sid, window[keep_from]["id"])
         # 请求顺序就是缓存顺序：静态人设（+全量工具，所有会话一致）在最前，历史次之，
         # 相关记忆与本轮消息放最后——每轮只换尾巴，前缀才命中得了
         messages = [{"role": "system", "content": SYSTEM_TEMPLATE}]
@@ -679,7 +684,7 @@ class PresenceManager:
         task.add_done_callback(_done)
 
     async def _drain_archive(self, sid: str, before_id: int) -> None:
-        """分批消化窗口外的旧历史：一次事件最多 archive_overflow_messages 条，每批单独提炼写入。"""
+        """分批消化窗口最旧的历史：一次事件最多 archive_overflow_messages 条，每批单独提炼写入。"""
         left = self._archive_overflow
         while left > 0:
             cursor = self.storage.get_archive_cursor(sid)
@@ -693,7 +698,7 @@ class PresenceManager:
                 return  # 这一批没落地：游标不动，下一轮从同一批重试
 
     async def _archive_to_memory(self, sid: str, batch: list[dict]) -> bool:
-        """把一批窗口外历史交给 LLM 提炼成长期记忆；推进游标返回 True。"""
+        """把一批窗口最旧的历史交给 LLM 提炼成长期记忆；推进游标返回 True。"""
         label = session_label(sid)
         transcript = self._fmt_archive(batch)
         if not transcript:

@@ -192,7 +192,8 @@ class Storage:
     def get_archive_batch(
         self, session_id: str, after_id: int, before_id: int, limit: int
     ) -> list[dict]:
-        """窗口外的旧消息：id 在 (after_id, before_id) 之间的记录，按时间正序。"""
+        """待归档的历史消息：id 在 (after_id, before_id) 之间，按时间正序。
+        after_id 是归档游标，before_id 是本轮留在窗口里的第一条（不进这一批）。"""
         if limit <= 0 or before_id <= after_id:
             return []
         with self._lock, self._conn() as c:
