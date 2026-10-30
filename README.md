@@ -8,7 +8,7 @@
 3. **Tool 插件系统**（`tool/base.py` + `tool/<分类>/`）— 一切皆 Tool：按能力域分包的 toolset 自包含代码/配置/数据，启动时自动发现并动态挂载进上下文
 4. **上下文组织 / 持久化记忆**（`ggbot/core/storage.py` + `ggbot/llm/memory.py` + `ggbot/core/presence.py`）
 5. **权限系统**（`ggbot/core/auth.py` + `tool/base.py` + `tool/admin/`）— 发送者等级 0–5、Tool 调用门槛 1–6；启用的工具一律下发给模型，门槛只在执行期校验，越权直接失败返回；归属者可在对话里用 `manage_permission` 按昵称/8 位 id 授权
-6. **Web 控制面板**（`ggbot/web/server.py`）— FastAPI，分组导航（概览 / 对话 / 知识 / 权限 / 系统）：仪表盘（运行状态、本次启动统计与运行环境）、会话与上下文、消息流、向量记忆、成员等级与工具门槛、工具开关、设置、运行日志
+6. **Web 控制面板**（`ggbot/web/server.py`）— FastAPI，分组导航（概览 / 对话 / 知识 / 系统）共 9 页：仪表盘（运行状态、本次启动统计与运行环境）、会话与上下文、向量记忆、表情包（素材浏览）、设置、成员等级与工具门槛、工具开关、运行日志、提醒
 
 > 本文讲「怎么用、怎么装、字段是什么意思」。已经定过的设计取舍与踩坑原因记在根目录 `MEMORY.md`（改行为前先翻对应小节）。
 
@@ -395,6 +395,7 @@ stateDiagram-v2
 - 描述来源：`emoji_save` 收藏时由识图模型自动写一句；手动放进 `stickers/` 的只有文件名兜底（下划线/连字符当空格），**关键词能碰上、向量基本挑不准**，建议先让机器人收藏或补一句 `desc`
 - 节制：`max_per_turn`（默认 1，按回合计数）/ `min_interval_sec`（默认 10s，按会话）双重限流；prompt 提示"对方说正事时不要用表情"；库为空时调用直接返回"表情库为空"并给出放素材的路径，模型据此改走说话
 - 入库：`emoji_save` 只接受 `temp/` 下的图片，按内容摘要（sha1 前 12 位）去重后复制到 `tool/media/emoji/user/`，原子更新索引与向量；`max_user_stickers` 默认 200；仅限用户明确同意收藏的图
+- 面板「表情包」页只浏览：`GET /api/emojis` 走的就是 `emoji_list` 那份 `EmojiLibrary.items()`（目录仍是唯一真相），缩略图走 `GET /emoji/<相对路径>`——Cookie 鉴权、限定在素材根目录内且只认图片扩展名，刻意不放 `/api` 下，否则一屏几十张图会撞上 240 次/10s 的 API 限流。网页上不做增删改：要加图就放目录或让 `emoji_save` 收藏，要改描述就改 `index.json`，避免在面板上开第二套写入路径
 
 ### 语音（media/audio）
 
@@ -582,6 +583,7 @@ stateDiagram-v2
 [PASS] web_static        # web/ 前端拆分托管（/ + /static）、无内联脚本/样式（CSP）、手机端日志行重排与筛选控件自适应；`GET /` 返回前只把 `{{VERSION}}` 占位换成 `ggbot.__version__`，前端不留第二份版本号
 [PASS] version_badge     # 发版口径：升 `__version__` 后 `GET /` 的 HTML 里三处版本位（标签页标题 / 登录卡 / 侧栏徽标）全是新版本号且不留 `{{VERSION}}` 占位；`index.html` 源文件仍是 3 个占位符、且不含 `v<版本号>` 之类写死的版本号（发版只改 `ggbot/__init__.py` 一处）
 [PASS] web_reminders     # 提醒页（`temp/test_web_reminders.py`）：`GET /api/reminders` 默认只列 pending、`session_id` 只筛 items 而 `pending_total` 保持全会话口径、`status=all/fired` 才出历史；`POST /api/reminders/{id}/cancel` 只把 pending 置 cancelled（非 pending 400、无此 id 404），未登录 401；前端拆分守护——`index.html` 引用的每个 `/static/` 文件都存在、`js/` 18 个与 `css/` 6 个一个不漏不多、顺序为 util 最先 / events 最后 / responsive 最后、侧栏 9 项且不再有 `app.js` / `style.css` 引用
+[PASS] web_emojis        # 表情包页（`temp/test_web_emojis.py`）：`GET /api/emojis` 列的就是目录里的图（新放进去的当场出现、删掉的条目失效），只回 file/desc/source/added_at/url、向量不外泄；`GET /emoji/<rel>` 出图且 `Cache-Control: private`，非图片 / 不存在 / `%2e%2e%2f` 越界一律 404，未登录 401；消息流整页下线（`js/messages.js` 删除、侧栏仍 9 项、util/nav/poll/refresh/events/sessions 里不再残留 `refreshMessages` 与 `#msg-` 接线），`/api/messages` 保留给仪表盘「最近消息」
 [PASS] temp_video_policy # 视频附件不下载 + temp 过期文件清理
 ```
 
@@ -606,6 +608,6 @@ stateDiagram-v2
 - 工具目录 `tool/*/config.json` 含第三方密钥/授权码，已在 `.gitignore` 中排除；首次运行会按 `config.example.json`/代码默认值自动生成，无需手工创建
 - 联网搜索受收录情况限制：Bing 对没收录的词会退化成单字匹配，返回一堆不相干的页面，代码只能在结果上挂 `note` 提醒模型别硬答，不能替它保证搜得到；要更稳的结果就切 `searxng`（自建实例）或 `tavily`
 - 一轮里的工具动作不进下一轮历史：`messages` 表只存发出去的消息（含代发的正文）与用户消息，`web_search` / `memory_fetch` 这类中间结果只在当轮请求里存在，下一轮模型看不到自己查过什么；要跨轮记住就让它写进正文或主动 `memory_save`
-- 提醒的触发精度就是 `scan_interval_sec`（默认 15s），停机期间错过的按 `miss_grace_sec` 作废、不补发；提醒行存在 `reminders` 表里，`--reset-chat` 只清 messages + sessions（已排好的提醒**仍在**，要清得在对话里 `remind_cancel`），`--reset-db` 删整个库文件时才一起没了；面板没有提醒视图
+- 提醒的触发精度就是 `scan_interval_sec`（默认 15s），停机期间错过的按 `miss_grace_sec` 作废、不补发；提醒行存在 `reminders` 表里，`--reset-chat` 只清 messages + sessions（已排好的提醒**仍在**，要清得在对话里 `remind_cancel`），`--reset-db` 删整个库文件时才一起没了；面板「提醒」页只列与取消，排提醒仍然只能在对话里说
 - 自动部署的 systemd 单元把 `/root/GGBot` 写死在 `WorkingDirectory` / `ExecStart`，换目录要同时改 unit 与 `DEPLOY_SSH_PATH`；`rsync --delete` 只保住在排除清单里的运行时数据，服务器上手工放的其他文件会被清掉
 - Web 面板为单令牌 + HttpOnly Cookie 鉴权，并带登录失败与每 IP API 限流；适合本机/内网。公网暴露请加 HTTPS 反向代理、设 `web.cookie_secure=true`，置 `web.trust_proxy=true` 后才能按 `X-Forwarded-For` 识别真实客户端 IP
