@@ -21,11 +21,13 @@ GGBot/
 │   ├── config.json      # 全局配置（QQ 凭据 / LLM / Embedding / 行为 / 存储 / Web；含密钥，gitignored）
 │   └── ggbot.db         # SQLite 持久化：会话/消息/记忆（运行时生成，gitignored）
 ├── tool/                # Tool 自包含目录：每个 toolset = 代码 + config.json + 持久化数据（整目录可复制迁移）
-│   ├── chat/            #   send_text（内部通道，不暴露给模型）/ send_sticker / sticker_list / sticker_save / send_image / send_video / send_voice_clone / silence
+│   ├── core/            #   silence（显式收轮）/ time
+│   ├── media/           #   富媒体：send_sticker / sticker_list / sticker_save / send_image / send_video / send_voice_clone / generate_image / generate_video
 │   │   ├── emoji/       #     表情配置 + index.json（素材+描述）+ vectors.json（向量缓存，gitignored）+ stickers/ + user/
-│   │   └── audio/       #     语音克隆配置（MiMo key）+ voice_ref.wav（参考音频）
-│   ├── knowledge/       #   memory_search / memory_write / clear_context / web_search / web_fetch / time
-│   │   └── web/         #     搜索配置（搜索服务 / 抓取上限）
+│   │   ├── audio/       #     语音克隆配置（MiMo key）+ voice_ref.wav（参考音频）
+│   │   └── generate/    #     生图/生视频配置（Agnes key、默认比例/尺寸/时长上限）
+│   ├── memory/          #   memory_fetch / memory_save / clear_context
+│   ├── web/             #   web_search / web_fetch + config.json（搜索服务 / 抓取上限）
 │   ├── fs/              #   fs_read / fs_write + config.example.json（沙箱根目录 / 拒绝清单 / 读写上限）
 │   ├── mail/            #   email.py + config.example.json（SMTP 账号 / 收件人白名单）
 │   └── admin/           #   manage_permission（L5：按昵称 / 8 位 id 授予或收回等级）
@@ -50,6 +52,7 @@ GGBot/
 │   │   ├── auth.py       #   发送者等级解析 / owners 引导 / 成员列表
 │   │   ├── storage.py    #   SQLite（会话/消息/记忆/发送者等级；一次操作一个连接，用完即关）
 │   │   ├── runtime_stats.py  # 本次启动内存统计（会话/收发/工具/LLM/token/费用，不落库）
+│   │   ├── outbound.py   #   正文发送通道（模型的话由这里发出；不是 Tool，面板/统计里也不叫工具）
 │   │   └── presence.py   #   在线/离线状态机（会话级唤醒/积压只读/抖动/分段发送）
 │   ├── llm/
 │   │   ├── llm.py        #   OpenAI 兼容请求装置（厂商无关）
@@ -61,6 +64,7 @@ GGBot/
 │   │   ├── logging_setup.py  # 日志系统（四列格式 / 文件轮转 / 面板 tail）
 │   │   ├── human.py          # 拟人化时序（上下线/续期时长抖动）
 │   │   ├── media.py          #   本地媒体 HMAC 签名 URL（/media/<exp>/<sig>/<rel>）
+│   │   ├── text.py           #   正文规则同源词表（占位符/引用/@ 昵称的识别与剔除）
 │   │   └── session.py        # 会话显示标签（场景 + 8 位 openid）
 │   └── web/              # 控制面板
 │       ├── server.py     #   FastAPI API + WebSocket + 静态托管 + 签名媒体路由（不内嵌前端）
@@ -96,7 +100,7 @@ flowchart LR
 
 数据流：QQ 事件 → 网关归一化 → 上下文装置组织会话 → AI 装置请求 LLM → 回复回传网关 → QQ；全链路事件同步推送到 Web 面板。
 
-**核心循环**：`Tool 插件（按配置和发送者等级动态挂载）+ 上下文（最近 1024 条 / 128k tokens；窗口满时旧消息自动归档进记忆，超限摘要压缩）+ 相关记忆 → Tool 行动`。Tool 层通过 LLM 的 function calling 实现，插件在项目根 `tool/<分类>/` 下自动发现；**回合语义：模型只有一条说话通道——回复正文。要说的话写在正文里，运行时按行拆成消息经内部通道 `send_text` 依次发出（`send_text` 不下发给模型，模型看不到也调不到；同一轮调用工具之后补的正文同样会发出，且不会因此发两遍），不想接话必须显式调 `silence`（调用后立即收轮，不再追加请求）——沉默是一个动作，不是"什么都没发生"**；**鉴权：身份只取自消息发送者（openid），每条消息解析出等级后只下发该等级能用的 Tool schema，执行器再按真实发送者校验一次——模型参数不参与鉴权**；认知状态只有记忆：AI 通过 `memory_write` 沉淀、`memory_search` 回忆，窗口溢出的旧对话也会由 LLM 自动提炼进记忆；system prompt 注入「感觉」型人设、各 Tool 自己挂载的提示与当前话题相关的 top-3 记忆（不写死具体身份/经历，避免上下文膨胀）。
+**核心循环**：`Tool 插件（按配置和发送者等级动态挂载）+ 上下文（最近 1024 条 / 128k tokens；窗口满时旧消息自动归档进记忆，超限摘要压缩）+ 相关记忆 → Tool 行动`。Tool 层通过 LLM 的 function calling 实现，插件在项目根 `tool/<分类>/` 下自动发现；**回合语义：模型只有一条说话通道——回复正文。要说的话写在正文里，运行时按行拆成消息经正文通道（`ggbot/core/outbound.py`，不是 Tool）依次发出（它不下发给模型，模型看不到也调不到；同一轮调用工具之后补的正文同样会发出，且不会因此发两遍），不想接话必须显式调 `silence`（调用后立即收轮，不再追加请求）——沉默是一个动作，不是"什么都没发生"**；**鉴权：身份只取自消息发送者（openid），每条消息解析出等级后只下发该等级能用的 Tool schema，执行器再按真实发送者校验一次——模型参数不参与鉴权**；认知状态只有记忆：AI 通过 `memory_save` 沉淀、`memory_fetch` 回忆，窗口溢出的旧对话也会由 LLM 自动提炼进记忆；system prompt 注入「感觉」型人设、各 Tool 自己挂载的提示与当前话题相关的 top-3 记忆（不写死具体身份/经历，避免上下文膨胀）。
 
 ## 快速部署
 
@@ -139,9 +143,9 @@ LLM 与 embedding 都不绑定厂商：DeepSeek、OpenAI、通义、SiliconFlow�
 ### 4. Tool 配置与素材
 
 - 各工具的 `tool/<分类>/config.json` 在首次运行时按代码里的 `default_config` 自动生成，新增字段自动补齐；模板见同目录 `config.example.json`。
-- 含密钥的工具配置（MiMo key、SMTP 授权码、Tavily key）不入库；邮件收件人白名单、语音克隆、表情限流、搜索服务、文件沙箱等可在 Web「工具」页或直接改配置文件。
+- 含密钥的工具配置（MiMo key、Agnes key、SMTP 授权码、Tavily key）不入库；邮件收件人白名单、语音克隆、表情限流、搜索服务、文件沙箱等可在 Web「工具」页或直接改配置文件；生图/生视频的比例、尺寸与时长上限只改 `tool/media/generate/config.json`（面板工具页没有逐工具的参数编辑）。
 - **调用门槛**：每个工具的默认门槛写在代码里（`min_level`），可在 `tool/<分类>/config.json → levels` 单独覆盖（1–6，6 = 永久锁）；发送者等级在 Web「权限」页设置。详见「权限与工具门槛」。
-- 可选素材不入库，缺失时对应工具自动视为未启用：表情素材放 `tool/chat/emoji/stickers/`（默认空库；手动放进去的图只有文件名兜底描述，挑图质量差，建议用 `sticker_save` 让识图补写一句话描述）、用户投喂存在 `tool/chat/emoji/user/`、语音参考音频放 `tool/chat/audio/voice_ref.wav`。
+- 可选素材与凭据不入库，缺失时对应工具自动视为未启用：表情素材放 `tool/media/emoji/stickers/`（默认空库；手动放进去的图只有文件名兜底描述，挑图质量差，建议用 `sticker_save` 让识图补写一句话描述）、用户投喂存在 `tool/media/emoji/user/`、语音参考音频放 `tool/media/audio/voice_ref.wav`、生图/生视频要 `tool/media/generate/config.json → api_key`（Agnes AI）。
 
 ### 5. 启动
 
@@ -185,8 +189,9 @@ unit 里有 `LimitNOFILE=65535`：systemd 拉起的服务 soft nofile 默认只�
 
 **每次 push 做的事**（`.github/workflows/deploy.yml`，也可在 Actions 页手动触发）
 
-1. `rsync -az --delete` 同步代码，排除项与 `.gitignore` 的运行时部分一致：`.git/ .github/ .venv/ __pycache__/ *.pyc config.json *.db *.db-wal *.db-shm .bot.lock temp/ tool/chat/emoji/{stickers,user}/ tool/chat/emoji/vectors.json tool/chat/audio/`。所以 `--delete` 只会清掉服务器上多余的**代码**，服务器上的 `db/config.json`、数据库、表情素材、语音参考音频、日志都不受影响；服务器原来手工放的 `start.sh` 会被删（systemd 接管后不再需要）。
-2. SSH 执行 `deploy/deploy_server.sh`：`requirements.txt` 的 sha1 变了才 `pip install`（平时几毫秒跳过）→ 比对 `deploy/ggbot.service` 与 `/etc/systemd/system/ggbot.service`，不一致就覆盖 + `daemon-reload` → `systemctl restart ggbot`（没装 systemd 时退回 `start_linux.sh`）→ 读 `db/config.json → web.port`，最多探测 30 秒；面板首页响应即打「面板端口 11028 响应正常，重启成功」，起不来就 tail 40 行 `temp/logs/stdout.log` 并以非零退出，Actions 里直接红叉。
+1. `rsync -az --delete` 同步代码，排除项与 `.gitignore` 的运行时部分一致：`.git/ .github/ .venv/ __pycache__/ *.pyc config.json *.db *.db-wal *.db-shm .bot.lock temp/ tool/media/emoji/{stickers,user}/ tool/media/emoji/vectors.json tool/media/audio/`。所以 `--delete` 只会清掉服务器上多余的**代码**，服务器上的 `db/config.json`、数据库、表情素材、语音参考音频、日志都不受影响；服务器原来手工放的 `start.sh` 会被删（systemd 接管后不再需要）。
+2. （例外）换过工具分类目录或工具名时，先 SSH 跑一次 `bash deploy/migrate_tool_dirs.sh` 再重启：数据目录不在同步范围内，旧路径上的素材与配置不会自己搬到新分类下，漏跑一次对应工具就"未启用"。脚本按文件逐项搬、目标已存在只跳过不覆盖，可以重复跑，也会把 `config.json → levels` 里的旧工具名键改成新名字（旧键不改就是静默回到代码默认门槛）。
+3. SSH 执行 `deploy/deploy_server.sh`：`requirements.txt` 的 sha1 变了才 `pip install`（平时几毫秒跳过）→ 比对 `deploy/ggbot.service` 与 `/etc/systemd/system/ggbot.service`，不一致就覆盖 + `daemon-reload` → `systemctl restart ggbot`（没装 systemd 时退回 `start_linux.sh`）→ 读 `db/config.json → web.port`，最多探测 30 秒；面板首页响应即打「面板端口 11028 响应正常，重启成功」，起不来就 tail 40 行 `temp/logs/stdout.log` 并以非零退出，Actions 里直接红叉。
 
 **公网访问**：`web.host` 保持 `127.0.0.1` 时用 SSH 隧道看面板最省事；确实要公网直连，改 `web.host=0.0.0.0`、`web.token` 换强随机串，前面加 HTTPS 反向代理并设 `web.cookie_secure=true`（需要按 `X-Forwarded-For` 限流再置 `web.trust_proxy=true`）。QQ 侧只要求机器人能连上开放平台的 WebSocket，服务器不需要公网入站端口。
 
@@ -203,12 +208,13 @@ unit 里有 `LimitNOFILE=65535`：systemd 拉起的服务 soft nofile 默认只�
   - 上下文一条：`上下文预算: 历史 40 / 128 条 · 估算 5951 / 131072 tokens`（「历史」是本轮注入的历史消息条数，「估算」是 system+历史+本轮的 tokens）
   - LLM 两条：`LLM 请求 5951 tokens (工具 329 | 历史 456 | 新增 215)` / `LLM 响应 11 tokens (命中 5504/5951 (92%) | 费用 ¥0.0045)`。请求总数取服务商返回的 `usage.prompt_tokens`，响应数是 `completion_tokens`；请求行括号里的工具/历史/新增三段来自本地估算，按比例缩放到服务商总数（三段之和 = 总数），便于看本轮新增占比；不再标第几次调用；服务商没返回 usage 时总数与三段一起加 `≈` 明确是估算；同一回合出现两条是工具往返的追加请求；命中率与费用按 `llm.pricing` 估算，未配单价显示 `-`
   - 工具一条（模型调用的工具，唯一形态）：`工具 send_sticker（admin=小明/54019C24(L2), query=笑死）`——只有**模型调用的工具**走这个形状：调用者（`admin=`）、等级与全部参数只出现在这一行（单值 120 字、整行 200 字截断；密钥都不是工具参数，不会进日志）。L3 及以上特权工具升 INFO，普通工具留在 DEBUG。异常各一条：`工具 fs_write 拒绝: 需要 L4，当前 小明/54019C24(L2)` / `工具 xxx 不存在（模型编造的工具名）` / `工具 fs_read 未成功: <错误>`；模型调用没有下发给它的工具（如 send_text）另有一条 `工具 xxx 未下发给模型，调用被忽略`
-  - 发出正文一条：`发送: 在忙 稍后找你`——`send_text` 不暴露给模型，它只是运行时的发送通道，所以**不套工具格式**：实际发出的每条消息一行（正文带换行拆成多条时也是一条一行），INFO 级，不带 `admin=`（谁在说话看「收到」行与会话列就够了）。同一轮模型既调了工具又写了正文 → 先一条 `工具 …`、再一条 `发送: …`
+  - 发出正文一条：`发送: 在忙 稍后找你`——正文通道不是工具（住在 `ggbot/core/outbound.py`，也不暴露给模型），所以**不套工具格式**：实际发出的每条消息一行（正文带换行拆成多条时也是一条一行），INFO 级，不带 `admin=`（谁在说话看「收到」行与会话列就够了）。同一轮模型既调了工具又写了正文 → 先一条 `工具 …`、再一条 `发送: …`
+  - 生图/生视频各一条（只报数字，口径同识图行）：`生图 2K/16:9 1.4 MB（12.3s）` / `生视频 720P/9:16 6s 3.1 MB（96.3s 耗时）`——档位、画幅、时长、成品大小与等待时间都只在这一行，提示词看上一条工具调用行；成品送达另有一条 `发送图片: gen_….png` / `发送视频: gen_….mp4`，失败只留 `生图失败: …` / `生视频失败: …`
   - 正文只出现一次：正常发出就是那条 `发送: ` 行，不再补"发送成功"确认行。只有出问题才另留痕——占位符拦截只报标记：`正文夹带占位符已剔除: [表情]（余文照常发送）` / `正文只有占位符，已拦截不发送: [表情]` / `发送未成功: <原因>`；被动回复过期降级主动发送记一条 `被动回复失败，降级主动发送: …`；群聊 @ 成员若被平台拒收 markdown 会有一条 `群 markdown @ 消息被拒，退回普通文本: …`；富媒体仍是 `发送语音: …` 一条
   - 作息与归档：`在线窗口聚合 3 条，开始决策` / `离线积压 12 / 256 条（@可立刻唤醒）` / `离线积压已读 12 条转 seen（只读不回）` / `启动上线 预计在线 53s, 积压消息 0 / 256 条` / `自然上线 预计在线 53s, 积压消息 0 / 256 条` / `下线 预计离线 438s（本周期收 4 条）`——**一个在线周期没收到任何消息时上下线都降到 DEBUG**（空转不占行），有过消息才留 INFO；`历史归档 256 条消息 → 记忆 2 条`
   - 会话列跟到调用方：LLM 请求/响应、识图、工具、发送、决策与作息都显式带 `session=`，所以同一轮的所有行都落在 `群聊8825F8A7` / `私聊54019C24` 上；只有纯进程事件（入群、消息审核、Temp 清理）留在 `系统00000000`
 - **等级控制**：`db/config.json → web.log_level`（默认 INFO）；面板保存设置即时热切换。`start_windows.bat` / `start_linux.sh` / `start_mac.command` 默认带 `--log-level DEBUG`，直接 `python main.py` 则用配置值；项目不使用环境变量（Web 面板开关：`web.enable`）
-- **Web 面板**：深色玻璃拟态 + 响应式。桌面端侧栏可折叠为图标栏（78px，状态记忆在 localStorage；≤900px 改为抽屉），侧栏底部显示当前对话模型；仪表盘为 bento 布局——主卡显示运行状态 / 在线会话 / 待处理，右侧 5 个指标两列排布，下方「本次启动」分「调用」（活跃会话、收发消息、工具 / LLM / 识图）与「开销」（合计 / 输入 / 输出 tokens、缓存命中率、按 `llm.pricing` 估算的费用）两组，进程内累计、重启归零，并排新增「运行环境」卡（对话与识图模型 + 服务商域名、记忆检索模式（向量 / 关键词）与向量模型、日志等级与日志路径、db / temp 相对路径；只读摘要，不含密钥）；会话状态表把上线事件折进状态格、新增「待处理」列；会话与上下文改为左右分栏（左列表支持筛选与待处理角标、滚动位置保持，右侧详情含摘要、消息 / 待处理 / 摘要字数 / 最近发言 / 当前作息与消息气泡，可单独清空）；消息流为时间线卡片（角色色点 / 会话标签 / 状态徽标）；日志改为等宽控制台（时间去色、等级 / 会话 / 内容四列，警告与错误行带底色，自动跟随最新日志；手机端时间/等级/会话一行、内容另起一行）；向量记忆（语义检索 / 写入 / 编辑 / 整理）、**权限（最近发言者与已登记成员的等级下拉、全部 Tool 的调用门槛下拉，含永久锁与「默认 L n」调整标记）**、工具（18 个 Tool 按分类启停，门槛徽标显示等级名（如 `L4 心腹`）、标记与代码默认不一致的门槛，不暴露给模型的内部通道（`send_text`）额外挂「内部」徽标）、设置分组（LLM 请求 / 识图 / 费用单价 / 在线作息 / 回复节奏 / 上下文与积压 / 日志，38 个路径白名单热更新并写回 config.json——常驻对象都是每次现读配置，保存即生效；仍需重启的 `vision.timeout_sec` 在字段标签后挂了「需重启」徽标；`api_key` / `base_url` / `web.token` 等凭据路径不在白名单）；状态、统计、会话与当前页数据每秒刷新
+- **Web 面板**：深色玻璃拟态 + 响应式。桌面端侧栏可折叠为图标栏（78px，状态记忆在 localStorage；≤900px 改为抽屉），侧栏底部显示当前对话模型；仪表盘为 bento 布局——主卡显示运行状态 / 在线会话 / 待处理，右侧 5 个指标两列排布，下方「本次启动」分「调用」（活跃会话、收发消息、工具 / LLM / 识图）与「开销」（合计 / 输入 / 输出 tokens、缓存命中率、按 `llm.pricing` 估算的费用）两组，进程内累计、重启归零，并排新增「运行环境」卡（对话与识图模型 + 服务商域名、记忆检索模式（向量 / 关键词）与向量模型、日志等级与日志路径、db / temp 相对路径；只读摘要，不含密钥）；会话状态表把上线事件折进状态格、新增「待处理」列；会话与上下文改为左右分栏（左列表支持筛选与待处理角标、滚动位置保持，右侧详情含摘要、消息 / 待处理 / 摘要字数 / 最近发言 / 当前作息与消息气泡，可单独清空）；消息流为时间线卡片（角色色点 / 会话标签 / 状态徽标）；日志改为等宽控制台（时间去色、等级 / 会话 / 内容四列，警告与错误行带底色，自动跟随最新日志；手机端时间/等级/会话一行、内容另起一行）；向量记忆（语义检索 / 写入 / 编辑 / 整理）、**权限（最近发言者与已登记成员的等级下拉、全部 Tool 的调用门槛下拉，含永久锁与「默认 L n」调整标记）**、工具（19 个 Tool 按分类启停，门槛徽标显示等级名（如 `L4 心腹`）、标记与代码默认不一致的门槛；发正文的通道不是 Tool，不在这一页）、设置分组（LLM 请求 / 识图 / 费用单价 / 在线作息 / 回复节奏 / 上下文与积压 / 日志，38 个路径白名单热更新并写回 config.json——常驻对象都是每次现读配置，保存即生效；仍需重启的 `vision.timeout_sec` 在字段标签后挂了「需重启」徽标；`api_key` / `base_url` / `web.token` 等凭据路径不在白名单）；状态、统计、会话与当前页数据每秒刷新
 - **运维 CLI**：`python -m ggbot.cli stats|sessions|context|clear|reset-chat|memory ...`，可直接查看统计、导出会话上下文、清空单个会话、检索/增改/整理记忆（`--yes` 跳过确认）
 - **API**：登录 `POST /api/login`（HttpOnly Cookie，失败限流 8 次/60s）、`GET /api/auth`、`POST /api/logout`；业务 `GET /api/stats|sessions|messages|memories|tools|config|logs`，`POST /api/config`（`[{"path": "a.b.c", "value": x}]` 批量，白名单 + 类型校验；越权、类型不符、config.json 里没有该键的都算拒绝，回执里给 `updated` / `rejected`，不静默丢弃）、`POST /api/tools/{name}/toggle`（共享配置的 Tool 返回 400）、`GET /api/actors` + `POST /api/actors`（成员等级 0–5）、`POST /api/tools/{name}/level`（门槛 1–6）；`GET /api/config|tools` 密钥脱敏，`GET /api/config` 一并返回 `allowed`（白名单）与 `restart`（仍需重启的键，面板据此挂徽标）；`GET /api/stats` 一并返回 `runtime`（进程内累计统计）与 `env`（模型 / 检索模式 / 日志等级 / db 与 temp 相对路径摘要，不含任何密钥）；`GET /media/{exp}/{sig}/{rel}` 为 QQ 提供签名媒体，不参与 Cookie 鉴权
 - **安全**：Cookie 鉴权（常量时间比较）、按 IP 的 API 限流（240 次/10s，超限 429 + Retry-After）、登录失败 8 次/60s 后 429、`/ws` 同源 + Cookie 校验、跨站写请求拦截、CSP / X-Frame-Options DENY / nosniff / no-store，FastAPI 文档端点关闭；公网部署建议再加 HTTPS 反向代理、设 `web.cookie_secure=true`，反代后置 `web.trust_proxy=true` 以按 `X-Forwarded-For` 首地址限流
@@ -224,7 +230,7 @@ unit 里有 `LimitNOFILE=65535`：systemd 拉起的服务 soft nofile 默认只�
 | 上线带积压 | `backlog.max_scan_messages`（默认 256） | 定时上线把离线 pending（最多 256 条）标记为 `seen` 读入上下文，**只回最后一条**（其余不单独触发 LLM）；超出上限的旧消息同样置 seen（不读入），不会永远挂在 pending |
 | 在线批次 | `backlog.online_max_messages`（默认 16） | 在线抖动窗口最多保留 16 条，超出时最旧的转 `seen`，避免一次处理过大批次 |
 | 抖动聚合 | `reply.debounce_sec`（默认 5）/ `debounce_max_sec`（默认 10） | 在线消息进入 5–10s 随机抖动窗口聚合（每条新消息重新计时），LLM 选择性回复（非每条必回） |
-| 分段发送 | `reply.segment_gap_sec` | send_text 遇到换行自动拆成多条，按间隔逐条发送（msg_seq 递增） |
+| 分段发送 | `reply.segment_gap_sec` |正文通道遇到换行自动拆成多条，按间隔逐条发送（msg_seq 递增） |
 | 作息抖动 | `presence.online_duration_jitter` / `offline_interval_jitter` / `renew_jitter` | 上下线时长、续期时长按 ±比例随机，避免机械整点；每会话首次上线时间也随机错开 |
 
 > **会话隔离**：每个会话（每个群 / 每段私聊）是独立状态机——私聊被@只唤醒私聊会话，不会让群聊上线；A 群唤醒不影响 B 群；群聊积压只在本群上线时读入，不会跨群回复。离线倒计时/在线时长/抖动窗口均按会话独立计时。
@@ -241,6 +247,8 @@ stateDiagram-v2
 ```
 
 **消息处理路径**：收到消息 → （有图片则先识图，替换为 `[图片]（描述）`）→ 归属会话 → 该会话离线？→ 入库标记 pending（不调 LLM）；若本会话是进程重启后的第一条且 `start_online`（默认开）→ 直接上线，本条按在线流程聚合回复；若被@且 `wake_on_at_message` → 先把旧积压标记 `seen` 读入上下文，再**立即被动回复本条** → 本会话上线。定时上线：把本会话积压（读入上限 256）除**最后一条**外标记 `seen` 读入上下文，最后一条投进在线抖动窗口当本轮话头回复（`seen` 历史会参与生成，所以 AI 知道离线期间聊了什么，回复时能接上语境；上线瞬间又来新消息会和它并成同一批次，不会对同一件事回两遍）。在线：5–10s 随机抖动窗口聚合（最多 16 条）→ 走 LLM 决策是否接话（@/私聊用被动回复，普通群消息用主动消息）→ 每成功回复一轮固定续期 30s（封顶 600s）。
+
+> **消息去重（两级）**：入站先按 `msg_id` 去内存 `_seen`（上限 5000，超了截半）里筛一遍，未命中再查库（`messages.msg_id`，有索引 `idx_messages_msg_id`，老库启动时自动补）。@事件与群全量事件会把同一条消息推两次，内存这层就够；查库那层管重启窗口——每次发版都会重启进程，`_seen` 清空后平台若重推旧消息，内存拦不住，机器人会对同一件事回第二遍。命中任一层的重复只打一行 DEBUG（`重复/空消息忽略 id=…`，库中命中带「库中已有」），不打「收到」行、不进归一化与 Presence，因此也不会再入一次库。助手消息入库不带 `msg_id`，所以查库只会命中用户消息。
 
 > **上下文满了会怎样**：历史只取最近 1024 条（更早的消息仍在库里，只是不进入本次请求）。窗口满后，每轮在后台把游标之后最旧的 256 条交给 LLM 提炼成长期记忆（`memories`，逐条写入、自动去重），归档游标存于 `sessions.archived_upto`，不阻塞回复；当估算请求超过 128k tokens 时，还会从最旧的历史开始移出，交给 LLM 压缩进 `sessions.summary`（≤600 字），摘要随会话持久化并在之后每轮注入；`【本轮消息】` 始终完整保留，不会被截断。极端情况下会把历史全部压进摘要，只留下 system + 摘要 + 当前批次。
 
@@ -260,7 +268,7 @@ stateDiagram-v2
 | 卡片 | ark_data | 解析 title/desc/jump_url 为文本 |
 | 聊天记录 | msg_elements type=102 | 文本化并入上下文 |
 
-> **发送侧 @ 与引用**：`send_text` 正文里的 `@昵称`（上下文里出现过的叫法）在群聊中会替换为官方 `<qqbot-at-user id="member_openid" />`。**该标记只在 markdown 消息里被解析**，所以含 @ 的群消息走 `msg_type=2 + markdown.content`；平台拒收 markdown 时自动退回普通文本（用剔除标记后的可读原文，绝不把标签原文发给用户），因此 @ 是否生效看有没有 `群 markdown @ 消息被拒 …` 这条警告——发送成功本身不再打日志行。查不到的昵称原样保留文本，不生成标记。**入库与日志始终用可读原文（`@昵称 …`），不含标记**。正文以 `[引用 关键词]` 开头时，按关键词找到本会话最近一条含该内容的消息并带上 `message_reference`（前面先写 `@昵称` 也可以），只写 `[引用]` 则引用当前这条；私聊同样支持引用，但平台没有 @ 成员的表，不会解析 @。找不到关键词时退回引用当前消息。
+> **发送侧 @ 与引用**：正文里的 `@昵称`（上下文里出现过的叫法）在群聊中会替换为官方 `<qqbot-at-user id="member_openid" />`。**该标记只在 markdown 消息里被解析**，所以含 @ 的群消息走 `msg_type=2 + markdown.content`；平台拒收 markdown 时自动退回普通文本（用剔除标记后的可读原文，绝不把标签原文发给用户），因此 @ 是否生效看有没有 `群 markdown @ 消息被拒 …` 这条警告——发送成功本身不再打日志行。查不到的昵称原样保留文本，不生成标记。**入库与日志始终用可读原文（`@昵称 …`），不含标记**。正文以 `[引用 关键词]` 开头时，按关键词找到本会话最近一条含该内容的消息并带上 `message_reference`（前面先写 `@昵称` 也可以），只写 `[引用]` 则引用当前这条；私聊同样支持引用，但平台没有 @ 成员的表，不会解析 @。找不到关键词时退回引用当前消息。
 
 > 已注册**群全量消息**事件（私域 `GROUP_MESSAGE_CREATE`，botpy 1.2.1 未内置，运行时注入 parser）：普通消息（非@）进入 Presence 积压/抖动路径，与@消息共用去重与统一路由。机器人需在开放平台/群内开启"接收群内全部消息"权限。
 
@@ -316,7 +324,7 @@ stateDiagram-v2
 
 `pricing` 是**每百万 tokens 的单价**（按服务商计费页填写，留 0 表示不估算）：`input_per_mtok`（未命中缓存的输入）、`cached_input_per_mtok`（缓存命中输入，缺省等于 input）、`output_per_mtok`（输出），`currency` 只影响日志里的符号。模板默认按 DeepSeek `deepseek-flash` 高峰价（输入 ¥2 / 缓存 ¥0.04 / 输出 ¥8）；`peak_hours` 是高峰时段（工作日、本地时间），时段外按 `off_peak_multiplier`（默认 0.5）折算，不需要分时计价就删掉这两个字段。DEBUG 日志按服务商返回的 `usage` 记录实际 token 与缓存命中；`prompt_tokens` 缺失时才退回本地估算。未配置单价时费用显示 `-`。识图请求同样按这套单价与分时规则计费，日志单独标注「识图」。
 
-`embedding` 的 `api_key` / `base_url` / `model` 任一为空，或 `enabled=false` 时，不启用向量检索：`memory_write` 照常入库，`memory_search` 退化为字符/二元组关键词匹配，不再请求外部服务。旧版配置里的 `deepseek` 段会在启动时自动改写为 `llm`。
+`embedding` 的 `api_key` / `base_url` / `model` 任一为空，或 `enabled=false` 时，不启用向量检索：`memory_save` 照常入库，`memory_fetch` 退化为字符/二元组关键词匹配，不再请求外部服务。旧版配置里的 `deepseek` 段会在启动时自动改写为 `llm`。
 
 `vision` 的 `base_url` / `api_key` / `model` 留空即沿用 `llm`；`prompt` 是识图指令，`max_chars` 截断描述长度，`max_tokens` 限制识别输出，`timeout_sec` 为单次请求超时。`thinking` 留空时只在**与 `llm` 同一个 base_url** 时沿用 `llm.request.thinking`（DeepSeek 的 flash 是推理模型，不禁用思考会把 max_tokens 吃满、正文返空），换成别家识图服务商则默认不发该扩展字段。识图失败（网络、额度、非图片）只记录警告并保留 `[图片]` 占位，不影响消息继续处理。
 
@@ -328,29 +336,31 @@ stateDiagram-v2
 
 `tool/base.py` 是插件基座；每个 **toolset 自包含**在项目根的 `tool/<分类>/` 下——代码、`config.json`、持久化数据（索引 / 素材 / 参考音频）同目录，整个文件夹可原样复制到另一台机器。启动时由 `ToolRegistry` 自动发现 `tool/` 的子包——每个模块暴露 `get_tools(rt)`，返回若干 `Tool` 实例，注册表按所在子包自动打上 `category`。新增能力 = 在某个分类下新增一个模块，无需改动注册表或提示词模板；新增分类 = 新建一个含插件模块的子包。
 
-提示词的「一切皆工具」部分会明确要求：说话就是把话写在回复正文里（系统按行代发，`send_text` 是模型看不到的内部通道），情绪配表情、亲密场景可发语音、值得记住的事主动 `memory_write`；不想接话就显式调 `silence`（什么都不发、本轮直接结束），比硬凑一句好——反过来，模型写出的正文一律会被当成一次说话发出去，不管本轮有没有调用过工具；模型凭空调用没有下发给它的工具（含 `send_text`）会被拒绝，结果里直接告诉它"把话写在正文里"。各 Tool 的 `description` 与 `prompt_hint` 决定它会不会被调用，迁移旧工具时应按当前项目重写触发场景，而不是只保留功能描述。
+提示词的「一切皆工具」部分会明确要求：说话就是把话写在回复正文里（系统按行代发，正文通道不是模型眼里的工具），情绪配表情、亲密场景可发语音、值得记住的事主动 `memory_save`；不想接话就显式调 `silence`（什么都不发、本轮直接结束），比硬凑一句好——反过来，模型写出的正文一律会被当成一次说话发出去，不管本轮有没有调用过工具；模型凭空调用没有下发给它的工具（含 `send_text`）会被拒绝，结果里直接告诉它"把话写在正文里"。各 Tool 的 `description` 与 `prompt_hint` 决定它会不会被调用，迁移旧工具时应按当前项目重写触发场景，而不是只保留功能描述。
 
 | 分类 | Tool | 作用 | 配置/数据（`tool/<分类>/`） |
 |---|---|---|---|
-| chat | `send_text`（**内部**） | 文本发送通道，`llm_visible=false` 不进 schema、模型看不到也调不到：模型把话写在回复正文里，运行时逐行拆成消息调本工具发出（换行自动拆多条，msg_seq 递增；群聊正文里的 `@昵称` 会转成真 @，正文以 `[引用 关键词]` 开头会引用对应消息） | 无（首次停用才生成 config） |
-| chat | `send_sticker` | 用一句话说明想表达什么（`query`），向量在素材库里找最贴的一张发出去；低于 `min_score` 就没有贴合的，改用说话 | `emoji/config.json`、`emoji/index.json`、`emoji/vectors.json`、`emoji/stickers/`、`emoji/user/` |
-| chat | `sticker_list` / `sticker_save` | 按同一套检索查看可用素材 / 收藏用户投喂的图（收藏时由识图自动写描述） | 与 `send_sticker` 同组（不单独启停） |
-| chat | `send_image` / `send_video` | 发送图片 / 视频（URL 或本地文件，本地走 base64 直传） | 无 |
-| chat | `send_voice_clone` | MiMo 声音克隆 TTS（参考音频克隆音色，L2） | `audio/config.json`、`audio/voice_ref.wav` |
-| chat | `silence` | 本轮主动不接话：不发任何东西并立即结束回合（可选 `reason` 只进日志），给模型一个"沉默"的正当动作 | 无 |
-| knowledge | `memory_search` / `memory_write` | 向量记忆检索 / 沉淀 | 无 |
-| knowledge | `web_search` / `web_fetch` | 联网搜索（Bing RSS / SearXNG / Tavily；`read=true` 顺带抓回前 3 条正文；结果与关键词几乎不沾边时返回 `note` 让模型换词或承认不确定）/ 抓取网页正文（`urls` 可批量并发，最多 5 个） | `web/config.json`（搜索服务、超时、抓取上限、`read_max_chars`） |
-| knowledge | `time` | 当前日期 / 时间 / 星期 / 时区 | 无 |
-| knowledge | `clear_context` | 清空**本会话**上下文：删除全部消息并重置历史摘要，长期记忆不动（L4 心腹） | 无 |
+| core | `silence` | 本轮主动不接话：不发任何东西并立即结束回合（可选 `reason` 只进日志），给模型一个"沉默"的正当动作 | 无 |
+| core | `time` | 当前日期 / 时间 / 星期 / 时区 | 无 |
+| media | `send_sticker` | 用一句话说明想表达什么（`query`），向量在素材库里找最贴的一张发出去；低于 `min_score` 就没有贴合的，改用说话 | `emoji/config.json`、`emoji/index.json`、`emoji/vectors.json`、`emoji/stickers/`、`emoji/user/` |
+| media | `sticker_list` / `sticker_save` | 按同一套检索查看可用素材 / 收藏用户投喂的图（收藏时由识图自动写描述） | 与 `send_sticker` 同组（不单独启停） |
+| media | `send_image` / `send_video` | 发送图片 / 视频（URL 或本地文件，本地走 base64 直传） | 无 |
+| media | `send_voice_clone` | MiMo 声音克隆 TTS（参考音频克隆音色，L2） | `audio/config.json`、`audio/voice_ref.wav` |
+| media | `generate_image` | Agnes 文生图，生成完直接发（L2）；带 `refs`（temp/ 或 emoji/ 素材的本地路径）就是改图或跟风格 | `generate/config.json`（Agnes key、`image_size` / `image_ratio` / `max_refs`） |
+| media | `generate_video` | Agnes 生视频（L3）：不填 refs 文生视频，填一张当首帧让静图动起来，填两张做首尾帧过渡；时长 4–12 秒 | 同上（与 `generate_image` 同组，不单独启停） |
+| memory | `memory_fetch` / `memory_save` | 向量记忆检索 / 沉淀 | 无 |
+| memory | `clear_context` | 清空**本会话**上下文：删除全部消息并重置历史摘要，长期记忆不动（L4 心腹） | 无 |
+| web | `web_search` / `web_fetch` | 联网搜索（Bing RSS / SearXNG / Tavily；`read=true` 顺带抓回前 3 条正文；结果与关键词几乎不沾边时返回 `note` 让模型换词或承认不确定）/ 抓取网页正文（`urls` 可批量并发，最多 5 个） | `config.json`（搜索服务、超时、抓取上限、`read_max_chars`） |
 | fs | `fs_read` | 文件系统只读：`list` / `stat` / `read` / `find` / `grep`（L3） | `config.json`（沙箱根目录、拒绝清单、读写上限） |
 | fs | `fs_write` | 文件系统写入：`write` / `append` / `replace` / `mkdir` / `copy` / `move`（L4，无删除） | 同上（与 `fs_read` 同组） |
 | mail | `send_email` | SMTP 发邮件（文本/HTML + 附件，L3） | `config.json` |
 | admin | `manage_permission` | 权限管理（L5）：`grant` / `revoke` / `list` / `help`，支持昵称 / 8 位 id / openid | 无（首次停用才生成 config） |
 
+> **发正文不是工具**：模型把话写在回复正文里，运行时逐行拆成消息调 `ggbot/core/outbound.py` 的正文通道发出（换行自动拆多条，msg_seq 递增；群聊正文里的 `@昵称` 会转成真 @，正文以 `[引用 关键词]` 开头会引用对应消息）。它不在 `tool/` 下、不进注册表与面板、也不下发给模型，所以工具列表里没有「发消息」这一项，模型不会调完工具又说一遍。
+
 ### 一个 Tool 由什么组成
 
 - **schema**：`name` / `description` / `parameters`，直接进入 LLM function calling 的 tools 列表
-- **是否下发给模型**：`llm_visible`（默认 True）。设为 False 的工具（只有 `send_text`）不进 schema、不进 `【工具提示】`，模型看不到也调不到，只能由运行时内部调用；面板「工具」页给它挂「内部」徽标
 - **执行器**：`run(args, ctx)`，通过 `ToolRuntime` 获得配置、数据目录与发送能力
 - **自我描述**：`prompt_hint` 自动汇总进 system prompt 的 `【工具提示】`，只在启用时出现
 - **启停与归属**：`enabled_by_default` / `toggleable` / `config_owner` / `data_name`（目录名，如 `send_email → mail`）
@@ -359,35 +369,47 @@ stateDiagram-v2
 ### 配置与数据
 
 - 每个 Tool 的配置在 `tool/<分类>/config.json`：读取时与默认值合并、保留未知字段、自动补齐新增默认项；`enabled=false` 即从 schema 与提示词中消失
-- **无默认配置的工具**（`send_text` 等）在首次被停用时才落盘 `{"enabled": false}`，不产生空配置/空目录
-- **共享配置组**：表情三件套同一份 `tool/chat/emoji/config.json`，`sticker_list`/`sticker_save` 标记 `config_owner=false, toggleable=false`，面板显示"同组"
-- 持久化数据（索引、素材、参考音频）与代码同目录，在 `tool/<分类>/`（如 `chat/emoji`、`chat/audio`、`knowledge/web`）；运行产物（TTS/下载/生成）在 `temp/tool/<key>/`，随 temp TTL 清理
+- **无默认配置的工具**（`silence` 等）在首次被停用时才落盘 `{"enabled": false}`，不产生空配置/空目录
+- **共享配置组**：表情三件套同一份 `tool/media/emoji/config.json`，`sticker_list`/`sticker_save` 标记 `config_owner=false, toggleable=false`，面板显示"同组"
+- 持久化数据（索引、素材、参考音频）与代码同目录，在 `tool/<分类>/`（如 `media/emoji`、`media/audio`、`web`）；运行产物（TTS/下载/生成）在 `temp/tool/<key>/`，随 temp TTL 清理
 - **迁移**：复制 `tool/<分类>/` 整个目录即可带走该 toolset 的代码 + 配置 + 数据，无需同步数据库或其他目录
 - **Web 开关**：面板「工具」页按分类排序列出全部 Tool、描述与脱敏配置，可即时启停（`POST /api/tools/{name}/toggle`，密钥字段返回 `***`）
-- **动态挂载**：`ToolRegistry.schemas()` 只返回已启用、`llm_visible=true` 且门槛 ≤ 当前发送者等级的 Tool；agent 循环每回合按当前启用集合请求 LLM，收到没有下发的工具名（模型编造或旧 schema 残留）直接拒绝并提示"把话写在正文里"
+- **动态挂载**：`ToolRegistry.schemas()` 只返回已启用且门槛 ≤ 当前发送者等级的 Tool；agent 循环每回合按当前启用集合请求 LLM，收到没有下发的工具名（模型编造或旧 schema 残留）直接拒绝并提示"把话写在正文里"
 
-### 表情包（chat/emoji）
+### 表情包（media/emoji）
 
 挑图靠**向量检索**，没有情绪词表：把「笑死」归一成「开心」这类判断本来就该模型自己做，固定词表只会在模型没想到的说法上失灵。
 
-- 索引 `tool/chat/emoji/index.json`（v3）：`{version, items:[{file, desc, source, added_at}]}`，只存人看的素材清单与一句话描述 `desc`（可手改）；目录里多出来的图会被自动补进索引，删掉的文件条目自动失效。旧 v2（`moods` 标签）首次读取时把标签折进 `desc`，落盘即升级为 v3
-- 描述向量单独缓存在 `tool/chat/emoji/vectors.json`（`{file: {desc, vec}}`，gitignored）：2560 维向量放进 `index.json` 会让入库文件膨胀到几十 KB 且没法 review；缓存缺失或 `desc` 被手改过时，旧向量作废并按新描述重算，删掉这个文件不影响功能
+- 索引 `tool/media/emoji/index.json`（v3）：`{version, items:[{file, desc, source, added_at}]}`，只存人看的素材清单与一句话描述 `desc`（可手改）；目录里多出来的图会被自动补进索引，删掉的文件条目自动失效。旧 v2（`moods` 标签）首次读取时把标签折进 `desc`，落盘即升级为 v3
+- 描述向量单独缓存在 `tool/media/emoji/vectors.json`（`{file: {desc, vec}}`，gitignored）：2560 维向量放进 `index.json` 会让入库文件膨胀到几十 KB 且没法 review；缓存缺失或 `desc` 被手改过时，旧向量作废并按新描述重算，删掉这个文件不影响功能
 - 检索：`query` 与每条 `desc` 都 embedding，按余弦相似度取最贴的一张；`min_score`（默认 0.50）之下视为库里没有贴合的表情，直接让模型说话——实测该厂商相似度分布很挤，完全不相干的说法也能拿到 0.47，阈值调松就会乱发表情。与最高分相差不到 `NEAR_TIE`(0.05) 的才算同一档，只在这一档里随机，并避开该会话最近 8 张
 - `query_instruct`：Qwen3-Embedding 这类模型要求查询侧带任务说明、文档侧不带，代码按 `Instruct: …\nQuery: …` 组装查询。同一批 5 张素材实测：带 instruct 命中 4 个说法，不带只命中 3 个。只影响查询向量，素材 `desc` 仍是原文，换厂商改文案或留空即可
 - 降级：未配置 embedding 或向量缺失时改用字面重合度（复用记忆检索的二元组算法，匹配 `desc` + 文件名），此时不受 `min_score` 约束
 - 描述来源：`sticker_save` 收藏时由识图模型自动写一句；手动放进 `stickers/` 的只有文件名兜底（下划线/连字符当空格），**关键词能碰上、向量基本挑不准**，建议先让机器人收藏或补一句 `desc`
 - 节制：`max_per_turn`（默认 1，按回合计数）/ `min_interval_sec`（默认 10s，按会话）双重限流；prompt 提示"对方说正事时不要用表情"；库为空时调用直接返回"表情库为空"并给出放素材的路径，模型据此改走说话
-- 入库：`sticker_save` 只接受 `temp/` 下的图片，按内容摘要（sha1 前 12 位）去重后复制到 `tool/chat/emoji/user/`，原子更新索引与向量；`max_user_stickers` 默认 200；仅限用户明确同意收藏的图
+- 入库：`sticker_save` 只接受 `temp/` 下的图片，按内容摘要（sha1 前 12 位）去重后复制到 `tool/media/emoji/user/`，原子更新索引与向量；`max_user_stickers` 默认 200；仅限用户明确同意收藏的图
 
-### 语音（chat/audio）
+### 语音（media/audio）
 
-- `tool/chat/audio/config.json`：`api_key` / `base_url` / `model`（默认 `mimo-v2.5-tts-voiceclone`）/ `reference_voice_path` / `timeout` / `max_retries` / `max_chars`（默认 60）
-- `voice_ref.wav` 为参考音频；`send_voice_clone` 把文本合成 wav 到 `temp/tool/chat/audio/`，再用 `pysilk` 转成带 `#!SILK_V3` 头的 24kHz silk 并以 file_type=3 发送；`api_key` 或参考音频缺失时工具自动视为未启用
+- `tool/media/audio/config.json`：`api_key` / `base_url` / `model`（默认 `mimo-v2.5-tts-voiceclone`）/ `reference_voice_path` / `timeout` / `max_retries` / `max_chars`（默认 60）
+- `voice_ref.wav` 为参考音频；`send_voice_clone` 把文本合成 wav 到 `temp/tool/media/audio/`，再用 `pysilk` 转成带 `#!SILK_V3` 头的 24kHz silk 并以 file_type=3 发送；`api_key` 或参考音频缺失时工具自动视为未启用
 - 语气约束走 prompt 提示：短句、口语化、情绪随内容变化；`pysilk-mod` 已在 `requirements.txt` 中
 
-### 联网（knowledge/web）
+### 生图 / 生视频（media/generate）
 
-- `tool/knowledge/web/config.json`：`provider`（`bing` / `searxng` / `tavily`）、`base_url`、`api_key`、`timeout_sec`、`max_results`、`fetch_max_chars`、`fetch_max_bytes`、`read_max_chars`（`read=true` 时每页正文截断，默认 1200）
+- `tool/media/generate/config.json`：`api_key`（Agnes AI，必填）/ `base_url` / `image_model`（默认 `agnes-image-2.1-flash`）/ `video_model`（默认 `agnes-video-2.5-flash`）
+- 出图出视频的默认值与上限：`image_size`（`1K`/`2K`/`3K`/`4K`，默认 `2K`，不给模型选）、`image_ratio` / `video_ratio`（缺省比例）、`video_size`（`720P`/`1080P`/`1K`/`2K`，默认 `720P`；flash 档只出 720P，配置写更高也会被收回 720P）、`video_seconds`（默认 5）与 `video_max_seconds`（默认 8，同时是模型能要的上限）、`max_refs`（默认 3，只对生图生效）、`max_prompt_chars`（默认 800）
+- 视频时长是接口的枚举字段：整数秒、只认 4–12 秒，模型给的值先就近取整再夹进 `video_max_seconds` 与 12 秒之间；旧的 `width`/`height`/`num_frames`/`frame_rate` 在 2.5 接口是禁止字段，传了直接 400，所以这里不再算宽高与帧数，画幅只由 `aspect_ratio` 决定
+- 超时分工：`image_timeout` 是同步生图这一次请求的等待上限，`video_timeout` 是整段视频从提交任务到拿到成品的总预算（`request_timeout` 管视频侧每次 HTTP，`poll_interval` 管轮询间隔）；超预算返回"生视频失败: 视频生成超过 N 秒未完成"，本轮的等待发生在 `asyncio.to_thread` 里，不阻塞其他会话
+- 参考图（`refs`）只收 `temp/` 与 `tool/media/emoji/` 下的本地路径（整份转 base64 data URL 发给接口，单张 8MB 封顶），不接受外部 URL：群友发的图本来就落地在 `temp/`，工具不必再自己去下载，少一处 SSRF；越界路径、`config.json`、`.key`/`.pem` 一律拒绝
+- 生图的 `refs` 是改图/跟风格，最多 `max_refs` 张；生视频只取首尾帧——一张当首帧（让静图动起来），两张当首帧+尾帧（做过渡），第三张先拒。官方文档的参考模式（`reference`）要求素材公网可达，本地图没法直链，所以不走那条路
+- 产物落在 `temp/tool/media/generate/`（`gen_<毫秒>.png` / `.mp4`），随 temp TTL 清理；发送走既有 `send_media`（图片 file_type=1、视频 file_type=2），入库标记仍是 `[图片]` / `[视频]`
+- `api_key` 为空时两个工具都视为未启用（配置里 `enabled=true` 也不会下发 schema），与语音克隆同一口径
+- 生图一次 POST 拿结果；生视频是异步任务：`POST /videos`（`mode` 取 `text` 或 `keyframe`）→ `GET /agnesapi?video_id=…&model_name=…` 轮询到 `completed` → 下载成品，状态里没有现成 `url` 字段时递归找 `.mp4`/`.mov` 地址，再退回 `GET /videos/{task_id}`。POST 提交失败（实测的 `503 video_queue_full`、限流）按 `max_retries` 退避重试，队列是暂时的
+
+### 联网（web）
+
+- `tool/web/config.json`：`provider`（`bing` / `searxng` / `tavily`）、`base_url`、`api_key`、`timeout_sec`、`max_results`、`fetch_max_chars`、`fetch_max_bytes`、`read_max_chars`（`read=true` 时每页正文截断，默认 1200）
 - 默认 `bing` 走 Bing RSS（`https://cn.bing.com/search?format=rss`，无需 key）；`searxng` 需填实例地址，`tavily` 需填 key
 - `web_search` 返回标题 / 链接 / 摘要；`published`（`YYYY-MM-DD`）只在 SearXNG / Tavily 真给了发布时间时返回，认不出就不给这个字段。**Bing RSS 的 `pubDate` 是抓取/更新时间、不是发布日期，刻意不返回**——实测会把 2024 年的页面标成昨天，模型据此说"最新"比不说更糟
 - **结果不沾边就说破**：中文按二元组、英文按词，把 `query` 拆成词去比对标题+摘要，最高重合度 < 0.3 时整批结果挂一条 `note`（"多半是这个词没被收录或写法不对，别当成答案，换个说法再搜一次"），此时 `read=true` 也不再浪费一轮去抓这些垃圾正文；空结果同样回 `note`
@@ -413,9 +435,9 @@ stateDiagram-v2
 - **附件白名单**：只允许 `temp/` 下的运行时文件，拒绝 `logs/`、`config.json`、`.env`、数据库、脚本等；默认最多 3 个、单个 ≤10MB
 - 仅当用户明确要求发邮件时由模型调用（prompt 提示约束），避免被当作外发通道
 
-> **本地媒体上传**：本地文件（**仅限 `temp/` 与 `tool/chat/emoji/` 素材**，日志、工具配置与密钥会被拒绝）直接以 base64 `file_data` 调 `POST /v2/groups/{group_openid}/files`（或 `/v2/users/{openid}/files`）上传，再用返回的 `file_info` 发 `msg_type=7`，不依赖公网地址；超过 10MB 的本地文件改用 `ggbot/util/media.py` 生成的 HMAC 签名链接 `/media/<exp>/<sig>/<rel>`（由 Web 面板提供，无需 Cookie，仅限媒体扩展名，禁止目录穿越与日志），此时需配置 `storage.public_base_url`。签名密钥取自 `web.token`（或 `appsecret`），有效期默认 1 小时。
+> **本地媒体上传**：本地文件（**仅限 `temp/` 与 `tool/media/emoji/` 素材**，日志、工具配置与密钥会被拒绝）直接以 base64 `file_data` 调 `POST /v2/groups/{group_openid}/files`（或 `/v2/users/{openid}/files`）上传，再用返回的 `file_info` 发 `msg_type=7`，不依赖公网地址；超过 10MB 的本地文件改用 `ggbot/util/media.py` 生成的 HMAC 签名链接 `/media/<exp>/<sig>/<rel>`（由 Web 面板提供，无需 Cookie，仅限媒体扩展名，禁止目录穿越与日志），此时需配置 `storage.public_base_url`。签名密钥取自 `web.token`（或 `appsecret`），有效期默认 1 小时。
 
-> **版本库边界**：真正的 `tool/*/config.json` 含 MiMo key / SMTP 授权码，由全局 `config.json` 规则忽略；同目录的 `config.example.json` 是入库模板（无密钥）。`tool/chat/emoji/{stickers,user}/` 与 `tool/chat/audio/*.wav` 体积大或含个人音频同样忽略；`tool/chat/emoji/vectors.json`（描述向量缓存，可从 `index.json` 重算）也由忽略——2560 维向量塞进 `index.json` 会让入库文件膨胀到几十 KB 且没法 review。`tool/chat/emoji/index.json` 入库（只记素材清单与一句话描述，不含素材本体）。换机重建时把素材放回 `tool/chat/emoji/stickers/`、参考音频放回 `tool/chat/audio/voice_ref.wav` 即可，运行时会自动生成缺失的配置并补齐字段、按描述重建向量缓存。
+> **版本库边界**：真正的 `tool/*/config.json` 含 MiMo / Agnes key、SMTP 授权码，由全局 `config.json` 规则忽略；同目录的 `config.example.json` 是入库模板（无密钥）。`tool/media/emoji/{stickers,user}/` 与 `tool/media/audio/*.wav` 体积大或含个人音频同样忽略；`tool/media/emoji/vectors.json`（描述向量缓存，可从 `index.json` 重算）也由忽略——2560 维向量塞进 `index.json` 会让入库文件膨胀到几十 KB 且没法 review。`tool/media/emoji/index.json` 入库（只记素材清单与一句话描述，不含素材本体）。换机重建时把素材放回 `tool/media/emoji/stickers/`、参考音频放回 `tool/media/audio/voice_ref.wav` 即可，运行时会自动生成缺失的配置并补齐字段、按描述重建向量缓存。
 
 ## 权限与工具门槛
 
@@ -426,9 +448,9 @@ stateDiagram-v2
 | 等级 | 名称 | 默认可用 |
 |---|---|---|
 | 0 | 禁止 | 消息直接丢弃，不回复、不入库 |
-| 1 | 受限 | `send_sticker`、`sticker_list`、`silence`、`memory_search`、`time` |
-| 2 | 普通 | 加上 `memory_write`、`sticker_save`、`web_search`、`web_fetch`、`send_image`、`send_video`、`send_voice_clone` |
-| 3 | 特权 | 加上 `fs_read`（文件只读）、`send_email` |
+| 1 | 受限 | `send_sticker`、`sticker_list`、`silence`、`memory_fetch`、`time` |
+| 2 | 普通 | 加上 `memory_save`、`sticker_save`、`web_search`、`web_fetch`、`send_image`、`send_video`、`send_voice_clone`、`generate_image` |
+| 3 | 特权 | 加上 `fs_read`（文件只读）、`send_email`、`generate_video` |
 | 4 | 心腹 | 加上 `fs_write`（文件写入）、`clear_context`（清空本会话上下文） |
 | 5 | 归属 | 默认与 4 相同，另加 `manage_permission`（调整他人等级）；可把任意工具门槛下调到 5 以下形成差异 |
 
@@ -442,7 +464,7 @@ stateDiagram-v2
 
 - **6 = 永久锁**：任何发送者都达不到，该工具不再出现在任何人的 schema 里，执行期也会拒绝——想恢复只能改回 1–5。
 - 门槛为 0 或 7 会被拒绝（`0` 不是封闭语义，封闭请用停用或 6）。
-- **上下文成本**：只下发 `门槛 ≤ 发送者等级` 且 `llm_visible=true` 的工具；排序固定为 `(门槛, 分类, 名称)`，所以低等级的工具列表一定是高等级列表的前缀，对 prompt 缓存友好。看不到的工具既占不到 token，也不会被模型误调。`send_text` 对所有等级都是内部通道——发正文这件事不需要模型有"权限"，等级 1 照样能正常说话。
+- **上下文成本**：只下发 `门槛 ≤ 发送者等级` 的工具；排序固定为 `(门槛, 分类, 名称)`，所以低等级的工具列表一定是高等级列表的前缀，对 prompt 缓存友好。看不到的工具既占不到 token，也不会被模型误调。发正文的通道不是 Tool，不占 schema、也不参与等级判断——等级 1 照样能正常说话。
 
 ### 执行期授权
 
@@ -460,12 +482,12 @@ stateDiagram-v2
 
 记忆分三层，各自独立持久化、独立清理：
 
-1. **会话消息（短期上下文）** — `messages` 表，用户消息与助手消息都落库。聊天发送通道（内部的 `send_text`，以及图片/视频/语音/表情背后的媒体发送）成功后写入一条 `assistant` 行，状态 `sent`；用户消息按处理阶段标记 `pending`（未处理积压）→ `seen`（上线只读）/ `replied` / `skipped` / `failed`。组装上下文时**排除 `pending`**，当前批次单独放进 `【本轮消息】（只回应这里的内容）`，历史只作背景——避免模型逐条重答旧消息；心腹（L4）及以上可以在对话里说“清空上下文/忘掉刚才聊的”，`clear_context` 删除本会话全部消息并把摘要与归档游标归零（长期记忆保留），只影响发话人所在的那个会话。
+1. **会话消息（短期上下文）** — `messages` 表，用户消息与助手消息都落库。聊天发送通道（正文通道，以及图片/视频/语音/表情背后的媒体发送）成功后写入一条 `assistant` 行，状态 `sent`；用户消息按处理阶段标记 `pending`（未处理积压）→ `seen`（上线只读）/ `replied` / `skipped` / `failed`。组装上下文时**排除 `pending`**，当前批次单独放进 `【本轮消息】（只回应这里的内容）`，历史只作背景——避免模型逐条重答旧消息；心腹（L4）及以上可以在对话里说“清空上下文/忘掉刚才聊的”，`clear_context` 删除本会话全部消息并把摘要与归档游标归零（长期记忆保留），只影响发话人所在的那个会话。
 2. **会话摘要** — `sessions.summary`。请求估算超过 `summary_threshold_tokens`（默认 128k）时，从最旧的历史开始移出并调用 LLM 增量压缩进摘要（≤600 字），旧消息仍在库里；摘要随会话保存并在之后每轮注入，避免重复摘要全部历史。
-3. **长期记忆（向量）** — `memories` 表，`content + embedding + importance + session_id`。AI 通过 `memory_write` 主动沉淀、`memory_search` 回忆；窗口满时 Presence 还会把游标之后最旧的 `archive_batch_messages`（默认 256）条历史交给 LLM 提炼成事实并写入记忆（`type=episode`，后台执行，不阻塞回复）。system prompt 只注入与当前消息相关度 ≥0.35 的 top-3，作用域为「全局 + 本会话」。
+3. **长期记忆（向量）** — `memories` 表，`content + embedding + importance + session_id`。AI 通过 `memory_save` 主动沉淀、`memory_fetch` 回忆；窗口满时 Presence 还会把游标之后最旧的 `archive_batch_messages`（默认 256）条历史交给 LLM 提炼成事实并写入记忆（`type=episode`，后台执行，不阻塞回复）。system prompt 只注入与当前消息相关度 ≥0.35 的 top-3，作用域为「全局 + 本会话」。
 
 - **写入**：启用 embedding 时由配置的服务/模型生成向量；同会话余弦 ≥0.95 视为重复，更新原条目而非新增；importance 1-5。未配置 embedding 时只入库文本，检索走关键词匹配
-- **检索**：`memory_search` 余弦 top-k
+- **检索**：`memory_fetch` 余弦 top-k
 - **整理**：面板「整理」或 `cli memory tidy` 合并近似重复条目，**阈值随记忆条数自动放宽**——0.95 起步，每多 50 条降 0.01，最低 0.86（同厂商向量分布很挤，条数越多、真重复的两条落点越散，固定 0.95 只会让整理越来越无效；降到 0.86 封底是防止再往下就开始合并不相干的记忆）。CLI `--threshold` 可显式覆盖，日志一行给出「共 N 条 · 阈值 x.xx · 合并 k 条」，被合并条目保留 importance 更高的一条
 - **高可用**：embedding 调用失败重试 3 次；检索失败仅跳过注入（按无记忆继续回复），不阻塞消息处理
 - **边界**：不设固定人设、不做人设进化。`--reset-chat` 清 messages + sessions（含摘要）但**保留 memories**；`--reset-db` 先用 SQLite 在线备份 API 生成快照（`db/ggbot.db.bak-<时间戳>`，含 WAL 内最新数据），再删除整个数据库文件（messages / sessions / memories 全部清空），启动后重建空库；单会话清空只删该会话消息；记忆可单独增删改
@@ -490,13 +512,15 @@ stateDiagram-v2
 [PASS] import_all        # 全部模块导入
 [PASS] storage_crud      # SQLite 会话/消息/记忆 CRUD + 积压查询
 [PASS] storage_fd        # 连接随操作关闭：450 轮混合读写后零长驻连接、fd（Windows 取进程句柄数）不随调用数增长；with 块里抛异常时未提交的内容丢弃（原 rollback 语义保留）；close() 把 WAL 归并回主库
+[PASS] dedup             # 入站去重：msg_id 索引在位（老库重开自动补）、重启后平台重推不再打「收到」行/不再入库/只留 DEBUG，新消息与同进程重推口径不变，没接 storage 时退回纯内存去重不报错
 [PASS] memory_vector     # embedding 真实调用（实测 SiliconFlow）+ 语义检索 + 去重/ tidy 合并
 [PASS] llm_chat          # LLM 真实调用（实测 DeepSeek deepseek-flash，thinking=disabled 生效）
-[PASS] tools_schema      # 18 个 Tool 插件自动发现 + schema 校验 + 启用状态过滤
-[PASS] tool_layout       # 根目录 tool/ 按分类包自动发现（chat/knowledge/fs/mail/admin）+ 嵌套数据目录（chat/emoji、chat/audio、knowledge/web）+ config-less 工具 toggle 生效
-[PASS] permissions       # 发送者等级解析（未登记→默认 2、空 id→0）、owners 引导不覆盖面板设置、低等级 schema 是高等级前缀、门槛覆盖与 6 级永久锁、执行期拒绝/放行/未知工具；内部通道 send_text 不出现在 L1/L5 的任何 schema 与工具提示里（registry 里有、不下发）
+[PASS] tools_schema      # 19 个 Tool 插件自动发现 + schema 校验 + 启用状态过滤
+[PASS] tool_layout       # 根目录 tool/ 按分类包自动发现（core/media/memory/web/fs/mail/admin）+ 嵌套数据目录（media/emoji、media/audio、media/generate、web、mail、fs）+ config-less 工具 toggle 生效 + 正文通道不在 registry 里
+[PASS] gen_tools         # Agnes 生图/生视频：无 api_key 时不进 schema、生图 L2 生视频 L3、参数与比例校验、参考图只允许 temp/ 与 emoji/ 素材（配置/密钥/越界路径拒绝）、时长收进 4–12 秒与配置上限、flash 档锁 720P、文生视频/首帧/首尾帧三种载荷（禁传 width/num_frames）、轮询 completed/failed/超时、503 退避重试、产物落 temp/tool/media/generate 并按 file_type 发出
+[PASS] permissions       # 发送者等级解析（未登记→默认 2、空 id→0）、owners 引导不覆盖面板设置、低等级 schema 是高等级前缀、门槛覆盖与 6 级永久锁、执行期拒绝/放行/未知工具；正文通道不是工具（不在 registry 里，L1/L5 的 schema 与工具提示里都没有它）
 [PASS] fs_tools          # 文件沙箱（../ 与绝对路径越界拒绝）、db/tool 配置/密钥拒绝、列出时隐藏受保护项、读写/搜索限额、原子覆盖、BOM、二进制拒绝、find/grep、fs_read L3 / fs_write L4
-[PASS] media_paths       # 本地媒体只允许 temp/ 与 tool/chat/emoji/，日志、其他工具目录与配置/密钥拒绝发送
+[PASS] media_paths       # 本地媒体只允许 temp/ 与 tool/media/emoji/，日志、其他工具目录与配置/密钥拒绝发送
 [PASS] web_permissions   # /api/actors 与 /api/tools/{name}/level 鉴权、成员 6/-1/空值校验、工具门槛写回 config、6 级后不再下发、未知工具 404
 [PASS] assistant_persist # 发送成功后 assistant 消息入库；pending 不进历史；本轮消息独立标注（防逐条重答旧消息）
 [PASS] tool_plugin       # 插件配置隔离（send_email→tool/mail）、共享配置同组不可单独启停、/api/tools 密钥脱敏
@@ -504,19 +528,19 @@ stateDiagram-v2
 [PASS] sticker_library   # 表情库（v3）：向量挑图（含 min_score 拒发/近档随机/temp 投喂识图入库去重）→ 未配 embedding 降级二元组关键词匹配 → v2 moods 自动迁移、手改 desc 后旧向量作废只重算那一条，外加空库提示、max_per_turn 与 min_interval 限流、重启后复用 vectors 缓存不重复计费
 [PASS] voice_clone       # MiMo 真实合成（mimo-v2.5-tts-voiceclone）产出 wav
 [PASS] email_tool        # SMTP 真实自测发送 + 收件人白名单 + 附件仅限 temp/并拦截敏感文件
-[PASS] text_split        # send_text 把带换行的内容拆成多条依次发送（msg_seq 递增、每条单独入库）
+[PASS] text_split        # 正文通道把带换行的内容拆成多条依次发送（msg_seq 递增、每条单独入库）
 [PASS] media_upload      # 本地媒体 base64 file_data 直传（群/私聊路由、file_name、msg_type=7）+ 公网 URL 上传
 [PASS] voice_silk        # MiMo wav 24kHz/单声道 → pysilk 编码出 #!SILK_V3 头（207KB→9.5KB）
 [PASS] qq_face_clean     # QQ 表情富文本还原为 [表情:文字] + @还原为 @昵称/8 位 id、自己的 @ 剔除
-[PASS] tool_loop         # function calling 端到端：AI 调用 memory_write 真实入库
-[PASS] tool_choice       # 真实 LLM 触发率：笑→send_sticker、晚安/求安慰→send_voice_clone、自我介绍→memory_write、回忆→memory_search
-[PASS] agent_fallback    # 回合只有一条说话通道：只有正文→运行时调 send_text 发出；正文+工具同轮→两条都发且不重复（工具在前、正文在后）；模型自己调 send_text（没下发给它）被忽略、只回一条"写在正文里"的工具结果、一次都不发；空正文/纯占位符→静默结束（占位符同回合纠正一次）；silence 调用后立即收轮，全程只有一次 LLM 请求
+[PASS] tool_loop         # function calling 端到端：AI 调用 memory_save 真实入库
+[PASS] tool_choice       # 真实 LLM 触发率：笑→send_sticker、晚安/求安慰→send_voice_clone、自我介绍→memory_save、回忆→memory_fetch
+[PASS] agent_fallback    # 回合只有一条说话通道：只有正文→运行时走正文通道发出；正文+工具同轮→两条都发且不重复（工具在前、正文在后）；模型自己调 send_text（工具列表里根本没有）被忽略、只回一条"写在正文里"的工具结果、一次都不发；空正文/纯占位符→静默结束（占位符同回合纠正一次）；silence 调用后立即收轮，全程只有一次 LLM 请求
 [PASS] config_read       # 纯配置文件驱动（无环境变量）+ temp/db 路径
 [PASS] config_generic    # deepseek→llm 自动迁移、缺失配置按模板生成、embedding 可选（关键词降级）、LLM 厂商无关且缺项明确报错、38 个 Web 设置路径均存在且在白名单（白名单不含 api_key/base_url/token 类凭据路径）
 [PASS] config_hotapply   # 面板改配置免重启：同一个 PresenceManager 实例现读作息/回复/积压/上下文（archive_batch 现读仍夹 256、无记忆时归档恒关）与识图参数（含启动关着、面板打开后补建连接），set_by_path+save 落盘后重开一致；POST /api/config 回执 updated/rejected（凭据路径、类型不符、config.json 缺键各算一条拒绝），GET 带 restart 列表
 [PASS] logging_system    # 多等级写文件 + tail 等级过滤 + set_level 热切换；根目录不产生 botpy.log
-[PASS] placeholder_guard # 占位符不进正文：词表覆盖 表情/表情包/语音/语音克隆/语音条/图片/视频/文件/邮件 与 emoji/sticker/voice/audio/image/photo/video/file/mail（方括号、中文括号、圆括号都拦），同回合纠正重试；send_text 拦截纯占位符、剔除混排占位符；入站富媒体标记的整套形状（`[图片]（描述）` / `[语音 6ce72460]`，括号里 6–8 位短标识 + 紧跟的（…））照抄进正文也一起吞掉——历史里存的就是这个形状，模型学的就是它
-[PASS] vision_runtime    # 识图配置继承/覆盖/停用、data URL 请求与描述清洗、失败重试回退、[图片]（描述）入库、启动统计累加、send_text @昵称与 [引用 关键词]
+[PASS] placeholder_guard # 占位符不进正文：词表覆盖 表情/表情包/语音/语音克隆/语音条/图片/视频/文件/邮件 与 emoji/sticker/voice/audio/image/photo/video/file/mail（方括号、中文括号、圆括号都拦），同回合纠正重试；正文通道拦截纯占位符、剔除混排占位符；入站富媒体标记的整套形状（`[图片]（描述）` / `[语音 6ce72460]`，括号里 6–8 位短标识 + 紧跟的（…））照抄进正文也一起吞掉——历史里存的就是这个形状，模型学的就是它
+[PASS] vision_runtime    # 识图配置继承/覆盖/停用、data URL 请求与描述清洗、失败重试回退、[图片]（描述）入库、启动统计累加、正文通道 @昵称与 [引用 关键词]
 [PASS] time_tool         # 当前日期/时间/星期/时区
 [PASS] clear_context     # 只清本会话（消息+摘要+归档游标归零、记忆与别的会话不动）、L3 拒绝与 schema 裁剪、门槛下调后工具内部仍按 L4 兜底、上调到 5 后 L4 被执行器拦下
 [PASS] admin_tool        # manage_permission：口语等级映射、昵称/8 位 id/openid 定位、重名候选、越级与同级保护、list/help、L4 不可见 L5 可见、6 级锁
@@ -565,6 +589,6 @@ stateDiagram-v2
 - 表情包以图片富媒体发送（非 QQ 商城表情）；本地素材走 base64 直传，不需要公网地址
 - 工具目录 `tool/*/config.json` 含第三方密钥/授权码，已在 `.gitignore` 中排除；首次运行会按 `config.example.json`/代码默认值自动生成，无需手工创建
 - 联网搜索受收录情况限制：Bing 对没收录的词会退化成单字匹配，返回一堆不相干的页面，代码只能在结果上挂 `note` 提醒模型别硬答，不能替它保证搜得到；要更稳的结果就切 `searxng`（自建实例）或 `tavily`
-- 一轮里的工具动作不进下一轮历史：`messages` 表只存发出去的消息（含代发的正文）与用户消息，`fs_read` / `web_search` 这类中间结果只在当轮请求里存在，下一轮模型看不到自己查过什么；要跨轮记住就让它写进正文或主动 `memory_write`
+- 一轮里的工具动作不进下一轮历史：`messages` 表只存发出去的消息（含代发的正文）与用户消息，`fs_read` / `web_search` 这类中间结果只在当轮请求里存在，下一轮模型看不到自己查过什么；要跨轮记住就让它写进正文或主动 `memory_save`
 - 自动部署的 systemd 单元把 `/root/GGBot` 写死在 `WorkingDirectory` / `ExecStart`，换目录要同时改 unit 与 `DEPLOY_SSH_PATH`；`rsync --delete` 只保住在排除清单里的运行时数据，服务器上手工放的其他文件会被清掉
 - Web 面板为单令牌 + HttpOnly Cookie 鉴权，并带登录失败与每 IP API 限流；适合本机/内网。公网暴露请加 HTTPS 反向代理、设 `web.cookie_secure=true`，置 `web.trust_proxy=true` 后才能按 `X-Forwarded-For` 识别真实客户端 IP

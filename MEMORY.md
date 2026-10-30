@@ -7,10 +7,12 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 
 ## 说话与回合
 
-- **模型只有一条说话通道：回复正文。** `send_text` 是内部工具（`llm_visible=False`），不进 schema、不进提示词，
-  由运行时按行拆成一条条消息代发。→ 曾经既能调 `send_text` 又写正文，同回合发两遍；
+- **模型只有一条说话通道：回复正文。** 发正文的不是工具，住在 `ggbot/core/outbound.py`：不进 registry、不进 schema、
+  不进提示词、面板工具页也看不到，由运行时按行拆成一条条消息代发。→ 早期它叫 `send_text` 工具，模型既能调它又写正文，同回合发两遍；
+  先改成 `llm_visible=False` 的内部工具，后来索性整个搬出工具层——工具基座里不再保留这个开关（没有用户的能力域不该留在基座上）。
   工具与正文同轮时，先执行工具、再把正文发出去（"发张表情再补一句"是一个动作）。
-  改动时注意：别让任何新工具再承担"说话"职责；正文里的 `@昵称`、`[引用 关键词]` 靠 `ToolRuntime.send_text` 生效。
+  改动时注意：别让任何新工具再承担"说话"职责；正文里的 `@昵称`、`[引用 关键词]` 由 `Outbound.send` 负责；
+  面板「工具调用」计数与 `工具 …` 日志行都不含发正文这件事。
 - **不接话是一个动作**：调 `silence`（可选 `reason`，只进日志）。→ 早期用"不调工具=不回复"，模型为了填回合硬凑一句。
   改动时注意：新增"这轮不该说"的情形，加工具让它显式调用，不要靠沉默的缺席。
 - **模型正文一律照发**，哪怕本轮已经发过东西（工具往返之后的补充话同样是要说的话）。
@@ -37,25 +39,52 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 
 ## 富媒体与占位符
 
-- **占位词只有一份词表**（`tool/base.py` 的 `_MEDIA_TOKEN`，入站标记、出站拦截、日志清洗共用 PLACEHOLDER_RE / PLACEHOLDER_INLINE_RE）。
+- **占位词只有一份词表**（`ggbot/util/text.py` 的 `_MEDIA_TOKEN`，入站标记、出站拦截、日志清洗共用 PLACEHOLDER_RE / PLACEHOLDER_INLINE_RE）。
   提示词里不举带括号的例子，否则模型照着写。纯占位符拦下不发，混排的剔除占位符后余文照发。
 - **富媒体用 6–8 位短标识**（`[图片 6ce72460]`），和 `temp/` 落地文件对得上，能 `@`/引用回发。
 - **表情靠向量挑图**，不建情绪标签表：索引 v3 + 描述向量缓存，Qwen3 嵌入要 Instruct/Query 前缀、`min_score≈0.50`。
+
+## 生成媒体（media/generate）
+
+- **生成完就走既有发送通道**：`generate_image` / `generate_video` 把产物写到 `temp/tool/media/generate/`，
+  再交给 `ToolRuntime.send_media`（file_type 1/2），入库标记仍是 `[图片]` / `[视频]`，不新增占位词、不新增发送形态。
+  → 生成与普通转发对模型是同一件事"这里出现了一张图"；再加一套标记就要动词表、日志和测试三处。
+- **参数只留 prompt / refs / ratio / seconds**：`image_size`、`video_size` 这些放配置里由部署方定，
+  模型不该在一次聊天里挑分辨率。→ 少一个参数就少一种失败与一段 token；生图/生视频已经慢，别把回合浪费在调参上。
+- **生图 L2、生视频 L3**：视频慢一个数量级、成本也高，门槛先收紧，`config.levels` 可放开。
+- **参考图（`refs`）只收 `temp/` 与 `tool/media/emoji/` 下的本地路径，工具自己不抓外部 URL**
+  → 群友发的图本来就落地在 temp/，接口对两种输入都收（公网 URL 或 base64），去拉网图等于白加一处 SSRF 面。
+  改动时注意：白名单口径与 `send_image` 本地媒体一致（temp 排除 logs、拒 `config.json`/`.key`/`.pem`），两处要同进同退。
+- **`api_key` 为空 = 未启用**（配置里 `enabled=true` 也不下发 schema），与语音克隆缺 key、表情库缺素材同一条口径：
+  没素材/没凭据就别让模型调，省一轮必然失败的往返。
+- **接口的字段口径以当期文档为准，别照旧脚本抄**：Agnes 视频 7 月那版吃 `width`/`height`/`num_frames`/`frame_rate`，
+  2.5 版把这些列为禁止字段（传了 400），改成 `mode` + `seconds`（字符串 4–12 秒）+ `size` 档位 + `aspect_ratio`，
+  轮询也要多带 `model_name`；`agnes-video-v2.0` 直接从分组下架（404）。→ 这类第三方生成接口会整版换参数，
+  所以只锁"能跑通的那一种形状"，参数收在配置里，实测报错就写进注释。
+- 视频只走 `text` / `keyframe`（首帧、首尾帧），不做 `reference`：参考模式要求素材公网可达，本地图没法直链。
+- 提交任务遇 `503 video_queue_full` 是队列满，不是参数错：按 `max_retries` 退避重试，别把 503 甩给模型。
 
 ## 日志口径
 
 - 只写 `temp/logs/ggbot.log`（轮转）+ `stdout.log`（兜底），不再有 `botpy.log`，根目录不落日志。
 - **一条信息只打一行**：入站 `收到 [小明/54019C24] @=1: …`；模型调用的工具唯一形态 `工具 X（admin=昵称/8位id(L2), k=v）`；
   代发正文不是工具，记 `发送: <正文>`（每条消息一行、INFO，不带 admin）；@ 成员、图片描述、语音转写都只出现一次。
-- **`send_text` 既然不暴露给模型，日志里就不该长得像工具调用**——它是"系统替模型说了一句话"，
+- **发正文不暴露给模型，日志里就不该长得像工具调用**——它是"系统替模型说了一句话"，
   所以按发出结果记，失败只说 `发送未成功: …`，不再出现 `工具 send_text（admin=…, content=…）`。
 - 每行都带调用方会话列（工具/LLM/识图/作息都是），特权工具（L3+）INFO、空转上下线降 DEBUG。
 - 改动时注意：措辞被 `temp/test_log_format.py` 锁住，改文案要同步改测试。
 
 ## 工具与权限
 
-- **一切皆 Tool**，按能力域放在根目录 `tool/{chat,knowledge,fs,mail,admin}/`，每个目录自包含代码 + `config.json` + 数据；
-  拷走文件夹就能迁移。
+- **一切皆 Tool**，按能力域放在根目录 `tool/{core,media,memory,web,fs,mail,admin}/`，每个目录自包含代码 + `config.json` + 数据；
+  拷走文件夹就能迁移。`silence`/`time` 属于回合控制所以进 `core`，富媒体（表情/图/视频/语音/生成）合在 `media`，
+  记忆与上下文合在 `memory`，联网单独成类，`mail` 保持独立不并进别的分类。
+- **目录名、数据目录名、工具名是三套外部契约**：分类目录决定 `category`（面板分组与排序），`data_name` 决定配置与素材落点
+  （`.gitignore`、deploy 的 rsync 排除项都按它写），工具名出现在人设提示词、`config.levels` 键与测试断言里。
+  → 本轮 `chat/knowledge` 拆成 `core/media/memory/web`，数据目录 `chat/gen`→`media/generate`、`knowledge/web`→`web`，
+  `memory_write`/`memory_search` 改名 `memory_save`/`memory_fetch`。
+  改动时注意：换目录要在**每台机器各搬一次**已有数据（素材、参考音频、含密钥的 `config.json`），搬漏一次等于工具"未启用"；
+  换工具名会让 `config.levels` 里的旧键静默失效（回到代码默认门槛），迁移脚本 `deploy/migrate_tool_dirs.sh` 一起做这两件事。
 - **门槛由服务端算**：发送者等级 0–5（`permissions`），工具 `min_level` 1–6（6=永久锁），执行期再校验一次；
   请求只下发当前等级能用的 schema，并按等级稳定排序以复用厂商前缀缓存。
 - **管理动作要能被口语调用**：`manage_permission` 支持昵称/8 位 id/openid、等级词、重名给候选、越级与同级保护，
@@ -78,6 +107,10 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 - **发送目标反查**：`sessions.key` 里才是完整 openid，内部主键 `session_id` 不等于它。
 - **在线状态机是拟人的**：上线时长/离线间隔带抖动，每轮续期固定秒数（不随轮数递增，有封顶）；
   上线积压只读不回，自然上线时把最后一条积压投进窗口。
+- **入站去重两级：内存 `_seen` + 查库兜底**（`_route` 里 `_seen` 未命中再 `storage.message_exists(msg_id)`）。
+  → 内存那层拦得住@事件与群全量事件的重复推送，但扛不过重启——每次发版都会重启一次进程，`_seen` 清空，
+  平台在重启窗口重推同一条就会回第二遍。查库这层补的正是这个缝；`messages.msg_id` 单独建索引，
+  老库靠 SCHEMA 每次启动 `executescript` 自动补。命中重复只打 DEBUG，不刷「收到」行。
 - 平台配额/规则会变，写这类注释前先查当期官方文档，别照旧笔记下结论。
 
 ## 存储与进程资源
@@ -97,7 +130,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 
 - `db/config.json` 与 `tool/**/config.json` 有密钥（AppSecret、LLM/Embedding/MiMo/SMTP/搜索 key、`web.token`），
   `.gitignore` 已忽略；日志、面板、提示词都不出现明文密钥（`GET /api/config` 脱敏）。
-- `tool/fs` 不能读配置、密钥与数据库文件；发送本地媒体只允许 `temp/` 与 `tool/chat/emoji/`；邮件收件人白名单、附件只走 temp 运行时文件。
+- `tool/fs` 不能读配置、密钥与数据库文件；发送本地媒体只允许 `temp/` 与 `tool/media/emoji/`；邮件收件人白名单、附件只走 temp 运行时文件。
 - 面板：Cookie 登录（HttpOnly+SameSite）、每 IP 限流、CSP 无内联脚本、WS 鉴权、`trust_proxy` 默认关（防伪造 XFF 绕过限流）。
   `web.host=0.0.0.0` 时面板对整个公网可见，上云要么配 `web.token`，要么只绑 127.0.0.1 走反代。
 - **部署走 GitHub Actions：push master → rsync → 远端 `deploy/deploy_server.sh` 重启 + 健康检查**（细节见 README「部署到云服务器」）。
