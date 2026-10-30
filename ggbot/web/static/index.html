@@ -297,16 +297,13 @@
             <div><h2>表情包</h2><p class="card-sub" id="emoji-total">本地素材库 · 加载中…</p></div>
             <div class="head-ops">
               <input id="emoji-q" class="input small-input search-input" placeholder="按描述 / 文件名…">
-              <select id="emoji-source" class="sel small-input">
-                <option value="">全部来源</option><option value="builtin">内置</option><option value="user">收藏</option>
-              </select>
               <button class="btn ghost small" data-action="refresh-emojis">刷新</button>
             </div>
           </div>
           <div class="emoji-wrap">
             <div id="emoji-body" class="emoji-grid"><div class="empty">加载中…</div></div>
           </div>
-          <p class="card-sub">素材直接放在 <span class="mono">tool/media/emoji</span> 的 stickers/（内置）和 user/（收藏）里：丢进图片就会出现，删掉就消失。模型发消息时按描述做语义匹配，描述可以在索引里手改。</p>
+          <p class="card-sub">素材是一个统一库：图片直接丢进 <span class="mono">tool/media/emoji</span>（旧的 stickers/、user/ 子目录里的图也照样算），丢进就会出现，删掉就消失。模型发消息时按描述做语义匹配，描述可以在索引里手改。</p>
         </div>
       </section>
 
@@ -383,11 +380,11 @@
           </div>
 
           <div class="card">
-            <div class="card-head"><div><h2>上下文与积压</h2><p class="card-sub">历史窗口、溢出归档、上线只读积压与日志</p></div></div>
+            <div class="card-head"><div><h2>上下文与积压</h2><p class="card-sub">历史窗口、满窗归档、上线只读积压与日志</p></div></div>
             <div class="form-grid">
               <label class="field"><span>历史消息上限</span><input class="input" data-path="llm.context.max_history_messages" data-kind="int" type="number" step="1" min="1"></label>
               <label class="field"><span>上下文 tokens 预算</span><input class="input" data-path="llm.context.token_budget" data-kind="int" type="number" step="1000" min="1000"></label>
-              <label class="field"><span>一次归档上限（条）</span><input class="input" data-path="llm.context.archive_overflow_messages" data-kind="int" type="number" step="1" min="0"></label>
+              <label class="field"><span>满窗一次归档（条）</span><input class="input" data-path="llm.context.archive_overflow_messages" data-kind="int" type="number" step="1" min="0"></label>
               <label class="field"><span>每批归档条数</span><input class="input" data-path="llm.context.archive_batch_messages" data-kind="int" type="number" step="1" min="0"></label>
               <label class="field check-field"><input type="checkbox" class="chk" data-path="llm.context.archive_enabled" data-kind="bool"><span>自动归档进记忆</span></label>
               <label class="field"><span>离线积压读取上限</span><input class="input" data-path="behavior.backlog.max_scan_messages" data-kind="int" type="number" step="1" min="1"></label>
