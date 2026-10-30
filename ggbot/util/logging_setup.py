@@ -105,17 +105,38 @@ def set_level(level: str) -> None:
     logging.getLogger().setLevel(level.upper())
 
 
-def tail_log(log_file: Path, lines: int = 200, level: str = "INFO") -> list[str]:
-    """读取日志文件尾部 N 行，可选按等级过滤（匹配 "| LEVEL |" 段）。"""
+LEVEL_ORDER = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
+
+
+def _line_level(line: str) -> int:
+    """取一行开头那列的等级；认不出来返回 0（异常续行、非本格式行）。"""
+    parts = line.split(" | ", 2)
+    return LEVEL_ORDER.get(parts[1].strip().upper(), 0) if len(parts) > 1 else 0
+
+
+def tail_log(log_file: Path, lines: int | None = 200, level: str = "INFO") -> list[str]:
+    """日志文件里达到等级门槛（该级**及以上**）的最后 N 行；`lines=None` 表示不截断。
+
+    顺序是先按等级筛、后截断：反过来会在 DEBUG 噪声里只剩最近几行符合的，
+    窗口外的日志无论怎么筛都搜不到。没有等级列的行（traceback 续行）跟着上一条的等级，
+    不然选了 WARNING 就只剩报错第一行、堆栈正文全没了。
+    """
     if not log_file.exists():
         return []
     try:
         with open(log_file, encoding="utf-8", errors="replace") as f:
-            all_lines = f.readlines()
+            raw_lines = [ln.rstrip("\n") for ln in f]
     except OSError:
         return []
-    tail = all_lines[-lines:]
-    if level and level.upper() != "DEBUG":
-        marker = f"| {level.upper()}"
-        tail = [ln for ln in tail if marker in ln]
-    return [ln.rstrip("\n") for ln in tail]
+    threshold = LEVEL_ORDER.get((level or "").upper(), 10)
+    if threshold <= 10:
+        kept = raw_lines
+    else:
+        kept = []
+        last = 0
+        for ln in raw_lines:
+            lv = _line_level(ln) or last
+            last = lv
+            if lv >= threshold:
+                kept.append(ln)
+    return kept[-lines:] if lines else kept

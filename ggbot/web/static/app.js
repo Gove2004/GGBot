@@ -15,7 +15,7 @@ const PAGE_META = {
   settings: ["设置", "配置热更新，写回 config.json"],
   permissions: ["权限", "发送者等级与工具调用门槛"],
   tools: ["工具", "一切皆 Tool · 独立配置 / 持久化数据 / 动态挂载"],
-  logs: ["运行日志", "时间 | 等级 | 会话 | 内容"],
+  logs: ["运行日志", "等级是门槛（该级及以上）· 会话与内容在全量日志里筛"],
 };
 
 const REASON = {
@@ -996,7 +996,14 @@ async function refreshLogs() {
   const follow = qs("#log-auto").checked && (
     !state.logsRendered || !wrap || wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 48
   );
-  qs("#log-body").innerHTML = rows || '<div class="empty">（无日志）</div>';
+  qs("#log-body").innerHTML = rows || `<div class="empty">${
+    sess || q ? "筛选后没有匹配（换个关键词，或清掉筛选条件）" : "（无日志）"
+  }</div>`;
+  const shown = (d.logs || []).length;
+  const hit = d.total != null ? d.total : shown;
+  qs("#log-count").textContent = hit > shown
+    ? ` · 命中 ${hit} 条，显示最近 ${shown} 条`
+    : ` · 显示最近 ${shown} 条`;
   state.logsRendered = true;
   if (follow && wrap) wrap.scrollTop = wrap.scrollHeight;
 }

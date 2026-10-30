@@ -703,7 +703,11 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         from ggbot.util.logging_setup import tail_log
 
         n = min(max(lines, 1), 2000)
-        raw = tail_log(cfg.log_file, n, level)
+        # 会话/内容筛选要先筛后截：先取最近 n 行再筛，等于只能在这么宽的窗口里搜，
+        # 窗口外的日志永远筛不出来（等级门槛在 tail_log 里已经先筛过）
+        raw = tail_log(cfg.log_file, None if (session or q) else n, level)
+        ses = (session or "").lower()
+        needle = (q or "").lower()
         logs = []
         for line in raw:
             m = LOG_LINE_RE.match(line)
@@ -716,20 +720,21 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
                 else:
                     m = OLD3_LOG_RE.match(line)
                     if not m:
-                        logs.append({"ts": "", "level": "-", "session": SYSTEM_LABEL, "content": line})
-                        continue
-                    ts, lv, _mod, content = m.groups()
-                    sess = SYSTEM_LABEL
-            if session and session not in sess:
+                        ts, lv, sess, content = "", "-", SYSTEM_LABEL, line
+                    else:
+                        ts, lv, _mod, content = m.groups()
+                        sess = SYSTEM_LABEL
+            if ses and ses not in sess.lower():
                 continue
-            if q and q not in content:
+            if needle and needle not in content.lower():
                 continue
             logs.append({"ts": ts[:23], "level": lv, "session": sess, "content": content})
+        total = len(logs)
         try:
             log_name = cfg.log_file.relative_to(cfg.log_file.parent.parent.parent).as_posix()
         except ValueError:
             log_name = cfg.log_file.name
-        return {"level": level, "file": log_name, "logs": logs}
+        return {"level": level, "file": log_name, "logs": logs[-n:], "total": total}
 
     # ---------- WebSocket ----------
 
