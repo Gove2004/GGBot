@@ -1,6 +1,6 @@
 """日志系统：多等级、文件轮转、控制台输出、第三方库降噪。
 
-- 输出：temp/logs/ggbot.log（RotatingFileHandler，5MB × 5 备份，每次启动截断重写）+ stderr 控制台
+- 输出：temp/logs/ggbot.log（RotatingFileHandler，5MB × 5 备份，追加写、跨重启保留，由轮转封顶体积）+ stderr 控制台
 - 格式（所有日志统一）：`时间 | 等级 | 会话 | 内容`
   - 会话列优先取 logger extra={"session": ...}（业务代码显式传入，8 位 id）；
     一条回应的每一行（收到、上下文预算、LLM 请求/响应、模型决策、工具调用）
@@ -84,8 +84,10 @@ def setup_logging(log_file: Path, level: str = "INFO", console: bool = True) -> 
 
     formatter = SessionFormatter(FMT)
 
+    # mode 必须显式写 "a"：RotatingFileHandler 在 maxBytes>0 时把传进来的 mode 直接改成 "a"，
+    # 写 "w" 不会报错、也永远不会清空，只会让读代码的人以为每次启动是干净的
     fh = logging.handlers.RotatingFileHandler(
-        log_file, mode="w", maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        log_file, mode="a", maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
     )
     fh.setFormatter(formatter)
     root.addHandler(fh)
