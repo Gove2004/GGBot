@@ -823,8 +823,8 @@ async function saveConfig() {
 }
 
 /* ================= 工具 ================= */
-const TOOL_CATS = { core: "控制", media: "富媒体", memory: "记忆", web: "联网", fs: "文件", mail: "邮件", admin: "管理" };
-const TOOL_CAT_ORDER = ["core", "media", "memory", "web", "fs", "mail", "admin"];
+const TOOL_CATS = { core: "控制", schedule: "定时", media: "富媒体", memory: "记忆", web: "联网", fs: "文件", mail: "邮件", admin: "管理" };
+const TOOL_CAT_ORDER = ["core", "schedule", "media", "memory", "web", "fs", "mail", "admin"];
 function toolCat(cat) { return TOOL_CATS[cat] || cat || "其他"; }
 function toolOrder(cat) {
   const i = TOOL_CAT_ORDER.indexOf(cat);

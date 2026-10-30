@@ -144,6 +144,12 @@ async def main(cfg: Config | None = None) -> None:
 
     await presence.start()
 
+    from tool.schedule.remind import Reminders
+
+    # 提醒的真相在 reminders 表里，这里只是把巡检循环跑起来：重启后错过的按宽限处置
+    reminders = Reminders(executor.rt, presence.speak)
+    reminder_task = asyncio.create_task(reminders.run())
+
     async def _temp_cleanup_loop():
         """temp 目录过期文件清理（storage.temp_ttl_hours，默认 24h），每小时巡检一次。"""
         while True:
@@ -165,6 +171,7 @@ async def main(cfg: Config | None = None) -> None:
         await bot.start(cfg.qq["appid"], cfg.qq["secret"])
     finally:
         await presence.stop()
+        reminder_task.cancel()
         cleanup_task.cancel()
         if web_task:
             web_task.cancel()
