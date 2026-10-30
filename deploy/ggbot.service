@@ -11,7 +11,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/root/GGBot
-ExecStart=/root/GGBot/.venv/bin/python main.py --log-level INFO
+# 不带 --log-level：日志等级只由 db/config.json 的 web.log_level 决定（面板可改、保存即热生效）。
+# 启动参数会盖掉配置——那样面板选了 DEBUG 也筛不出东西，等级就有两个口径了
+ExecStart=/root/GGBot/.venv/bin/python main.py
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONIOENCODING=utf-8
