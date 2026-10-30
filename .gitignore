@@ -30,9 +30,10 @@ db/ggbot.db.bak-*
 temp/
 
 # Tool 本地素材/用户数据（体积大或含个人音频，仅本地保留；索引与配置结构见 README）
-tool/media/emoji/stickers/
-tool/media/emoji/user/
-tool/media/emoji/vectors.json
+# 表情库是一个目录：图片全部忽略，只有 index.json 与 config.example.json 进仓库
+tool/media/emoji/**
+!tool/media/emoji/index.json
+!tool/media/emoji/config.example.json
 tool/media/audio/*.wav
 
 # 编辑器

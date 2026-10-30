@@ -155,7 +155,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   qs("#sess-q").addEventListener("input", renderSessions);
   qs("#emoji-q").addEventListener("input", renderEmojis);
-  qs("#emoji-source").addEventListener("change", renderEmojis);
   qs("#mem-session").addEventListener("change", () => guarded("memories", refreshMemories));
   qs("#rem-session").addEventListener("change", () => guarded("reminders", refreshReminders));
   qs("#rem-status").addEventListener("change", () => guarded("reminders", refreshReminders));

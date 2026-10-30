@@ -474,6 +474,7 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
 
     # ---------- 表情包 ----------
     # 素材目录是唯一真相，和 emoji_list / send_emoji 读同一份索引，所以这里只浏览、不增删。
+    # 一个统一库：不分「内置/收藏」，图在哪个子目录只体现在 file 里。
 
     def _emoji_lib():
         ex = getattr(presence, "executor", None)
@@ -492,7 +493,6 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
                 {
                     "file": r["file"],
                     "desc": r["desc"],
-                    "source": r["source"],
                     "added_at": r["added_at"],
                     "url": f"/emoji/{quote(r['file'])}",
                 }

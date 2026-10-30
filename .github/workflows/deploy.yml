@@ -55,9 +55,9 @@ jobs:
           *.db-shm
           .bot.lock
           temp/
-          tool/media/emoji/stickers/
-          tool/media/emoji/user/
-          tool/media/emoji/vectors.json
+          # 表情库整个目录都是这台机器的本地状态（图片 + 由图片算出来的 index/vectors），
+          # 仓库里那份空 index.json 对服务器没有意义，所以整目录既不推送也不 --delete
+          tool/media/emoji/
           tool/media/audio/
           EOF
           rsync -az --delete --exclude-from=/tmp/exclude.txt \

@@ -1,9 +1,9 @@
 """表情包 Tool：模型说一句想表达什么，向量在表情库里找最贴的一张发出去。
 
 素材与索引都在 tool/media/emoji/（整目录复制即可迁移）：
-- stickers/  手动放入的素材
-- user/      用户投喂并同意收藏的素材
-- index.json 素材库索引 v3：{file, desc, source, added_at}（人看的、可手改、入库）
+- 素材就是一个库：图片直接放这个目录（旧机器上的 stickers/、user/ 子目录里的图也照样收进来），
+  不再按来源分堆——两边都是你自己放进目录的东西，没有"内置"这一说
+- index.json 素材库索引 v4：{file, desc, added_at}（人看的、可手改、入库）
 - vectors.json 描述向量缓存：{file: {desc, vec}}，不入库；缺失或描述改过会按新 desc 重算
 
 挑图不再靠情绪词表：把「笑死」归一成「开心」这类判断本来就该模型自己做，
@@ -48,7 +48,7 @@ DEFAULT_CONFIG = {
     "enabled": True,
     "max_per_turn": 1,
     "min_interval_sec": 10,
-    "max_user_stickers": 200,
+    "max_stickers": 200,
     "min_score": 0.50,
     # 检索侧的 instruct：Qwen3-Embedding 这类模型要求 query 带任务说明，文档侧不带。
     # 实测同一批素材，加了之后 5 个说法命中 4 个（不加只有 3 个），换成别的厂商可改文案或留空。
@@ -175,8 +175,6 @@ class EmojiLibrary:
             out.append({
                 "file": rel,
                 "desc": desc[:DESC_MAX].strip(),
-                "source": str(raw.get("source")
-                              or ("user" if rel.startswith("user/") else "builtin")),
                 "added_at": str(raw.get("added_at") or ""),
                 "vec": None,
             })
@@ -200,9 +198,9 @@ class EmojiLibrary:
 
     def _save(self, items: list[dict]) -> None:
         """索引只留人看得懂的部分；向量单独放 vectors.json（体积大、可随时重建）。"""
-        rows = [{"file": it["file"], "desc": it["desc"], "source": it["source"],
+        rows = [{"file": it["file"], "desc": it["desc"],
                  "added_at": it["added_at"]} for it in items]
-        self._write_json(self.index_path, {"version": 3, "items": rows})
+        self._write_json(self.index_path, {"version": 4, "items": rows})
         known = {it["file"] for it in items}
         vecs = {rel: {"desc": desc, "vec": _encode_vec(v)}
                 for rel, (desc, v) in self._parse_vectors().items() if rel in known}
@@ -219,14 +217,13 @@ class EmojiLibrary:
         tmp.replace(path)
 
     def _scan(self) -> list[str]:
+        """库里的图：整个素材目录递归扫，旧的 stickers/、user/ 子目录也算同一个库。"""
         root = self.root
+        root.mkdir(parents=True, exist_ok=True)
         found = []
-        for sub in ("stickers", "user"):
-            d = root / sub
-            d.mkdir(parents=True, exist_ok=True)
-            for p in sorted(d.rglob("*")):
-                if p.is_file() and p.suffix.lower() in IMAGE_EXTS and not p.name.startswith("."):
-                    found.append(p.relative_to(root).as_posix())
+        for p in sorted(root.rglob("*")):
+            if p.is_file() and p.suffix.lower() in IMAGE_EXTS and not p.name.startswith("."):
+                found.append(p.relative_to(root).as_posix())
         return found
 
     # ---------- 向量 ----------
@@ -263,7 +260,6 @@ class EmojiLibrary:
             it = indexed.get(rel)
             if it is None:
                 it = {"file": rel, "desc": _stem_desc(rel),
-                      "source": "user" if rel.startswith("user/") else "builtin",
                       "added_at": _now(), "vec": None}
                 added.append(it)
             items.append(it)
@@ -344,7 +340,7 @@ class EmojiLibrary:
 
         items = await self.items()
         if not items:
-            return {"ok": False, "error": "表情库为空（素材放 tool/media/emoji/stickers/，"
+            return {"ok": False, "error": "表情库为空（图片放 tool/media/emoji/，"
                                           "或用 emoji_save 收藏用户投喂的图）"}
         rows = await self.match(query, 6, items)
         if not rows:
@@ -406,23 +402,21 @@ class EmojiLibrary:
         items = await self.items()
         data = await asyncio.to_thread(p.read_bytes)
         digest = hashlib.sha1(data).hexdigest()[:12]
-        name = f"user_{digest}{p.suffix.lower()}"
-        rel = f"user/{name}"
+        name = f"{digest}{p.suffix.lower()}"
+        rel = name
         if any(it["file"] == rel for it in items):
             return {"ok": True, "name": name, "note": "这张已经在库里了"}
 
-        user_count = sum(1 for it in items if it["source"] == "user")
-        max_user = max(0, int(self.config.get("max_user_stickers", 200) or 0))
-        if user_count >= max_user:
-            return {"ok": False, "error": f"用户素材已达上限 {max_user} 张，先删一些"}
+        max_total = max(0, int(self.config.get("max_stickers", 200) or 0))
+        if len(items) >= max_total:
+            return {"ok": False, "error": f"表情库已达上限 {max_total} 张，先删一些"}
 
         desc = str(args.get("desc") or "").strip() or await self.describe(
             p, session_label(ctx.get("session_id"))) or _stem_desc(p.name)
         dest = self.root / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(dest.write_bytes, data)
         vecs = await self._embed([desc])
-        entry = {"file": rel, "desc": desc[:DESC_MAX].strip(), "source": "user",
+        entry = {"file": rel, "desc": desc[:DESC_MAX].strip(),
                  "added_at": _now(), "vec": vecs[0] if vecs else None}
         await asyncio.to_thread(self._save, [*items, entry])
         logger.info("表情入库 %s（%s）", name, clip(desc, 40),
@@ -438,7 +432,7 @@ class EmojiLibrary:
         rows = await self.match(query, limit, items)
         return {"ok": True, "total": len(items),
                 "items": [{"name": Path(r["file"]).name, "desc": r["desc"],
-                           "source": r["source"], **({"score": r["score"]} if query else {})}
+                           **({"score": r["score"]} if query else {})}
                           for r in rows]}
 
 
