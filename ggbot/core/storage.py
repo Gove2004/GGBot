@@ -19,7 +19,6 @@ CREATE TABLE IF NOT EXISTS sessions(
     id TEXT PRIMARY KEY,
     key TEXT UNIQUE,
     scene TEXT,
-    summary TEXT,
     archived_upto INTEGER DEFAULT 0,
     created_at TEXT,
     updated_at TEXT
@@ -141,8 +140,8 @@ class Storage:
                 c.execute("UPDATE sessions SET updated_at=? WHERE id=?", (_now(), row["id"]))
                 return row["id"]
             c.execute(
-                "INSERT INTO sessions(id, key, scene, summary, created_at, updated_at) VALUES(?,?,?,?,?,?)",
-                (key, key, scene, "", _now(), _now()),
+                "INSERT INTO sessions(id, key, scene, created_at, updated_at) VALUES(?,?,?,?,?)",
+                (key, key, scene, _now(), _now()),
             )
             return key
 
@@ -161,15 +160,6 @@ class Storage:
             prefix, _, rest = key.partition(":")
             return rest, ("group" if prefix == "group" else "c2c")
         return (key or None, "group")
-
-    def save_summary(self, session_id: str, summary: str) -> None:
-        with self._lock, self._conn() as c:
-            c.execute("UPDATE sessions SET summary=?, updated_at=? WHERE id=?", (summary, _now(), session_id))
-
-    def get_summary(self, session_id: str) -> str:
-        with self._lock, self._conn() as c:
-            row = c.execute("SELECT summary FROM sessions WHERE id=?", (session_id,)).fetchone()
-            return row["summary"] if row else ""
 
     def get_archive_cursor(self, session_id: str) -> int:
         """已归档到的消息 id（该 id 及更早的历史已进入长期记忆）。"""
@@ -204,7 +194,7 @@ class Storage:
         with self._lock, self._conn() as c:
             rows = c.execute(
                 """
-                SELECT s.id, s.key, s.scene, s.summary, s.created_at, s.updated_at,
+                SELECT s.id, s.key, s.scene, s.created_at, s.updated_at,
                        (SELECT COUNT(*) FROM messages m WHERE m.session_id=s.id) AS message_count,
                        (SELECT COUNT(*) FROM messages m WHERE m.session_id=s.id AND m.status='pending') AS pending_count,
                        (SELECT MAX(m.ts) FROM messages m WHERE m.session_id=s.id) AS last_ts,
@@ -222,7 +212,7 @@ class Storage:
         with self._lock, self._conn() as c:
             row = c.execute(
                 """
-                SELECT s.id, s.key, s.scene, s.summary, s.created_at, s.updated_at,
+                SELECT s.id, s.key, s.scene, s.created_at, s.updated_at,
                        (SELECT COUNT(*) FROM messages m WHERE m.session_id=s.id) AS message_count,
                        (SELECT COUNT(*) FROM messages m WHERE m.session_id=s.id AND m.status='pending') AS pending_count,
                        (SELECT MAX(m.ts) FROM messages m WHERE m.session_id=s.id) AS last_ts
@@ -233,12 +223,12 @@ class Storage:
         return dict(row) if row else None
 
     def clear_session_context(self, session_id: str) -> dict:
-        """清空单个会话的上下文（消息 + 历史摘要），保留会话本身与记忆。"""
+        """清空单个会话的上下文（消息与归档游标），保留会话本身与记忆。"""
         with self._lock, self._conn() as c:
             n = c.execute("SELECT COUNT(*) FROM messages WHERE session_id=?", (session_id,)).fetchone()[0]
             c.execute("DELETE FROM messages WHERE session_id=?", (session_id,))
             c.execute(
-                "UPDATE sessions SET summary='', archived_upto=0, updated_at=? WHERE id=?",
+                "UPDATE sessions SET archived_upto=0, updated_at=? WHERE id=?",
                 (_now(), session_id),
             )
         return {"messages": n}

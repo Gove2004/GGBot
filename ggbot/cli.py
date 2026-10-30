@@ -78,7 +78,7 @@ def _print_sessions(rows: list[dict], live: dict | None = None) -> None:
         print("（暂无会话）")
         return
     live = live or {}
-    print(f"{'会话':<14} {'状态':<6} {'消息':>6} {'待处理':>6}  {'最后活动':<19} 摘要 / 最后消息")
+    print(f"{'会话':<14} {'状态':<6} {'消息':>6} {'待处理':>6}  {'最后活动':<19} 最后消息")
     print("-" * 110)
     for r in rows:
         st = live.get(r["id"], {})
@@ -86,7 +86,7 @@ def _print_sessions(rows: list[dict], live: dict | None = None) -> None:
             f"{session_label(r['id']):<14} {st.get('state', 'offline'):<6} "
             f"{r.get('message_count') or 0:>6} {r.get('pending_count') or 0:>6}  "
             f"{(r.get('last_ts') or r.get('updated_at') or '—'):<19} "
-            f"{_clip(r.get('summary') or r.get('last_message'))}"
+            f"{_clip(r.get('last_message'))}"
         )
 
 
@@ -110,9 +110,6 @@ def cmd_context(storage: Storage, ref: str, limit: int) -> None:
     if not row:
         raise SystemExit("会话不存在")
     print(f"消息 {row.get('message_count')}，待处理 {row.get('pending_count')}，更新于 {row.get('updated_at')}")
-    summary = storage.get_summary(sid)
-    if summary:
-        print(f"\n[历史摘要]\n{summary}\n")
     print(f"[最近 {limit} 条]")
     for m in storage.get_recent_messages(sid, limit):
         role = "机器人" if m.get("role") == "assistant" else "成员"

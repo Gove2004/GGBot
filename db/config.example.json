@@ -24,8 +24,9 @@
     },
     "context": {
       "max_history_messages": 1024,
-      "summary_threshold_tokens": 128000,
-      "archive_batch_messages": 256,
+      "token_budget": 128000,
+      "archive_overflow_messages": 512,
+      "archive_batch_messages": 64,
       "archive_enabled": true
     }
   },
