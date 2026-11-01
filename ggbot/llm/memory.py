@@ -1,25 +1,39 @@
-"""向量化记忆：OpenAI 兼容 Embedding 接口（服务商与模型由 config.json 决定）。
+"""长期记忆：结构化写入 + 向量检索 + 取代判定 + 遗忘扫描。
 
-- 嵌入走云端 OpenAI 兼容接口（POST /embeddings），无本地模型依赖
-- 向量存 SQLite（float32 BLOB），检索用余弦相似度（个人机器人记忆量级，暴力检索足够）
-- 写入去重：同会话内余弦 ≥0.95 视为同一条，更新原条目而非新增
-- 整理：合并近似重复记忆，阈值随记忆条数放宽（0.95 起，最低 0.86）
-- 未配置 embedding 时自动降级为关键词检索，不影响机器人启动
+两类记忆各有各的活法：
+- `profile`（人物档案）：关于某个人的当前状态，同一份档案靠"新说法改写旧说法"滚动更新，不按年龄删
+- `event`（事件流水）：发生过的事，按时间追加，靠到期/淡出/上限清理
+
+写入不再只是追加：一批新事实先找出库里的相关旧条目（向量近邻 + 同一个人的档案），
+整批一次交给 LLM 判「新增 / 改写某条 / 不写 / 顺带作废哪几条」，判不了才退回余弦去重直写。
+遗忘扫描（sweep）做四件事：到期删、事件淡出、每人档案与整库的超上限淘汰、近似重复合并。
+
+- 嵌入走云端 OpenAI 兼容接口（POST /embeddings），无本地模型依赖；向量存 SQLite（float32 BLOB）
+- 未配置 embedding 时自动降级为关键词检索与纯去重直写，不影响机器人启动
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import time
+from datetime import datetime, timedelta
 
 import numpy as np
 
 logger = logging.getLogger("ggbot.memory")
 
-DEDUP_SCORE = 0.95
+DEDUP_SCORE = 0.95        # 没走取代判定时：余弦到这一步才算同一条
+CANDIDATE_SCORE = 0.55    # 取代判定的候选门槛：够得着的旧条目才拿给模型看
+CANDIDATE_K = 5           # 每条新事实最多带几张向量近邻进判定
+SUBJECT_POOL = 8          # 同一个人的档案最多带几张进判定
+FADE_KEEP_IMPORTANCE = 4  # 标到 ★4 以上的事件不淡出（人/模型明确说过重要的留住）
+HIT_LONGEN = 3.0          # 被命中过的事件，淡出门槛按这个倍数放宽
 
-# 整理（tidy）阈值：记忆越多越宽松。条数一多，同一件事的不同说法很难再撞上 0.95，
-# 固定阈值只会让整理越来越无效；按规模放宽，最低降到 TIDY_MIN，防止误合不相干条目。
+TS_FMT = "%Y-%m-%d %H:%M:%S"
+
+# 合并（近似重复）阈值：记忆越多越宽松。条数一多，同一件事的不同说法很难再撞上 0.95，
+# 固定阈值只会让合并越来越无效；按规模放宽，最低降到 TIDY_MIN，防止误合不相干条目。
 TIDY_BASE = 0.95
 TIDY_MIN = 0.86
 TIDY_PER = 50  # 每多 50 条放宽 0.01
@@ -36,16 +50,67 @@ def bigrams(text: str) -> set[str]:
     return {s[i : i + 2] for i in range(len(s) - 1)}
 
 
+def _as_ts(value) -> datetime | None:
+    """库里的时间字符串 → datetime；空值或畸形按「没有这个时间」处理。"""
+    s = str(value or "").strip()
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s[:19], TS_FMT)
+    except ValueError:
+        return None
+
+
+def normalize_expires(value) -> str | None:
+    """到期时间归一：只给日期按当天最后一秒算，空值归 None（不过期）。
+
+    写入路径（工具/面板/CLI/归档）都过这里，否则 `2026-11-20` 这种只有日期的写法
+    `_as_ts` 认不出来，到期会变成"永不到期"。
+    """
+    s = str(value or "").strip().replace("T", " ")
+    if not s:
+        return None
+    return (s + " 23:59:59")[:19] if len(s) == 10 else s
+
+
+def is_expired(row: dict, now: datetime | None = None) -> bool:
+    """到期作废：约定与近况写进去时就带了截止日期。"""
+    exp = _as_ts(row.get("expires_at"))
+    return exp is not None and exp < (now or datetime.now())
+
+
+def quiet_days(row: dict, now: datetime | None = None) -> float:
+    """离最后一次"被提起"过了多少天：写入时间与命中时间取较晚的那个。"""
+    stamps = [t for t in (_as_ts(row.get("last_hit_at")), _as_ts(row.get("ts"))) if t]
+    if not stamps:
+        return 0.0
+    return max(0.0, ((now or datetime.now()) - max(stamps)).total_seconds() / 86400.0)
+
+
+def retention(row: dict, half_life: float, now: datetime | None = None) -> float:
+    """综合保留分 0~1：重要度打底 + 新鲜度衰减（半衰期 = forget_after_days）+ 命中次数加成。
+
+    超上限淘汰与合并择优都按它排序，面板同一列显示——低分不代表"该删"，只是"要先腾的就是它"。
+    """
+    imp = max(1, min(5, int(row.get("importance") or 1))) / 5.0
+    fresh = 0.5 ** (quiet_days(row, now) / max(1.0, float(half_life)))
+    hits = min(1.0, math.log1p(int(row.get("hit_count") or 0)) / math.log1p(10))
+    return round(0.4 * imp + 0.4 * fresh + 0.2 * hits, 4)
+
+
 class MemoryStore:
-    def __init__(self, cfg, storage):
+    def __init__(self, cfg, storage, llm=None):
         self.cfg = cfg
         self.storage = storage
+        self.llm = llm
         emb = cfg.embedding
         self.model = emb["model"]
         self.base_url = emb["base_url"]
         self.batch_size = emb["batch_size"]
         self.enabled = emb["enabled"]
         self.client = None
+        # 累计写入条数：够一次 sweep_every_writes 就跑一遍遗忘扫描（只删，不合并）
+        self._writes = 0
         if self.enabled:
             from openai import OpenAI
 
@@ -54,6 +119,13 @@ class MemoryStore:
             )
         else:
             logger.info("embedding 未启用，长期记忆使用关键词检索")
+
+    @property
+    def m(self) -> dict:
+        """遗忘与取代的参数，每次现读（面板改完不用重启）。"""
+        return self.cfg.memory
+
+    # ---------- 嵌入 ----------
 
     def embed(self, text: str) -> np.ndarray:
         """单条文本 → 向量。"""
@@ -88,83 +160,22 @@ class MemoryStore:
             return 0.0
         return float(np.dot(q, v)) / denom
 
-    def _nearest(self, vec: np.ndarray, session_id: str | None, min_score: float) -> tuple[dict, float] | None:
-        """同一作用域内最相似的一条（用于写入去重）。"""
-        qn = float(np.linalg.norm(vec))
-        best: tuple[dict, float] | None = None
-        for m in self.storage.get_all_memories():
-            if (m.get("session_id") or None) != (session_id or None):
-                continue
-            blob = m.get("embedding")
-            if not blob:
-                continue
-            sim = self._score(vec, qn, np.frombuffer(blob, dtype=np.float32))
-            if sim >= min_score and (best is None or sim > best[1]):
-                best = (m, sim)
-        return best
+    # ---------- 检索 ----------
 
-    def add(
-        self,
-        content: str,
-        type_: str = "fact",
-        importance: int = 1,
-        session_id: str | None = None,
-    ) -> str:
-        """写入一条记忆（启用 embedding 时自动向量化；同会话近似重复则更新原条目）。"""
-        if not self.enabled:
-            return self.storage.add_memory(session_id, content, type_, importance, None)
-        vec = self.embed(content).astype(np.float32)
-        dup = self._nearest(vec, session_id, DEDUP_SCORE)
-        if dup is not None:
-            m, sim = dup
-            self.storage.update_memory(
-                m["id"], content=content,
-                importance=max(int(m.get("importance") or 1), importance),
-                embedding=vec.tobytes(),
-            )
-            logger.info("记忆去重（相似度 %.3f），更新既有条目 %s", sim, m["id"])
-            return m["id"]
-        return self.storage.add_memory(session_id, content, type_, importance, vec.tobytes())
+    def _scope(self, rows: list[dict], session_id: str | None) -> list[dict]:
+        """本会话 + 全局（session_id 为 None 时不筛作用域，面板/调试用）。"""
+        if session_id is None:
+            return rows
+        return [r for r in rows if (r.get("session_id") or None) in (None, session_id)]
 
-    def update(
-        self,
-        memory_id: str,
-        content: str | None = None,
-        importance: int | None = None,
-    ) -> bool:
-        """编辑记忆（改内容会重新向量化），条目不存在返回 False。"""
-        if not self.storage.get_memory(memory_id):
-            return False
-        vec = None
-        if content is not None:
-            content = content.strip()
-            if not content:
-                raise ValueError("记忆内容不能为空")
-            # 未启用 embedding 时清空旧向量，避免内容与向量不一致
-            vec = self.embed(content).astype(np.float32) if self.enabled else b""
-        self.storage.update_memory(
-            memory_id,
-            content=content,
-            importance=importance,
-            embedding=vec.tobytes() if isinstance(vec, np.ndarray) else vec,
-        )
-        logger.info("记忆已更新 id=%s（重新向量化=%s）", memory_id,
-                    isinstance(vec, np.ndarray))
-        return True
-
-    def _keyword_search(self, query: str, k: int, session_id: str | None) -> list[dict]:
-        """无 embedding 时的降级检索：按字符/二元组重合度排序。"""
+    def _keyword_scores(self, query: str, rows: list[dict]) -> list[tuple[float, dict]]:
         q = (query or "").strip().lower()
         if not q:
             return []
         qgrams = bigrams(q)
         qchars = {ch for ch in q if not ch.isspace()}
         scored: list[tuple[float, dict]] = []
-        for m in self.storage.get_all_memories():
-            if session_id is not None:
-                scope = m.get("session_id") or None
-                if scope is not None and scope != session_id:
-                    continue
+        for m in rows:
             text = (m.get("content") or "").lower()
             if not text:
                 continue
@@ -177,99 +188,391 @@ class MemoryStore:
                 hits / max(1, len(qchars)) * 0.6,
             )
             scored.append((score, m))
-        scored.sort(key=lambda x: (-x[0], -int(x[1].get("importance") or 0)))
-        return [self._result(m, s) for s, m in scored[:k]]
+        return scored
 
     @staticmethod
     def _result(m: dict, score: float) -> dict:
         return {
             "id": m["id"],
             "content": m["content"],
-            "type": m["type"],
+            "kind": m.get("type") or "profile",
+            "subject": m.get("subject") or "",
             "importance": m["importance"],
             "session_id": m["session_id"],
+            "hit_count": int(m.get("hit_count") or 0),
+            "last_hit_at": m.get("last_hit_at"),
+            "expires_at": m.get("expires_at"),
             "score": round(score, 4),
             "ts": m["ts"],
         }
 
-    def search(
-        self,
-        query: str,
-        k: int = 5,
-        session_id: str | None = None,
-        min_score: float | None = None,
-    ) -> list[dict]:
+    def search(self, query: str, k: int = 5, session_id: str | None = None,
+               min_score: float | None = None, touch: bool = False) -> list[dict]:
         """检索记忆：启用 embedding 时按余弦相似度，否则按关键词重合度。
 
         session_id 给定时只取「全局记忆 + 本会话记忆」；为 None 时检索全部（面板/调试）。
-        min_score 只对向量检索生效。
+        min_score 只对向量检索生效。touch=True 时把命中的条目记一次命中（聊天侧的强化信号），
+        面板检索不传——看一眼不该算"想起来过"。
         """
-        if not self.enabled:
-            return self._keyword_search(query, k, session_id)
-        candidates = []
-        for m in self.storage.get_all_memories():
-            if session_id is not None:
-                scope = m.get("session_id") or None
-                if scope is not None and scope != session_id:
-                    continue
-            if m.get("embedding"):
-                candidates.append(m)
-        if not candidates:
-            return self._keyword_search(query, k, session_id)
-        q = self.embed(query).astype(np.float32)
-        qn = float(np.linalg.norm(q))
-        scored = []
-        for m in candidates:
-            score = self._score(q, qn, np.frombuffer(m["embedding"], dtype=np.float32))
-            if min_score is not None and score < min_score:
+        rows = [r for r in self.storage.get_all_memories() if not is_expired(r)]
+        scope = self._scope(rows, session_id)
+        if self.enabled:
+            with_vec = [r for r in scope if r.get("embedding")]
+            if with_vec:
+                q = self.embed(query).astype(np.float32)
+                qn = float(np.linalg.norm(q))
+                scored = []
+                for m in with_vec:
+                    score = self._score(q, qn, np.frombuffer(m["embedding"], dtype=np.float32))
+                    if min_score is not None and score < min_score:
+                        continue
+                    scored.append((score, m))
+                scored.sort(key=lambda x: -x[0])
+                hits = [self._result(m, s) for s, m in scored[:k]]
+                if touch:
+                    self.storage.touch_memories([h["id"] for h in hits])
+                return hits
+        scored = sorted(self._keyword_scores(query, scope),
+                        key=lambda x: (-x[0], -int(x[1].get("importance") or 0)))
+        hits = [self._result(m, s) for s, m in scored[:k]]
+        if touch:
+            self.storage.touch_memories([h["id"] for h in hits])
+        return hits
+
+    def _nearest(self, vec: np.ndarray, kind: str, subject: str | None,
+                 session_id: str | None, min_score: float,
+                 rows: list[dict] | None = None) -> tuple[dict, float] | None:
+        """同类同归属里最相似的一条（写入去重用）。"""
+        qn = float(np.linalg.norm(vec))
+        best: tuple[dict, float] | None = None
+        pool = rows if rows is not None else self.storage.get_all_memories()
+        for m in pool:
+            if (m.get("type") or "profile") != kind:
                 continue
-            scored.append((score, m))
-        scored.sort(key=lambda x: -x[0])
-        return [self._result(m, s) for s, m in scored[:k]]
+            if subject is not None:
+                if (m.get("subject") or None) != subject:
+                    continue
+            elif (m.get("session_id") or None) != (session_id or None):
+                continue
+            blob = m.get("embedding")
+            if not blob:
+                continue
+            sim = self._score(vec, qn, np.frombuffer(blob, dtype=np.float32))
+            if sim >= min_score and (best is None or sim > best[1]):
+                best = (m, sim)
+        return best
 
-    def tidy(self, threshold: float | None = None) -> int:
-        """整理记忆：合并余弦相似度超过阈值的近似重复，保留更重要（importance 高/更新）的一条。
+    # ---------- 写入 ----------
 
-        threshold 不给就按当前记忆条数自动放宽（见 _tidy_threshold）。
+    def add(self, content: str, kind: str = "profile", importance: int = 1,
+            session_id: str | None = None, subject: str | None = None,
+            expires_at: str | None = None) -> str:
+        """直写一条记忆（不做取代判定）：同类同归属里余弦 ≥0.95 视为同一条，改写而不是新增。"""
+        from ggbot.core.storage import subject_key
+
+        subject = subject_key(subject)
+        content = (content or "").strip()
+        expires_at = normalize_expires(expires_at)
+        if not self.enabled:
+            return self.storage.add_memory(session_id, content, kind, importance, None,
+                                          subject, expires_at)
+        vec = self.embed(content).astype(np.float32)
+        dup = self._nearest(vec, kind, subject, session_id, DEDUP_SCORE)
+        if dup is not None:
+            m, sim = dup
+            self.storage.update_memory(
+                m["id"], content=content,
+                importance=max(int(m.get("importance") or 1), importance),
+                embedding=vec.tobytes(),
+            )
+            logger.info("记忆去重（相似度 %.3f），改写既有条目 %s", sim, m["id"])
+            return m["id"]
+        return self.storage.add_memory(session_id, content, kind, importance, vec.tobytes(),
+                                       subject, expires_at)
+
+    def _candidates(self, fact: dict, vec, rows: list[dict]) -> list[dict]:
+        """一条新事实的相关旧条目：同作用域里的向量近邻 + 同一个人的档案。"""
+        scope = self._scope(rows, fact.get("session_id"))
+        subject = fact.get("subject")
+        same_subject = [r for r in scope
+                        if subject and (r.get("subject") or None) == subject][:SUBJECT_POOL]
+        if vec is not None:
+            qn = float(np.linalg.norm(vec))
+            scored = []
+            for m in scope:
+                if not m.get("embedding"):
+                    continue
+                sim = self._score(vec, qn, np.frombuffer(m["embedding"], dtype=np.float32))
+                if sim >= CANDIDATE_SCORE:
+                    scored.append((sim, m))
+            scored.sort(key=lambda x: -x[0])
+            near = [m for _, m in scored[:CANDIDATE_K]]
+        else:
+            near = [m for _, m in self._keyword_scores(fact["content"], scope)[:CANDIDATE_K]]
+        seen, out = set(), []
+        for m in same_subject + near:
+            if m["id"] not in seen:
+                seen.add(m["id"])
+                out.append(m)
+        return out
+
+    def _reconcile(self, facts: list[dict], pools: list[list[dict]]) -> dict[int, dict] | None:
+        """整批一次判定：把新事实与各自看到的旧条目交给 LLM，回来一套处置。"""
+        if self.llm is None:
+            return None
+        olds: dict[int, dict] = {}
+        number_of: dict[str, int] = {}
+        for pool in pools:
+            for m in pool:
+                if m["id"] not in number_of:
+                    n = len(olds) + 1
+                    olds[n] = m
+                    number_of[m["id"]] = n
+        if not olds:
+            return None
+        items = [{"i": i + 1, "content": f["content"], "kind": f["kind"],
+                  "subject": f.get("subject") or "", "importance": f["importance"]}
+                 for i, f in enumerate(facts)]
+        old_items = [{"n": n, "content": o["content"], "kind": o.get("type") or "profile",
+                      "subject": o.get("subject") or ""} for n, o in sorted(olds.items())]
+        try:
+            verdicts = self.llm.reconcile_memories(items, old_items)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("记忆取代判定失败，退回直写: %s", e)
+            return None
+        out: dict[int, dict] = {}
+        for v in verdicts:
+            try:
+                i = int(v.get("i")) - 1
+            except (TypeError, ValueError):
+                continue
+            if not 0 <= i < len(facts):
+                continue
+            target = v.get("target")
+            retire = []
+            for n in v.get("retire") or []:
+                try:
+                    if int(n) in olds:
+                        retire.append(olds[int(n)]["id"])
+                except (TypeError, ValueError):
+                    continue
+            out[i] = {
+                "action": str(v.get("action") or "new"),
+                "target_id": olds[int(target)]["id"] if target and int(target) in olds else None,
+                "content": str(v.get("content") or "").strip(),
+                "retire": retire,
+            }
+        return out
+
+    def commit(self, facts: list[dict], session_id: str | None = None) -> dict:
+        """写入一批新记忆，写之前先判取代。facts 每项 {content, kind, subject, importance, expires_at}。
+
+        判定失败（没配 LLM、模型乱答、嵌入挂了）不影响写入：退回直写路径，最多多留一条近似记忆，
+        由 sweep 的合并那一步兜住。返回 written/updated/dropped/retired 四个计数。
         """
-        if not self.enabled:
-            return 0
-        memories = self.storage.get_all_memories()
-        if threshold is None:
-            threshold = _tidy_threshold(len(memories))
-        vecs: dict[int, np.ndarray] = {}
-        for i, m in enumerate(memories):
-            if m.get("embedding"):
-                vecs[i] = np.frombuffer(m["embedding"], dtype=np.float32)
-        keep = set(vecs)
-        removed_ids: list[str] = []
-        for i in sorted(vecs):
-            if i not in keep:
+        from ggbot.core.storage import subject_key
+
+        prepared: list[dict] = []
+        for f in facts:
+            content = str(f.get("content") or "").strip()
+            if not content:
                 continue
-            vi = vecs[i]
-            ni = float(np.linalg.norm(vi))
-            for j in sorted(vecs):
-                if j <= i or j not in keep:
+            kind = f.get("kind") if f.get("kind") in ("profile", "event") else "profile"
+            expires = normalize_expires(f.get("expires_at"))
+            if not expires and f.get("expires_in_days"):
+                expires = (datetime.now() + timedelta(days=int(f["expires_in_days"]))).strftime(TS_FMT)
+            prepared.append({
+                "content": content,
+                "kind": kind,
+                "subject": subject_key(f.get("subject")),
+                "importance": max(1, min(5, int(f.get("importance") or 1))),
+                "session_id": f.get("session_id") or session_id,
+                "expires_at": expires,
+            })
+        if not prepared:
+            return {"written": 0, "updated": 0, "dropped": 0, "retired": 0}
+
+        vecs = None
+        if self.enabled:
+            try:
+                vecs = self.embed_many([f["content"] for f in prepared])
+            except Exception as e:  # noqa: BLE001
+                logger.warning("新记忆嵌入失败，退回关键词候选: %s", e)
+        rows = [r for r in self.storage.get_all_memories() if not is_expired(r)]
+        pools = [self._candidates(f, vecs[i] if vecs else None, rows)
+                 for i, f in enumerate(prepared)]
+        verdicts = None
+        if any(pools) and self.m["reconcile"]:
+            verdicts = self._reconcile(prepared, pools)
+
+        written = updated = dropped = 0
+        retire_ids: list[str] = []
+        for i, f in enumerate(prepared):
+            v = (verdicts or {}).get(i) or {}
+            action = v.get("action") or "new"
+            retire_ids.extend(v.get("retire") or [])
+            target_id = v.get("target_id")
+            content = v.get("content") or f["content"]
+            if action == "drop":
+                dropped += 1
+                continue
+            if action == "update" and target_id:
+                self.update(target_id, content, f["importance"])
+                updated += 1
+                continue
+            vec = vecs[i] if vecs else None
+            if vec is not None:
+                dup = self._nearest(vec.astype(np.float32), f["kind"], f["subject"],
+                                   f["session_id"], DEDUP_SCORE, rows)
+                if dup is not None:
+                    self.update(dup[0]["id"], content, f["importance"])
+                    updated += 1
                     continue
-                vj = vecs[j]
-                denom = ni * float(np.linalg.norm(vj))
-                if denom < 1e-9:
+            self.storage.add_memory(f["session_id"], content, f["kind"], f["importance"],
+                                    vec.astype(np.float32).tobytes() if vec is not None else None,
+                                    f["subject"], f["expires_at"])
+            written += 1
+
+        if retire_ids:
+            self.storage.delete_memories(sorted(set(retire_ids)))
+            logger.info("记忆取代：作废被推翻的旧条目 %d 条", len(set(retire_ids)))
+        self._writes += written + updated
+        if self._writes >= self.m["sweep_every_writes"]:
+            self._writes = 0
+            self.sweep(auto=True)
+        return {"written": written, "updated": updated, "dropped": dropped,
+                "retired": len(set(retire_ids))}
+
+    def update(self, memory_id: str, content: str | None = None, importance: int | None = None,
+               subject: str | None = None, kind: str | None = None,
+               expires_at: str | None = None) -> bool:
+        """编辑记忆（改内容会重新向量化），条目不存在返回 False。
+
+        expires_at 传空串表示"取消到期"；subject 传空串表示"不归属于某个人"。
+        """
+        if not self.storage.get_memory(memory_id):
+            return False
+        vec = None
+        if content is not None:
+            content = content.strip()
+            if not content:
+                raise ValueError("记忆内容不能为空")
+            # 未启用 embedding 时清空旧向量，避免内容与向量不一致
+            vec = self.embed(content).astype(np.float32) if self.enabled else b""
+        # None = 不动到期时间；给了值就归一，清空要保留成假值（""）传给存储层
+        if expires_at is not None:
+            expires_at = normalize_expires(expires_at) or ""
+        self.storage.update_memory(
+            memory_id,
+            content=content,
+            importance=importance,
+            embedding=vec.tobytes() if isinstance(vec, np.ndarray) else vec,
+            subject=subject,
+            type_=kind,
+            expires_at=expires_at,
+        )
+        return True
+
+    # ---------- 遗忘 ----------
+
+    def _to_delete(self, rows: list[dict], cfg: dict, now: datetime) -> tuple[list[str], list[str], list[str]]:
+        """该删的三批：到期、事件淡出、超上限（每人档案 + 整库）。"""
+        forget = cfg["forget_after_days"]
+        expired, faded = [], []
+        for r in rows:
+            if is_expired(r, now):
+                expired.append(r["id"])
+            elif (r.get("type") or "profile") == "event" \
+                    and int(r.get("importance") or 1) < FADE_KEEP_IMPORTANCE:
+                line = forget * (HIT_LONGEN if int(r.get("hit_count") or 0) > 0 else 1)
+                if quiet_days(r, now) > line:
+                    faded.append(r["id"])
+        gone = set(expired) | set(faded)
+        alive = [r for r in rows if r["id"] not in gone]
+
+        over: list[str] = []
+        groups: dict[str, list[dict]] = {}
+        for r in alive:
+            subject = r.get("subject") or ""
+            if (r.get("type") or "profile") == "profile" and subject:
+                groups.setdefault(subject, []).append(r)
+        for subject, group in groups.items():
+            if len(group) > cfg["max_per_subject"]:
+                group.sort(key=lambda r: (retention(r, forget, now), r.get("ts") or ""))
+                over.extend(r["id"] for r in group[: len(group) - cfg["max_per_subject"]])
+        alive = [r for r in alive if r["id"] not in set(over)]
+        if len(alive) > cfg["max_memories"]:
+            alive.sort(key=lambda r: (retention(r, forget, now), r.get("ts") or ""))
+            over.extend(r["id"] for r in alive[: len(alive) - cfg["max_memories"]])
+        return expired, faded, over
+
+    def _merge(self, threshold: float | None, rows: list[dict], cfg: dict,
+               now: datetime) -> list[str]:
+        """近似重复合并：余弦过阈值的算同一条，留保留分高的那条（同分留新的）。"""
+        if not self.enabled:
+            return []
+        vec_rows = [r for r in rows if r.get("embedding")]
+        if len(vec_rows) < 2:
+            return []
+        thr = threshold if threshold is not None else _tidy_threshold(len(rows))
+        mat = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in vec_rows])
+        norms = np.linalg.norm(mat, axis=1)
+        mat = mat / np.where(norms < 1e-9, 1.0, norms)[:, None]
+        dropped: set[int] = set()
+        for i in range(len(vec_rows)):
+            if i in dropped:
+                continue
+            sims = mat[i + 1 :] @ mat[i]
+            for offset in np.flatnonzero(sims >= thr):
+                j = int(offset) + i + 1
+                if j in dropped:
                     continue
-                sim = float(np.dot(vi, vj)) / denom
-                if sim >= threshold:
-                    a, b = memories[i], memories[j]
-                    if (a["importance"], a["ts"]) >= (b["importance"], b["ts"]):
-                        keep.discard(j)
-                        removed_ids.append(b["id"])
-                    else:
-                        keep.discard(i)
-                        removed_ids.append(a["id"])
-                        break
-        self.storage.delete_memories(removed_ids)
-        if removed_ids:
-            logger.info("记忆整理: 共 %d 条 · 阈值 %.2f · 合并 %d 条",
-                        len(memories), threshold, len(removed_ids))
-        return len(removed_ids)
+                a, b = vec_rows[i], vec_rows[j]
+                keep_a = (retention(a, cfg["forget_after_days"], now), a.get("ts") or "") >= \
+                    (retention(b, cfg["forget_after_days"], now), b.get("ts") or "")
+                dropped.add(j if keep_a else i)
+                if not keep_a:
+                    break
+        return [vec_rows[i]["id"] for i in sorted(dropped)]
+
+    def sweep(self, threshold: float | None = None, auto: bool = False) -> dict:
+        """遗忘扫描：到期 → 事件淡出 → 每人档案与整库超上限 → 近似重复合并。
+
+        auto=True（写入攒够时顺手跑）只做前三步：那些都是纯本地筛选；合并要过一遍全库向量，
+        只在启动、面板「立即整理」和 CLI 这些后台场合做，免得拖慢对话回合。
+        """
+        cfg = self.m
+        now = datetime.now()
+        rows = self.storage.get_all_memories()
+        expired, faded, over = self._to_delete(rows, cfg, now)
+        doomed = set(expired) | set(faded) | set(over)
+        merged: list[str] = []
+        if not auto:
+            merged = [m for m in self._merge(threshold, [r for r in rows if r["id"] not in doomed],
+                                             cfg, now) if m not in doomed]
+        removed = list(doomed | set(merged))
+        if removed:
+            self.storage.delete_memories(removed)
+            logger.info("记忆遗忘 到期 %d · 淡出 %d · 超限 %d · 合并 %d（共 %d 条）",
+                        len(expired), len(faded), len(over), len(merged),
+                        len(self.storage.get_all_memories()))
+        return {"expired": len(expired), "faded": len(faded), "over_cap": len(over),
+                "merged": len(merged), "total": len(rows) - len(removed)}
+
+    def panel_rows(self, rows: list[dict] | None = None) -> list[dict]:
+        """面板与 CLI 用的带分数版本：每条补保留分与剩余天数。"""
+        cfg = self.m
+        now = datetime.now()
+        out = []
+        for r in rows if rows is not None else self.storage.list_memories(None, 500):
+            d = dict(r)
+            d["kind"] = d.get("kind") or d.get("type") or "profile"
+            d["retention"] = retention(d, cfg["forget_after_days"], now)
+            d["quiet_days"] = round(quiet_days(d, now), 1)
+            exp = _as_ts(d.get("expires_at"))
+            d["expired"] = exp is not None and exp < now
+            out.append(d)
+        return out
 
     def embed_status(self) -> dict:
         return {

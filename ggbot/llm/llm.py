@@ -268,40 +268,10 @@ class LLMClient:
         """按消息正文估算请求 tokens；上下文预算与请求日志共用同一口径。"""
         return sum(self.estimate_tokens(m.get("content") or "") for m in messages)
 
-    def summarize(self, text: str, max_chars: int = 600, session: str | None = None) -> str:
-        """用 LLM 压缩一段文本（用于上下文窗口超限时的历史摘要）。"""
-        prompt = (
-            "请将以下群聊记录压缩成一份简洁的中文摘要，保留：讨论主题、关键观点、人物关系、"
-            "做出的决定、需要记住的细节。不要遗漏被@或明确提问的内容。\n\n" + text
-        )
-        resp = self.chat(
-            [
-                {"role": "system", "content": "你是群聊纪要整理助手，输出精炼、结构化。"},
-                {"role": "user", "content": prompt},
-            ],
-            session=session,
-        )
-        return (resp.choices[0].message.content or "").strip()[:max_chars]
-
-    def extract_memories(self, text: str, max_items: int = 6,
-                         session: str | None = None) -> list[str]:
-        """从一段历史对话中提炼值得长期记住的事实，用于窗口溢出时自动归档。"""
-        prompt = (
-            "下面是聊天记录。请提取值得长期记住的信息：人物的称呼、身份、喜好、脾气、近况、"
-            "约定、重要日子、正在做的事。\n"
-            "要求：每条一句完整的中文，自带主语，脱离上下文也能看懂；不记寒暄、口头禅、"
-            "玩笑和重复内容；不要猜测或编造。\n"
-            f"只输出 JSON 字符串数组，最多 {max_items} 条；没有值得记的就输出 []。\n\n" + text
-        )
-        resp = self.chat(
-            [
-                {"role": "system", "content": "你负责从聊天记录里沉淀长期记忆，只输出 JSON 数组。"},
-                {"role": "user", "content": prompt},
-            ],
-            session=session,
-        )
-        raw = (resp.choices[0].message.content or "").strip()
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I | re.M).strip()
+    @staticmethod
+    def _json_array(raw: str) -> list:
+        """模型输出 → JSON 数组：剥掉代码块围栏，再退一步截取首尾方括号；都失败按空数组。"""
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", (raw or "").strip(), flags=re.I | re.M).strip()
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
@@ -313,8 +283,93 @@ class LLMClient:
             except json.JSONDecodeError:
                 return []
         if isinstance(data, dict):
-            data = data.get("memories") or data.get("items") or []
-        if not isinstance(data, list):
-            return []
-        facts = [str(x).strip() for x in data if str(x).strip()]
-        return facts[:max_items]
+            data = data.get("memories") or data.get("items") or data.get("results") or []
+        return data if isinstance(data, list) else []
+
+    def extract_memories(self, text: str, max_items: int = 6,
+                         session: str | None = None) -> list[dict]:
+        """从一段历史对话中提炼值得长期记住的事实，用于窗口溢出时自动归档。
+
+        返回结构化条目 {content, kind, subject, importance, expires_in_days}：
+        kind 分 profile（某个人的当前状态）与 event（发生过的一件事），subject 是"关于谁"，
+        expires_in_days 只给自带截止日的事（"周五交稿"），其余留 None 表示不过期。
+        """
+        prompt = (
+            "下面是聊天记录。请提取值得长期记住的信息，每条一个对象：\n"
+            "- content：一句完整的中文，自带主语，脱离上下文也能看懂\n"
+            '- kind："profile" = 某个人的当前状态（叫法、身份、喜好、脾气、住处、最近在忙的事）；'
+            '"event" = 发生过的一件事（约定、决定、已经发生的时刻）\n'
+            "- subject：这条是关于谁的，写聊天记录里用的名字；说不清是谁就留空\n"
+            "- importance：1-5，对方明确说过重要、或关系到约定就给高\n"
+            '- expires_in_days：自带截止日期的事（如"周五交稿""下周三考试"）给天数，其余留空\n'
+            "不记寒暄、口头禅、玩笑和重复内容；不要猜测或编造。\n"
+            f"只输出 JSON 数组，最多 {max_items} 条；没有值得记的就输出 []。\n\n" + text
+        )
+        resp = self.chat(
+            [
+                {"role": "system", "content": "你负责从聊天记录里沉淀长期记忆，只输出 JSON 数组。"},
+                {"role": "user", "content": prompt},
+            ],
+            session=session,
+        )
+        out: list[dict] = []
+        for item in self._json_array(resp.choices[0].message.content or ""):
+            if isinstance(item, str):
+                item = {"content": item}  # 模型退回旧形状（纯字符串数组）也收
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            try:
+                days = int(item.get("expires_in_days"))
+            except (TypeError, ValueError):
+                days = None
+            try:
+                importance = max(1, min(5, int(item.get("importance") or 1)))
+            except (TypeError, ValueError):
+                importance = 1
+            out.append({
+                "content": content[:500],
+                "kind": "event" if str(item.get("kind") or "").strip().lower() == "event" else "profile",
+                "subject": str(item.get("subject") or "").strip()[:40],
+                "importance": importance,
+                "expires_in_days": days if days and 1 <= days <= 3650 else None,
+            })
+            if len(out) >= max_items:
+                break
+        return out
+
+    def reconcile_memories(self, items: list[dict], known: list[dict],
+                           session: str | None = None) -> list[dict]:
+        """新记忆连同库里相关的旧条目交给模型，判每条该怎么办（写入前的取代判定）。
+
+        返回 [{"i":序号,"action":"new|update|drop","target":旧编号,"content":最终说法,"retire":[旧编号]}]
+        """
+        old_lines = "\n".join(
+            f"{k['n']}. [{k['kind']}{'/' + k['subject'] if k.get('subject') else ''}] {k['content']}"
+            for k in known
+        )
+        new_lines = "\n".join(
+            f"{it['i']}. [{it['kind']}{'/' + it['subject'] if it.get('subject') else ''}] {it['content']}"
+            for it in items
+        )
+        prompt = (
+            "已有记忆：\n" + old_lines + "\n\n新记忆：\n" + new_lines +
+            "\n\n对每条新记忆输出一个对象，按这个口径判：\n"
+            '- action="new"：库里没有说过这件事，写进去\n'
+            '- action="update"：和某个已有条目（target 填它的编号）说的是同一件事，'
+            "content 给合并后的最终说法，不要重复写两条\n"
+            '- action="drop"：不值得单独记（跟已有条目重复、寒暄、没有信息量）\n'
+            "- retire：这条新记忆让哪些已有条目作废（状态已经变了、约定已经完成、说法互相矛盾），"
+            "填它们的编号数组；没有就留空\n"
+            '已有条目只有被明确推翻或已经完成时才 retire，不要因为"不太相关"就删。\n'
+            '只输出 JSON 数组：[{"i":1,"action":"new","content":"","retire":[]}, ...]'
+        )
+        resp = self.chat(
+            [
+                {"role": "system", "content": "你负责合并与更新长期记忆，只输出 JSON 数组。"},
+                {"role": "user", "content": prompt},
+            ],
+            session=session,
+        )
+        return [v for v in self._json_array(resp.choices[0].message.content or "")
+                if isinstance(v, dict)]

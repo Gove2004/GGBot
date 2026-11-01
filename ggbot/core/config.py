@@ -51,13 +51,17 @@ class Config:
         self.web_cfg = self.data.get("web", {})
 
     def _migrate(self) -> bool:
-        """旧版 deepseek 段 → 通用 llm 段；补齐 vision 段；返回是否有改动。"""
+        """旧版 deepseek 段 → 通用 llm 段；补齐 vision 段与 llm.system_prompt；返回是否有改动。"""
         changed = False
         legacy = self.data.pop("deepseek", None)
         if legacy is not None:
             llm = self.data.setdefault("llm", {})
             for key, value in legacy.items():
                 llm.setdefault(key, value)
+            changed = True
+        if "system_prompt" not in self.data.setdefault("llm", {}):
+            # 空串 = 用 presence 里的内置默认；面板「人设」页写这个键
+            self.data["llm"]["system_prompt"] = ""
             changed = True
         if "vision" not in self.data:
             self.data["vision"] = {
@@ -77,6 +81,15 @@ class Config:
             if isinstance(vision, dict) and "thinking" not in vision:
                 vision["thinking"] = ""
                 changed = True
+        if "memory" not in self.data:
+            self.data["memory"] = {
+                "max_memories": 800,
+                "max_per_subject": 12,
+                "forget_after_days": 90,
+                "sweep_every_writes": 50,
+                "reconcile": True,
+            }
+            changed = True
         return changed
 
     @property
@@ -106,6 +119,19 @@ class Config:
             "api_key": api_key,
             "batch_size": max(1, int(emb.get("batch_size", 32))),
             "enabled": bool(emb.get("enabled", True)) and bool(base_url and model and api_key),
+        }
+
+    @property
+    def memory(self) -> dict:
+        """记忆层参数：遗忘（上限/淡出）与取代（写入判定）。缺省即用代码里的默认值，
+        读取处每次现读，所以面板/配置文件改了不用重启。"""
+        m = self.data.get("memory", {}) or {}
+        return {
+            "max_memories": max(50, int(m.get("max_memories", 800))),
+            "max_per_subject": max(1, int(m.get("max_per_subject", 12))),
+            "forget_after_days": max(7, int(m.get("forget_after_days", 90))),
+            "sweep_every_writes": max(10, int(m.get("sweep_every_writes", 50))),
+            "reconcile": bool(m.get("reconcile", True)),
         }
 
     @property

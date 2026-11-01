@@ -32,7 +32,7 @@ class ClearContext(Tool):
         return {
             "ok": True,
             "cleared": cleared,
-            "note": f"本会话上下文已清空：{cleared} 条消息，历史摘要已重置（长期记忆保留）",
+            "note": f"本会话上下文已清空：{cleared} 条消息，归档进度与出站记录一并清掉（长期记忆保留）",
         }
 
 

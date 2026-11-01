@@ -6,6 +6,7 @@
     "base_url": "https://你的服务商/v1",
     "api_key": "LLM API Key",
     "model": "模型名",
+    "system_prompt": "",
     "request": {
       "temperature": 1.0,
       "top_p": 1.0,
@@ -18,7 +19,10 @@
       "input_per_mtok": 2,
       "cached_input_per_mtok": 0.04,
       "output_per_mtok": 8,
-      "peak_hours": ["09:00-12:00", "14:00-18:00"],
+      "peak_hours": [
+        "09:00-12:00",
+        "14:00-18:00"
+      ],
       "peak_weekdays_only": true,
       "off_peak_multiplier": 0.5
     },
@@ -37,6 +41,13 @@
     "api_key": "",
     "model": "",
     "batch_size": 32
+  },
+  "memory": {
+    "max_memories": 800,
+    "max_per_subject": 12,
+    "forget_after_days": 90,
+    "sweep_every_writes": 50,
+    "reconcile": true
   },
   "vision": {
     "enabled": true,
