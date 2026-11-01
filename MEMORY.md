@@ -367,7 +367,10 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   顺序：`systemctl stop` 再动库（SQLite 边写边打包得到一份坏快照）→ 整目录 tar 到**项目目录之外**（`--delete` 与 temp 的 TTL 都碰不到它，
   `chmod 600`：里面有密钥）→ 删 `db/*.db*`、`db/config.json`、`temp/`、素材目录与被删工具集的 `config.json` →
   只把初始化配置推回去（`db/config.json` + 各 `tool/*/config.json`；表情素材、记忆、日志这些运行产物不推）→
-  `systemctl enable` 恢复开机自启 → push 走 CI。核对起版看 `GGBot v3.0 启动`、`工具就绪` 的分类计数、空表的新库。
+  `systemctl enable` 恢复开机自启 → push 走 CI。核对起版看 `GGBot v3.0 启动`、`工具就绪` 的分类计数、空表的新库，
+  再把面板「工具」页扫一遍：**有"未启用"就等于素材漏推**——工具的启用判定看的不只是 `config.json`，
+  `send_voice_clone` 还要求 `tool/media/audio/voice_ref.wav` 真的在磁盘上（参考音色属于初始化素材，
+  跟着 `config.json` 一起推，不是运行产物），这次从零部署就漏了它一次，补上文件立刻恢复，不用重启（启用判定每次请求现算）。
 - **部署脚本按"一件事只有一份"重排过**：unit 渲染、面板探活口径、"哪个进程才是本项目的机器人"三件事以前在
   `install_service.sh` 与 `deploy_server.sh` 里各写一遍，改一处就漏一处，现在集中在 `deploy/service.sh`（被两边 source，不单独执行）。
   → `ggbot.service` 从此是**模板**：里面写死的 `/root/GGBot` 装机/部署时换成脚本自己 `cd` 出来的项目根。
