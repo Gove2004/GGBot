@@ -25,6 +25,8 @@ function switchPage(name) {
     guarded("memories", refreshMemories);
   } else if (name === "emojis") {
     guarded("emojis", refreshEmojis);
+  } else if (name === "persona") {
+    guarded("persona", refreshPersona);
   } else if (name === "settings") {
     guarded("config", loadConfig);
   } else if (name === "permissions") {
@@ -34,9 +36,9 @@ function switchPage(name) {
   } else if (name === "logs") {
     state.logsRendered = false;
     guarded("logs", refreshLogs);
-  } else if (name === "reminders") {
+  } else if (name === "schedule") {
     guarded("sessions", refreshSessions);
-    guarded("reminders", refreshReminders);
+    guarded("schedule", refreshSchedule);
   }
 }
 

@@ -125,7 +125,12 @@
   .table td.msg { max-width: 220px; }
   .table td .badge { white-space: nowrap; }
   #page-dash .table th:nth-child(5), #page-dash .table td:nth-child(5) { display: none; }
-  #page-reminders .table { min-width: 520px; }   /* 藏掉三列后仍要横向滚动，否则正文被挤成一字一行 */
+  /* 日程行：钟点那一格挤不进 620 以下的三列布局，改成整行占满、正文与按钮再并排 */
+  #page-schedule .sch-body { max-height: none; }
+  #page-schedule .sch-item { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; padding: 9px 10px; }
+  #page-schedule .sch-when { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 8px; }
+  #page-schedule .sch-gap { margin-top: 0; }
+  #page-schedule .sch-meta { gap: 6px; }
 
   .save-bar { flex-direction: column; align-items: stretch; bottom: 0; padding: 12px 14px; }
   .form-grid { grid-template-columns: 1fr; }

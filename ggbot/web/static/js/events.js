@@ -33,13 +33,14 @@ document.addEventListener("click", async (event) => {
       guarded("sessions", refreshSessions);
       break;
     case "refresh-emojis":
-      guarded("emojis", refreshEmojis);
+      // 手动刷新就是要立刻重扫目录（子目录里刚丢的图，扫目录缓存可能还没跟上）
+      guarded("emojis", () => refreshEmojis(true));
       break;
     case "refresh-logs":
       guarded("logs", refreshLogs);
       break;
-    case "refresh-reminders":
-      guarded("reminders", refreshReminders);
+    case "refresh-schedule":
+      guarded("schedule", refreshSchedule);
       break;
     case "refresh-tools":
       guarded("tools", refreshTools);
@@ -94,17 +95,59 @@ document.addEventListener("click", async (event) => {
     case "memory-delete":
       deleteMemory(id);
       break;
-    case "memory-tidy":
-      tidyMemory();
+    case "memory-purge":
+      purgeMemory(el.dataset.subject, el.dataset.kind, el.dataset.session);
       break;
-    case "remind-cancel":
-      cancelReminder(id);
+    case "memory-sweep":
+      sweepMemory();
+      break;
+    case "schedule-edit":
+      openScheduleEdit(id);
+      break;
+    case "schedule-save":
+      saveSchedule(id);
+      break;
+    case "schedule-cancel":
+      cancelSchedule(id);
+      break;
+    case "schedule-delete":
+      deleteSchedule(id);
+      break;
+    case "schedule-purge":
+      openSchedulePurge();
+      break;
+    case "schedule-purge-run":
+      purgeSchedule();
+      break;
+    case "schedule-sweep":
+      sweepSchedule();
+      break;
+    case "schedule-more":
+      loadMoreSchedule();
       break;
     case "emoji-view":
       openEmoji(el.dataset.file);
       break;
+    case "emoji-pick":
+      qs("#emoji-file").click();
+      break;
+    case "emoji-save-desc":
+      saveEmojiDesc(el.dataset.file);
+      break;
+    case "emoji-delete":
+      deleteEmoji(el.dataset.file);
+      break;
     case "save-config":
       saveConfig();
+      break;
+    case "refresh-persona":
+      guarded("persona", () => refreshPersona(true));
+      break;
+    case "persona-default":
+      fillPersonaDefault();
+      break;
+    case "persona-save":
+      savePersona();
       break;
     case "modal-close":
       closeModal();
@@ -155,9 +198,29 @@ document.addEventListener("DOMContentLoaded", () => {
 
   qs("#sess-q").addEventListener("input", renderSessions);
   qs("#emoji-q").addEventListener("input", renderEmojis);
+  // 选完就上传，不排队：传完清空，同一张图可以连着试两次
+  qs("#emoji-file").addEventListener("change", (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (file) uploadEmoji(file);
+  });
+  qs("#persona-text").addEventListener("input", renderPersonaMeta);
   qs("#mem-session").addEventListener("change", () => guarded("memories", refreshMemories));
-  qs("#rem-session").addEventListener("change", () => guarded("reminders", refreshReminders));
-  qs("#rem-status").addEventListener("change", () => guarded("reminders", refreshReminders));
+  qs("#mem-kind").addEventListener("change", () => guarded("memories", refreshMemories));
+  // 换筛选条件时把载入窗口收回默认，否则会带着上一次「载入更多」的偏移量
+  ["#sch-session", "#sch-status"].forEach((sel) =>
+    qs(sel).addEventListener("change", () => {
+      state.schLimit = 0;
+      guarded("schedule", refreshSchedule);
+    }));
+  let schTimer = null;
+  qs("#sch-q").addEventListener("input", () => {
+    clearTimeout(schTimer);
+    schTimer = setTimeout(() => {
+      state.schLimit = 0;
+      guarded("schedule", refreshSchedule);
+    }, 350);
+  });
 
   qs("#mem-q").addEventListener("keydown", (e) => { if (e.key === "Enter") searchMemories(); });
   qs("#mem-add").addEventListener("keydown", (e) => { if (e.key === "Enter") addMemory(); });

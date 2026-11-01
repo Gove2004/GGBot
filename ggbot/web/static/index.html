@@ -69,7 +69,7 @@
         <div class="nav-label">知识</div>
         <button class="nav-item" data-page="memory">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0-3 11v4h6v-4a6 6 0 0 0-3-11Z"/><path d="M9 21h6"/></svg>
-          <span>向量记忆</span>
+          <span>记忆</span>
         </button>
         <button class="nav-item" data-page="emojis">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9 10h.01M15 10h.01"/><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0"/></svg>
@@ -79,6 +79,10 @@
 
       <div class="nav-group">
         <div class="nav-label">系统</div>
+        <button class="nav-item" data-page="persona">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H8l-4 4V5Z"/><circle cx="12" cy="9.5" r="2"/><path d="M9 13.6a3.2 3.2 0 0 1 6 0"/></svg>
+          <span>人设</span>
+        </button>
         <button class="nav-item" data-page="settings">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H3v-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6V3h4v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
           <span>设置</span>
@@ -95,9 +99,9 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>
           <span>运行日志</span>
         </button>
-        <button class="nav-item" data-page="reminders">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16v-5a6 6 0 0 1 12 0v5l2 3H4l2-3Z"/><path d="M10 21a2 2 0 0 0 4 0"/></svg>
-          <span>提醒</span>
+        <button class="nav-item" data-page="schedule">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M8 3v3.5M16 3v3.5"/><path d="M12 12.5V15l1.8 1.2"/></svg>
+          <span>日程</span>
         </button>
       </div>
     </nav>
@@ -254,13 +258,13 @@
         </div>
       </section>
 
-      <!-- 向量记忆 -->
+      <!-- 记忆 -->
       <section id="page-memory" class="page hidden">
         <div class="card">
           <div class="card-head">
-            <div><h2>向量记忆</h2><p class="card-sub" id="mem-total">长期记忆 · 语义检索与维护</p></div>
+            <div><h2>记忆</h2><p class="card-sub" id="mem-total">长期记忆 · 加载中…</p></div>
             <div class="head-ops">
-              <button class="btn ghost small" data-action="memory-tidy">合并重复</button>
+              <button class="btn ghost small" data-action="memory-sweep">立即遗忘扫描</button>
             </div>
           </div>
 
@@ -269,10 +273,21 @@
               <input id="mem-q" class="input grow search-input" placeholder="语义检索，例如：谁喜欢喝咖啡？">
               <button class="btn" data-action="memory-search">检索</button>
               <button class="btn ghost" data-action="memory-all">全部</button>
+              <select id="mem-kind" class="sel" title="按类别筛">
+                <option value="">全部类别</option>
+                <option value="profile">人物档案</option>
+                <option value="event">事件流水</option>
+              </select>
+              <select id="mem-session" class="sel"><option value="">全部作用域</option></select>
             </div>
             <div class="tool-row">
-              <select id="mem-session" class="sel"><option value="">全部作用域</option></select>
-              <input id="mem-add" class="input grow" placeholder="写入一条重要记忆…">
+              <input id="mem-add" class="input grow" placeholder="写入一条记忆，例如：小明周五前要交稿">
+              <input id="mem-add-subject" class="input" placeholder="关于谁">
+              <select id="mem-add-kind" class="sel" title="类别">
+                <option value="profile">人物档案</option>
+                <option value="event">事件流水</option>
+              </select>
+              <input id="mem-add-expires" class="input" type="date" title="到期日（可留空）">
               <select id="mem-importance" class="sel" title="重要度">
                 <option value="1">★</option><option value="2">★★</option><option value="3">★★★</option>
                 <option value="4">★★★★</option><option value="5">★★★★★</option>
@@ -281,10 +296,14 @@
             </div>
           </div>
 
-          <div class="table-wrap">
+          <div class="table-wrap tall">
             <table class="table">
-              <thead><tr><th class="col-narrow">重要</th><th>内容</th><th class="col-sm-hide">作用域</th><th class="col-sm-hide">时间</th><th class="col-actions"></th></tr></thead>
-              <tbody id="mem-body"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
+              <thead><tr>
+                <th class="col-narrow">保留</th><th>内容</th>
+                <th class="col-sm-hide">类别/归属</th><th class="col-sm-hide">命中</th>
+                <th class="col-sm-hide">到期</th><th class="col-actions"></th>
+              </tr></thead>
+              <tbody id="mem-body"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -297,13 +316,15 @@
             <div><h2>表情包</h2><p class="card-sub" id="emoji-total">本地素材库 · 加载中…</p></div>
             <div class="head-ops">
               <input id="emoji-q" class="input small-input search-input" placeholder="按描述 / 文件名…">
+              <button class="btn ghost small" id="emoji-pick" data-action="emoji-pick">上传图</button>
+              <input type="file" id="emoji-file" class="hidden" accept="image/gif,image/jpeg,image/png,image/webp,image/bmp">
               <button class="btn ghost small" data-action="refresh-emojis">刷新</button>
             </div>
           </div>
           <div class="emoji-wrap">
             <div id="emoji-body" class="emoji-grid"><div class="empty">加载中…</div></div>
           </div>
-          <p class="card-sub">素材是一个统一库：图片直接丢进 <span class="mono">tool/media/emoji</span>（旧的 stickers/、user/ 子目录里的图也照样算），丢进就会出现，删掉就消失。模型发消息时按描述做语义匹配，描述可以在索引里手改。</p>
+          <p class="card-sub">素材是一个统一库：图片直接丢进 <span class="mono">tool/media/emoji</span>（旧的 stickers/、user/ 子目录里的图也算同一个库），点「上传图」是同一件事的另一种做法。模型发消息时按 <span class="mono">desc</span> 这一句做语义匹配——点一张图就能改描述或连图片文件一起删掉，删了就真没了。</p>
         </div>
       </section>
 
@@ -405,6 +426,25 @@
         </div>
       </section>
 
+      <!-- 人设（系统提示词） -->
+      <section id="page-persona" class="page hidden">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>系统提示词<span id="persona-scope" class="badge gray">加载中…</span></h2>
+              <p class="card-sub">所有会话共用的那一段人设，和全量工具列表一起构成上下文缓存前缀</p>
+            </div>
+            <div class="head-ops">
+              <button class="btn ghost small" data-action="persona-default">填入内置默认</button>
+              <button class="btn ghost small" data-action="refresh-persona">重载</button>
+              <button class="btn primary small" data-action="persona-save">保存</button>
+            </div>
+          </div>
+          <textarea id="persona-text" class="persona-text" spellcheck="false" placeholder="加载中…"></textarea>
+          <p class="card-sub persona-foot" id="persona-meta">加载中…</p>
+        </div>
+      </section>
+
       <!-- 权限 -->
       <section id="page-permissions" class="page hidden">
         <div class="stack">
@@ -476,29 +516,37 @@
         </div>
       </section>
 
-      <!-- 提醒 -->
-      <section id="page-reminders" class="page hidden">
+      <!-- 日程 -->
+      <section id="page-schedule" class="page hidden">
         <div class="card">
           <div class="card-head">
-            <div><h2>提醒</h2><p class="card-sub">到点原样发回所在会话<span id="rem-count"></span></p></div>
+            <div><h2>日程</h2><p class="card-sub">到点原样发回所在会话，不再问模型<span id="sch-count"></span></p></div>
             <div class="head-ops">
-              <select id="rem-status" class="sel small-input" title="按状态筛选提醒">
-                <option value="pending" selected>待触发</option>
-                <option value="all">全部</option>
-                <option value="fired">已触发</option>
-                <option value="cancelled">已取消</option>
-                <option value="expired">已过期</option>
-              </select>
-              <select id="rem-session" class="sel small-input" title="按会话筛选提醒"></select>
-              <button class="btn ghost small" data-action="refresh-reminders">刷新</button>
+              <button class="btn ghost small" data-action="schedule-purge">清理历史</button>
+              <button class="btn ghost small" data-action="schedule-sweep">按保留期清理</button>
+              <button class="btn ghost small" data-action="refresh-schedule">刷新</button>
             </div>
           </div>
-          <div class="table-wrap">
-            <table class="table">
-              <thead><tr><th class="col-narrow">编号</th><th>会话</th><th class="col-sm-hide">提醒谁</th><th>正文</th><th class="col-sm-hide">到期</th><th class="col-sm-hide">倒计时</th><th>状态</th><th class="col-actions"></th></tr></thead>
-              <tbody id="rem-body"><tr><td colspan="8" class="empty">加载中…</td></tr></tbody>
-            </table>
+
+          <div class="tool-row">
+            <select id="sch-status" class="sel small-input" title="按状态筛选日程">
+              <option value="pending" selected>在排</option>
+              <option value="all">全部</option>
+              <option value="fired">已触发</option>
+              <option value="cancelled">已取消</option>
+              <option value="expired">已过期</option>
+            </select>
+            <select id="sch-session" class="sel small-input" title="按会话筛选日程"></select>
+            <input id="sch-q" class="input grow search-input" placeholder="搜正文 / 提醒谁…">
           </div>
+
+          <div id="sch-body" class="sch-body"><div class="empty">加载中…</div></div>
+
+          <div class="sch-foot">
+            <button class="btn ghost small hidden" id="sch-more" data-action="schedule-more">载入更多</button>
+            <span id="sch-more-note" class="muted small"></span>
+          </div>
+          <p class="card-sub" id="sch-tip"></p>
         </div>
       </section>
 
@@ -533,10 +581,11 @@
 <script src="/static/js/memory.js"></script>
 <script src="/static/js/emojis.js"></script>
 <script src="/static/js/settings.js"></script>
+<script src="/static/js/persona.js"></script>
 <script src="/static/js/tools.js"></script>
 <script src="/static/js/permissions.js"></script>
 <script src="/static/js/logs.js"></script>
-<script src="/static/js/reminders.js"></script>
+<script src="/static/js/schedule.js"></script>
 <script src="/static/js/refresh.js"></script>
 <script src="/static/js/events.js"></script>
 </body>

@@ -4,7 +4,8 @@
 async function api(path, options) {
   const opts = Object.assign({ credentials: "same-origin" }, options || {});
   const headers = Object.assign({}, opts.headers || {});
-  if (opts.body && !(opts.body instanceof FormData)) {
+  // FormData / Blob 是原样送出去的（表情图上传走的就是 Blob），不能套 JSON 外壳
+  if (opts.body && !(opts.body instanceof FormData) && !(opts.body instanceof Blob)) {
     headers["Content-Type"] = "application/json";
     if (typeof opts.body !== "string") opts.body = JSON.stringify(opts.body);
   }

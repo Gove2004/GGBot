@@ -13,7 +13,7 @@ async function refreshAll() {
     guarded("permissions", refreshPermissions),
     guarded("tools", refreshTools),
     guarded("logs", refreshLogs),
-    guarded("reminders", refreshReminders),
+    guarded("schedule", refreshSchedule),
   ]);
 }
 

@@ -214,6 +214,7 @@
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
 .emoji-view { display: flex; justify-content: center; padding: 6px 0 14px; }
+.emoji-usage { font-size: 10.5px; color: var(--muted); }
 .emoji-view img {
   max-width: 100%; max-height: 56vh; object-fit: contain;
   border-radius: 12px; background: rgba(8, 13, 20, .5);
@@ -291,6 +292,46 @@ tr:hover .row-actions { opacity: 1; }
 /* ================= 记忆 ================= */
 .memory-tools { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
 .memory-tools #mem-importance { width: 92px; flex: 0 0 auto; }
+.memory-tools #mem-add-subject { width: 130px; flex: 0 0 auto; }
+.memory-tools #mem-add-kind, .memory-tools #mem-kind { width: 118px; flex: 0 0 auto; }
+.memory-tools #mem-add-expires { width: 145px; flex: 0 0 auto; }
+/* 分组末尾的「清掉这一组」行：它是分组的收口，不是一条记忆，所以压掉斑马纹、只留一条上边框 */
+tr.mem-group td {
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, .02);
+  border-top: 1px solid var(--border);
+  text-align: right;
+}
+tr.mem-group td .muted { float: left; margin-top: 5px; }
+
+/* ================= 日程 ================= */
+/* 列表自己滚动：「载入更多」把列表撑长时，底部的统计和清理说明仍留在视野里 */
+.sch-body { overflow: auto; max-height: calc(100vh - 300px); padding: 2px 4px 0; }
+/* 一行一条：左边钟点 + 倒计时，中间正文与元信息，右边操作。
+   用 grid 而不是 table，是因为正文长度不可控——表格会被长正文顶变形，窄屏更是一字一行。 */
+.sch-group { margin-bottom: 14px; }
+.sch-group:last-child { margin-bottom: 0; }
+.sch-group-head { display: flex; align-items: center; gap: 8px; padding: 0 2px 7px; }
+.sch-item {
+  display: grid; grid-template-columns: 104px minmax(0, 1fr) auto; gap: 12px; align-items: center;
+  padding: 10px 12px; margin-bottom: 7px;
+  border: 1px solid var(--border-soft); border-radius: 12px;
+  background: rgba(106, 168, 255, .03);
+  transition: border-color .15s, background .15s;
+}
+.sch-item:hover { border-color: var(--border); background: rgba(106, 168, 255, .06); }
+.sch-item.overdue { border-color: rgba(255, 107, 107, .3); background: rgba(255, 107, 107, .05); }
+.sch-item.history { opacity: .72; }
+.sch-when { min-width: 0; }
+.sch-clock { font-size: 13px; color: var(--text); }
+.sch-gap { margin-top: 2px; font-size: 11px; white-space: nowrap; }
+.sch-main { min-width: 0; }
+.sch-text { overflow-wrap: anywhere; line-height: 1.5; }
+.sch-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 5px; }
+.sch-ops { display: flex; gap: 6px; justify-content: flex-end; opacity: .72; transition: opacity .15s; }
+.sch-item:hover .sch-ops { opacity: 1; }
+.sch-foot { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+.sch-foot .muted { font-variant-numeric: tabular-nums; }
 
 /* ================= 设置 ================= */
 /* 同一行的设置卡等高：卡片高度不齐时，矮卡下面会露出一块页面底色，看起来像缺了一角 */
@@ -310,6 +351,17 @@ tr:hover .row-actions { opacity: 1; }
 }
 .save-bar.dirty { border-color: rgba(244, 183, 64, .4); box-shadow: 0 -10px 30px rgba(0, 0, 0, .25), 0 0 0 3px rgba(244, 183, 64, .08); }
 .save-bar.dirty #cfg-msg { color: var(--amber); }
+
+/* ================= 人设（系统提示词） ================= */
+/* 整页就是一块编辑器，高度按视口给足 */
+.persona-text {
+  width: 100%; min-height: 52vh; margin-top: 6px;
+  font-family: var(--mono); font-size: 13px; line-height: 1.75;
+  white-space: pre-wrap; resize: vertical; tab-size: 2;
+}
+.persona-foot { margin-top: 10px; }
+.persona-foot.warn { color: var(--red); }
+.card-head h2 .badge { margin-left: 8px; vertical-align: 3px; }
 
 /* ================= 日志控制台 ================= */
 .log-wrap {

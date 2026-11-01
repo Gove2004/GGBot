@@ -11,7 +11,7 @@ function startPolling() {
     guarded("stats", refreshStats);
     guarded("sessions", refreshSessions);
     if (state.page === "dash") guarded("recent", refreshDashRecent);
-    if (state.page === "reminders") guarded("reminders", refreshReminders);
+    if (state.page === "schedule") guarded("schedule", refreshSchedule);
   }, 1000));
   state.timers.push(setInterval(() => {
     if (document.hidden || state.page !== "logs") return;

@@ -8,15 +8,15 @@ async function refreshStatus() {
   const conn = qs("#conn-pill");
   conn.className = `pill ${online ? "on" : "off"}`;
   conn.innerHTML = `<i></i>${online ? "在线" : "离线"}`;
-  const pending = s.pending_count || 0;
+  const waiting = s.waiting_count || 0;
   const pend = qs("#pending-pill");
-  pend.className = `pill ${pending > 0 ? "warn" : "ghost"}`;
-  pend.textContent = `${pending} 待处理`;
+  pend.className = `pill ${waiting > 0 ? "warn" : "ghost"}`;
+  pend.textContent = `${waiting} 待处理`;
 
   qs("#side-dot").className = `dot${online ? "" : " off"}`;
   qs("#side-state").textContent = online ? "在线" : "离线";
   qs("#side-online").textContent = s.online_sessions != null ? s.online_sessions : "—";
-  qs("#side-pending").textContent = pending;
+  qs("#side-pending").textContent = waiting;
 
   qs("#dash-hero").classList.toggle("online", online);
   qs("#dash-dot").className = `state-dot ${online ? "on" : "off"}`;
@@ -30,10 +30,10 @@ async function refreshStatus() {
   prog.value = Math.max(0, Math.min(base, base - remain));
   const live = (s.sessions && s.sessions[0]) || null;
   qs("#dash-caption").textContent =
-    `${reasonLabel(live ? live.reason : "idle")} · ${s.online_sessions || 0} 个会话在线 · ${pending} 条积压`;
+    `${reasonLabel(live ? live.reason : "idle")} · ${s.online_sessions || 0} 个会话在线 · ${waiting} 条积压`;
 
   qs("#m-online").textContent = s.online_sessions != null ? s.online_sessions : "—";
-  qs("#m-pending").textContent = s.pending_count != null ? s.pending_count : "—";
+  qs("#m-pending").textContent = s.waiting_count != null ? s.waiting_count : "—";
   renderDashSessions();
 }
 
@@ -41,7 +41,7 @@ async function refreshStats() {
   const d = await api("/api/stats");
   state.stats = d;
   qs("#m-online").textContent = d.online_sessions != null ? d.online_sessions : "—";
-  qs("#m-pending").textContent = d.pending != null ? d.pending : "—";
+  qs("#m-pending").textContent = d.waiting != null ? d.waiting : "—";
   qs("#m-memories").textContent = d.memories != null ? d.memories : "—";
   qs("#m-sessions").textContent = d.sessions != null ? d.sessions : "—";
   qs("#m-today").textContent = d.messages_today != null ? d.messages_today : "—";
@@ -110,7 +110,7 @@ function renderDashSessions() {
     </tr>`;
   let rows = state.sessions.slice(0, 8).map((s) => {
     const l = (s.live && s.live.state) ? s.live : (live[s.id] || { state: "offline", reason: "idle", remaining_sec: 0, idle_sec: null });
-    return row(s.id, l, s.pending_count || 0);
+    return row(s.id, l, s.waiting_count || 0);
   });
   if (!rows.length) {
     rows = ((state.status && state.status.sessions) || []).slice(0, 8).map((l) => row(l.sid, l, null));

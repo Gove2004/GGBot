@@ -81,18 +81,32 @@ class LoginIn(BaseModel):
 
 class MemoryIn(BaseModel):
     content: str
+    kind: str = "profile"
+    subject: str | None = None
     importance: int = 1
     session_id: str | None = None
+    expires_at: str | None = None
 
 
 class MemoryEditIn(BaseModel):
     content: str | None = None
     importance: int | None = None
+    kind: str | None = None
+    subject: str | None = None
+    expires_at: str | None = None
 
 
 class SettingIn(BaseModel):
     path: str
     value: object
+
+
+class SystemPromptIn(BaseModel):
+    prompt: str = ""
+
+
+class EmojiDescIn(BaseModel):
+    desc: str = ""
 
 
 class ToolToggleIn(BaseModel):
@@ -108,6 +122,17 @@ class ActorIn(BaseModel):
 
 class ToolLevelIn(BaseModel):
     level: int
+
+
+class ScheduleEditIn(BaseModel):
+    due_ts: int | None = None
+    text: str | None = None
+
+
+def _day_start_ts(now_ts: int) -> int:
+    """服务器本地「今天零点」的 unix 秒（面板算「今天要发几条」按这个切）。"""
+    lt = time.localtime(now_ts)
+    return int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)))
 
 
 # 允许通过 Web 热更新的配置路径（其余只读，避免误改关键结构）
@@ -159,6 +184,9 @@ RESTART_SETTINGS = [
 ]
 
 SECRET_KEYS = ("api_key", "secret", "appsecret", "token", "auth_code", "password")
+
+# 系统提示词（人设）的字数上限：内置默认约 2.6k 字，留出重写和加设定的余量
+SYSTEM_PROMPT_MAX_CHARS = 20000
 
 
 def mask_secrets(node):
@@ -333,6 +361,10 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
             response.headers.setdefault(k, v)
         if request.url.path.startswith("/api/") or request.url.path == "/":
             response.headers["Cache-Control"] = "no-store"
+        elif request.url.path.startswith("/static/"):
+            # 前端文件是「改了刷新一下就生效」的设计：no-cache 带 ETag 回源校验，
+            # 没改动照样 304，改动了不会拿着旧 JS 跑新页面
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     # 静态前端：/static/css/*.css 与 /static/js/*.js（index.html 按顺序引用，加载顺序 = 原来单文件的行序）
@@ -440,6 +472,8 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         return {
             "session": row,
             "messages": storage.get_recent_messages(sid, min(max(limit, 1), 500)),
+            # 出站回执：被动回复有没有被平台拒、什么时候降成了主动，看这一份就够，不用翻日志
+            "sends": storage.recent_sends(sid, 10),
         }
 
     @app.delete("/api/sessions/{sid}/context")
@@ -473,7 +507,8 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         )
 
     # ---------- 表情包 ----------
-    # 素材目录是唯一真相，和 emoji_list / send_emoji 读同一份索引，所以这里只浏览、不增删。
+    # 素材目录是唯一真相，工具与面板读写同一份索引/向量/使用统计；这里只是开了第二条入口，
+    # 写入全部走 EmojiLibrary（去重、上限、向量重算都在它身上，面板不另存一套状态）。
     # 一个统一库：不分「内置/收藏」，图在哪个子目录只体现在 file 里。
 
     def _emoji_lib():
@@ -481,24 +516,82 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         tool = ex.registry.tools.get("send_emoji") if ex is not None else None
         return getattr(tool, "lib", None)
 
+    def _emoji_lib_or_503():
+        lib = _emoji_lib()
+        if lib is None:
+            raise HTTPException(503, "表情工具未启用（工具页里打开 send_emoji 才能管理素材）")
+        return lib
+
     @app.get("/api/emojis")
-    async def emojis(request: Request, x_token: str | None = Header(default=None)):
+    async def emojis(
+        request: Request,
+        force: int = 0,
+        x_token: str | None = Header(default=None),
+    ):
         _auth(request, x_token)
         lib = _emoji_lib()
         if lib is None:
-            return {"items": []}
-        rows = await lib.items()
+            return {"items": [], "mode": "none", "max_stickers": 0, "max_image_bytes": 0}
+        # force=1：面板「刷新」按钮要立刻看到刚丢进目录的图；平时用扫目录缓存
+        rows = await lib.rows(force=bool(force))
         return {
+            "mode": lib.matcher.mode,
+            "max_stickers": int(lib.config.get("max_stickers", 0) or 0),
+            "max_image_bytes": lib.max_image_bytes,
             "items": [
                 {
                     "file": r["file"],
                     "desc": r["desc"],
                     "added_at": r["added_at"],
+                    "use_count": r["use_count"],
+                    "last_used_at": r["last_used_at"],
+                    "has_vec": r["vec"] is not None,
                     "url": f"/emoji/{quote(r['file'])}",
                 }
                 for r in rows
-            ]
+            ],
         }
+
+    @app.post("/api/emojis/import")
+    async def emoji_import(
+        request: Request,
+        name: str = Query(default=""),
+        desc: str = Query(default=""),
+        x_token: str | None = Header(default=None),
+    ):
+        _auth(request, x_token)
+        lib = _emoji_lib_or_503()
+        data = await request.body()
+        out = await lib.import_image(name, data, desc)
+        if not out.get("ok"):
+            raise HTTPException(400, out.get("error") or "导入失败")
+        return out
+
+    @app.put("/emoji/{rel:path}")
+    async def emoji_desc(
+        rel: str,
+        body: EmojiDescIn,
+        request: Request,
+        x_token: str | None = Header(default=None),
+    ):
+        _auth(request, x_token)
+        lib = _emoji_lib_or_503()
+        out = await lib.set_desc(rel, body.desc or "")
+        if out is None:
+            raise HTTPException(404, "素材不在库里")
+        if not out.get("ok"):
+            raise HTTPException(400, out.get("error") or "描述没存下")
+        return out
+
+    @app.delete("/emoji/{rel:path}")
+    async def emoji_delete(
+        rel: str, request: Request, x_token: str | None = Header(default=None)
+    ):
+        _auth(request, x_token)
+        lib = _emoji_lib_or_503()
+        if not await lib.remove(rel):
+            raise HTTPException(404, "素材不在库里")
+        return {"ok": True, "removed": rel}
 
     # 缩略图不放 /api 下：一屏几十张图会被 API 的 IP 限流（240 次/10s）误伤
     @app.get("/emoji/{rel:path}", response_class=FileResponse)
@@ -515,24 +608,53 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
             headers={"Cache-Control": "private, max-age=3600", "Content-Disposition": "inline"},
         )
 
-    # ---------- 提醒 ----------
-    # 表里的那份是唯一真相（巡检循环也读它），所以这里只提供查看与取消，不另存一份状态。
+    # ---------- 日程（提醒） ----------
+    # 表里的那份是唯一真相（巡检循环也读它），所以面板给「看 + 改 + 删 + 清理」，
+    # 刻意不给新建：面板排日程要的是另一套时间输入，而 when/repeat 的解析只该有一份实现。
+
+    def _schedule_or_none():
+        """日程的操作面；工具没挂载就返回 None（配置读的是 tool/schedule/config.json）。"""
+        rt = getattr(getattr(presence, "executor", None), "rt", None)
+        if rt is None:
+            return None
+        from tool.schedule.remind import Reminders
+
+        return Reminders(rt)
+
+    def _schedule():
+        rem = _schedule_or_none()
+        if rem is None:
+            raise HTTPException(503, "日程工具未挂载，暂时改不了日程")
+        return rem
 
     @app.get("/api/reminders")
     async def reminders(
         request: Request,
         status: str = "pending",
         session_id: str | None = None,
+        q: str | None = None,
         limit: int = 200,
+        offset: int = 0,
         x_token: str | None = Header(default=None),
     ):
         _auth(request, x_token)
+        from tool.schedule._rule import rule_label as _rule_label
+
         st = None if status in ("", "all") else status
-        items = await asyncio.to_thread(
-            storage.list_reminders, session_id or None, st, min(max(limit, 1), 500)
-        )
-        pending = await asyncio.to_thread(storage.list_reminders, None, "pending", 500)
-        return {"items": items, "pending_total": len(pending)}
+        n = min(max(limit, 1), 500)
+        rows = await asyncio.to_thread(
+            storage.list_reminders, session_id or None, st, n, max(offset, 0), q or None)
+        total = storage.count_reminders(session_id or None, st, q or None)
+        now = int(time.time())
+        stats = await asyncio.to_thread(storage.reminder_stats, now, _day_start_ts(now))
+        for r in rows:
+            r["rule_label"] = _rule_label(r.get("rule") or "")
+        rem = _schedule_or_none()
+        cfg = rem.config if rem else {}
+        return {"items": rows, "total": total, "offset": max(offset, 0), "stats": stats,
+                "limits": {k: cfg.get(k) for k in
+                           ("max_pending", "max_days", "max_text_chars",
+                            "keep_history_days", "max_rows", "miss_grace_sec")}}
 
     @app.post("/api/reminders/{rid}/cancel")
     async def cancel_reminder(
@@ -550,6 +672,82 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         await asyncio.to_thread(storage.finish_reminder, rid, "cancelled")
         return {"ok": True}
 
+    @app.put("/api/reminders/{rid}")
+    async def edit_reminder(
+        rid: int,
+        body: ScheduleEditIn,
+        request: Request,
+        x_token: str | None = Header(default=None),
+    ):
+        """改时间/正文：只有还在排的行改得了，改完仍是 pending（周期项改的是下一场）。"""
+        _auth(request, x_token)
+        text = None if body.text is None else " ".join(str(body.text).split())
+        if body.due_ts is None and text is None:
+            raise HTTPException(status_code=400, detail="没有需要修改的字段")
+        cfg = _schedule().config
+        now = int(time.time())
+        if text is not None:
+            cap = max(10, int(cfg.get("max_text_chars", 200) or 200))
+            if not text:
+                raise HTTPException(status_code=400, detail="正文不能为空")
+            if len(text) > cap:
+                raise HTTPException(status_code=400, detail=f"正文太长（最多 {cap} 字）")
+        if body.due_ts is not None:
+            due = int(body.due_ts)
+            if due <= now:
+                raise HTTPException(status_code=400, detail="新时间得是将来——改到过去等于现在就发")
+            max_days = max(1, int(cfg.get("max_days", 30) or 30))
+            if due > now + max_days * 86400:
+                raise HTTPException(status_code=400, detail=f"最远只能约 {max_days} 天内的第一次触发")
+        row = await asyncio.to_thread(storage.get_reminder, rid)
+        if not row:
+            raise HTTPException(status_code=404, detail="reminder not found")
+        if row["status"] != "pending":
+            raise HTTPException(status_code=400, detail=f"#{rid} 已经结束了（{row['status']}），改不了")
+        changed = await asyncio.to_thread(storage.update_reminder, rid, body.due_ts, text)
+        if not changed:
+            raise HTTPException(status_code=409, detail=f"#{rid} 刚好被巡检触发了，刷新看看")
+        return {"ok": True}
+
+    @app.delete("/api/reminders/{rid}")
+    async def delete_reminder(
+        rid: int,
+        request: Request,
+        x_token: str | None = Header(default=None),
+    ):
+        """物理删一行：取消才是"不再触发"，删除只是把这条记录从表里拿掉。"""
+        _auth(request, x_token)
+        if not await asyncio.to_thread(storage.delete_reminder, rid):
+            raise HTTPException(status_code=404, detail="reminder not found")
+        return {"ok": True}
+
+    @app.delete("/api/reminders")
+    async def purge_reminders(
+        request: Request,
+        status: str | None = None,
+        session_id: str | None = None,
+        before_days: int | None = None,
+        x_token: str | None = Header(default=None),
+    ):
+        """批量清历史：只碰终态行。条件全空时什么都不删（待触发的要退场得走取消）。"""
+        _auth(request, x_token)
+        if status == "pending":
+            raise HTTPException(status_code=400, detail="待触发的行不能批量删，请先取消")
+        if not any((status, session_id, before_days)):
+            raise HTTPException(status_code=400, detail="需要 status / session_id / before_days 至少一个条件")
+        before_ts = None
+        if before_days:
+            before_ts = int(time.time()) - max(0, int(before_days)) * 86400
+        removed = await asyncio.to_thread(
+            storage.purge_reminders, session_id or None, status or None, before_ts)
+        return {"ok": True, "removed": removed}
+
+    @app.post("/api/reminders/sweep")
+    async def sweep_reminders(request: Request, x_token: str | None = Header(default=None)):
+        """按保留天数与总行数上限清历史（pending 不动），和巡检循环里的定时清理同一条路。"""
+        _auth(request, x_token)
+        return await asyncio.to_thread(_schedule().sweep)
+
     # ---------- 记忆 ----------
 
     @app.get("/api/memories")
@@ -558,14 +756,21 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         limit: int = 50,
         offset: int = 0,
         session_id: str | None = None,
+        subject: str | None = None,
+        kind: str | None = None,
         x_token: str | None = Header(default=None),
     ):
         _auth(request, x_token)
         sid = session_id or None
         n = min(max(limit, 1), 500)
+        rows = await asyncio.to_thread(storage.list_memories, sid, n, max(offset, 0), subject, kind)
+        cfg = memory.m
         return {
-            "items": storage.list_memories(sid, n, max(offset, 0)),
-            "total": storage.count_memories(sid),
+            "items": await asyncio.to_thread(memory.panel_rows, rows),
+            "total": storage.count_memories(sid, subject, kind),
+            "limits": {"max_memories": cfg["max_memories"],
+                       "max_per_subject": cfg["max_per_subject"],
+                       "forget_after_days": cfg["forget_after_days"]},
         }
 
     @app.get("/api/memories/search")
@@ -577,9 +782,10 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         x_token: str | None = Header(default=None),
     ):
         _auth(request, x_token)
-        return await asyncio.to_thread(
+        hits = await asyncio.to_thread(
             memory.search, q, min(max(k, 1), 50), session_id or None, None
         )
+        return await asyncio.to_thread(memory.panel_rows, hits)
 
     @app.post("/api/memories")
     async def memory_add(
@@ -591,10 +797,16 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         content = body.content.strip()
         if not content:
             raise HTTPException(status_code=400, detail="content 不能为空")
-        mid = await asyncio.to_thread(
-            memory.add, content, "fact", max(1, min(5, body.importance)), body.session_id or None
-        )
-        return {"ok": True, "memory_id": mid}
+        out = await asyncio.to_thread(memory.commit, [{
+            "content": content,
+            "kind": body.kind if body.kind in ("profile", "event") else "profile",
+            "subject": body.subject or "",
+            "importance": max(1, min(5, body.importance)),
+            "session_id": body.session_id or None,
+            "expires_at": body.expires_at or None,
+        }])
+        return {"ok": True, "written": out["written"], "updated": out["updated"],
+                "dropped": out["dropped"], "retired": out["retired"]}
 
     @app.put("/api/memories/{memory_id}")
     async def memory_edit(
@@ -604,14 +816,20 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         x_token: str | None = Header(default=None),
     ):
         _auth(request, x_token)
-        if body.content is None and body.importance is None:
+        if not any(v is not None for v in (body.content, body.importance,
+                                           body.kind, body.subject, body.expires_at)):
             raise HTTPException(status_code=400, detail="没有需要修改的字段")
+        if body.kind is not None and body.kind not in ("profile", "event"):
+            raise HTTPException(status_code=400, detail="kind 只能是 profile 或 event")
         try:
             ok = await asyncio.to_thread(
                 memory.update,
                 memory_id,
                 body.content,
                 None if body.importance is None else max(1, min(5, body.importance)),
+                body.subject,
+                body.kind,
+                body.expires_at,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
@@ -619,10 +837,26 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
             raise HTTPException(status_code=404, detail="memory not found")
         return {"ok": True}
 
-    @app.post("/api/memories/tidy")
-    async def memory_tidy(request: Request, x_token: str | None = Header(default=None)):
+    @app.post("/api/memories/sweep")
+    async def memory_sweep(request: Request, x_token: str | None = Header(default=None)):
         _auth(request, x_token)
-        removed = await asyncio.to_thread(memory.tidy)
+        return await asyncio.to_thread(memory.sweep)
+
+    @app.delete("/api/memories")
+    async def memory_delete_group(
+        request: Request,
+        subject: str | None = None,
+        kind: str | None = None,
+        session_id: str | None = None,
+        x_token: str | None = Header(default=None),
+    ):
+        """整组清理：按「谁 / 哪类 / 哪个会话」删。三个条件全空时什么都不删（清空整库走 reset）。"""
+        _auth(request, x_token)
+        if not any((subject, kind, session_id)):
+            raise HTTPException(status_code=400, detail="需要 subject / kind / session_id 至少一个条件")
+        if kind is not None and kind not in ("profile", "event"):
+            raise HTTPException(status_code=400, detail="kind 只能是 profile 或 event")
+        removed = storage.delete_memories_by(session_id or None, subject or None, kind or None)
         return {"ok": True, "removed": removed}
 
     @app.delete("/api/memories/{memory_id}")
@@ -769,6 +1003,45 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
             "rejected": rejected,
             "config": mask_secrets(cfg.data),
         }
+
+    # ---------- 系统提示词（人设） ----------
+
+    def _system_prompt_payload() -> dict:
+        from ggbot.core.presence import SYSTEM_TEMPLATE
+
+        custom = str(cfg.llm.get("system_prompt") or "")
+        return {
+            "custom": custom,
+            "default": SYSTEM_TEMPLATE,
+            # 面板编辑框里显示的就是这一份：自定义优先，否则内置默认
+            "effective": custom.strip() or SYSTEM_TEMPLATE,
+            "is_custom": bool(custom.strip()),
+            "max_chars": SYSTEM_PROMPT_MAX_CHARS,
+        }
+
+    @app.get("/api/system-prompt")
+    async def get_system_prompt(request: Request, x_token: str | None = Header(default=None)):
+        _auth(request, x_token)
+        return _system_prompt_payload()
+
+    @app.post("/api/system-prompt")
+    async def update_system_prompt(
+        body: SystemPromptIn,
+        request: Request,
+        x_token: str | None = Header(default=None),
+    ):
+        _auth(request, x_token)
+        text = body.prompt or ""
+        if len(text) > SYSTEM_PROMPT_MAX_CHARS:
+            raise HTTPException(
+                400, f"系统提示词最长 {SYSTEM_PROMPT_MAX_CHARS} 字，当前 {len(text)} 字"
+            )
+        if not cfg.set_by_path("llm.system_prompt", text):
+            raise HTTPException(500, "配置里没有 llm 段，存不下系统提示词")
+        cfg.save()
+        logger.info("Web 系统提示词: %s（%d 字）",
+                    "自定义" if text.strip() else "回到内置默认", len(text))
+        return _system_prompt_payload()
 
     # ---------- 日志查看 ----------
 

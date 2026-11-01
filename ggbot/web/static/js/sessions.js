@@ -38,7 +38,7 @@ function renderSessions() {
       <div class="session-preview">${esc(preview)}</div>
       <div class="session-meta">
         <span>${s.message_count || 0} 条</span>
-        <span class="${s.pending_count ? "warn" : ""}">${s.pending_count || 0} 待处理</span>
+        <span class="${s.waiting_count ? "warn" : ""}">${s.waiting_count || 0} 待处理</span>
         <span>${esc(fmtTs(s.last_ts || s.updated_at))}</span>
       </div>
     </button>`;
@@ -51,7 +51,7 @@ function populateSessionSelects() {
   const opts = state.sessions.map((s) =>
     `<option value="${esc(s.id)}">${esc(s.label || labelFromKey(s.id))} · ${esc(String(s.id).split(":")[1] || "").slice(0, 8)}</option>`
   ).join("");
-  [["#mem-session", "全部作用域"], ["#rem-session", "全部会话"]].forEach(([sel, label]) => {
+  [["#mem-session", "全部作用域"], ["#sch-session", "全部会话"]].forEach(([sel, label]) => {
     const el = qs(sel);
     if (!el) return;
     const cur = el.value;
@@ -67,6 +67,24 @@ function detailEmptyHTML() {
   </div>`;
 }
 
+/* 一条用户消息的三种待人看的结果；已回过的和助手自己的话不标 */
+const REPLY_FLAG = { waiting: "待处理", failed: "回复失败", skipped: "没接话" };
+const SEND_VIA = { passive: "被动回复", proactive: "主动发送", fallback: "降级主动" };
+
+function msgFlag(m) {
+  if (m.role === "assistant") return "";
+  const label = REPLY_FLAG[m.reply_state];
+  return label ? ` · ${esc(label)}` : "";
+}
+
+function sendList(items) {
+  if (!items || !items.length) return '<div class="empty">这个会话还没有发送记录</div>';
+  return items.map((s) => `<div class="mini-item"><i class="mini-role"></i><div class="mini-main">
+      <div class="mini-meta">${esc(SEND_VIA[s.via] || s.via || "发送")} · ${esc(s.kind || "")} · ${esc(fmtTs(s.ts))}</div>
+      <div class="mini-text">${s.ok ? "已送达" : `被拒：${esc(s.detail || "未知原因")}`}</div>
+    </div></div>`).join("");
+}
+
 async function openSessionDetail(sid) {
   if (!sid) return;
   state.selectedSession = sid;
@@ -80,8 +98,7 @@ async function openSessionDetail(sid) {
     const s = d.session || {};
     const chats = (d.messages || []).map((m) => {
       const role = m.role === "assistant" ? "assistant" : "user";
-      const pending = m.status === "pending" ? " · 待处理" : "";
-      return `<div class="chat ${role}"><div class="chat-meta">${senderCell(m)} · ${esc(fmtTs(m.ts))}${pending}</div>${esc(m.content || "（无文本）")}</div>`;
+      return `<div class="chat ${role}"><div class="chat-meta">${senderCell(m)} · ${esc(fmtTs(m.ts))}${msgFlag(m)}</div>${esc(m.content || "（无文本）")}</div>`;
     }).join("");
     const liveS = ((state.status && state.status.sessions) || []).find((x) => x.sid === sid);
     const stateCell = liveS
@@ -99,12 +116,13 @@ async function openSessionDetail(sid) {
       </div>
       <div class="detail-stats">
         <span class="stat-chip">消息 <b>${s.message_count || 0}</b></span>
-        <span class="stat-chip">待处理 <b>${s.pending_count || 0}</b></span>
+        <span class="stat-chip">待处理 <b>${s.waiting_count || 0}</b></span>
         <span class="stat-chip">最近发言 <b>${esc(fmtTs(s.last_ts || s.updated_at))}</b></span>
         <span class="stat-chip sess-state">作息 ${stateCell}</span>
       </div>
       <div class="detail-scroll">
         <div class="modal-section"><h3>最近消息</h3><div class="chat-list">${chats || '<div class="empty">暂无消息</div>'}</div></div>
+        <div class="modal-section"><h3>最近出站</h3><div class="mini-list">${sendList(d.sends)}</div></div>
       </div>
     </div>`;
   } catch (err) {
