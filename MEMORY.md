@@ -361,6 +361,13 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   `rsync --delete` 不会碰被排除的文件，代码早就没有的目录壳会一年年留在服务器上（本次就查到 `tool/chat`/`tool/knowledge`/`tool/send_text`）。
   改名/换分类目录后要顺手 SSH 核对 `ls tool/` 与代码是否一致，多出来的目录先确认配置与新路径逐键相同、再移进 `temp/_cleanup_<日期>/` 隔离（别直接 `rm`，temp 有 TTL 会自己清）。
   服务器进程统一交给 systemd（`deploy/install_service.sh`），装完要删掉 crontab 的 `@reboot start.sh` 行，否则抢单实例锁。
+- **换大版本要"从零起"时，清数据这一步永远是手工的**：排除清单保住的正是库、配置与素材，所以 push 不会替你清空。
+  → v3 的数据模型（`messages.read_state/reply_state`、`reply_anchors`、`sends`）只由 `SCHEMA` 新建，代码里没有任何 v2 迁移，
+  旧库顶上新代码只会缺列报错，所以线上 v2 的库必须删掉重起。
+  顺序：`systemctl stop` 再动库（SQLite 边写边打包得到一份坏快照）→ 整目录 tar 到**项目目录之外**（`--delete` 与 temp 的 TTL 都碰不到它，
+  `chmod 600`：里面有密钥）→ 删 `db/*.db*`、`db/config.json`、`temp/`、素材目录与被删工具集的 `config.json` →
+  只把初始化配置推回去（`db/config.json` + 各 `tool/*/config.json`；表情素材、记忆、日志这些运行产物不推）→
+  `systemctl enable` 恢复开机自启 → push 走 CI。核对起版看 `GGBot v3.0 启动`、`工具就绪` 的分类计数、空表的新库。
 - **部署脚本按"一件事只有一份"重排过**：unit 渲染、面板探活口径、"哪个进程才是本项目的机器人"三件事以前在
   `install_service.sh` 与 `deploy_server.sh` 里各写一遍，改一处就漏一处，现在集中在 `deploy/service.sh`（被两边 source，不单独执行）。
   → `ggbot.service` 从此是**模板**：里面写死的 `/root/GGBot` 装机/部署时换成脚本自己 `cd` 出来的项目根。

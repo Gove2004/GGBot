@@ -122,6 +122,8 @@ unit 里有 `LimitNOFILE=65535`：systemd 拉起的服务 soft nofile 默认只�
 
 **公网访问**：`web.host` 保持 `127.0.0.1` 时用 SSH 隧道看面板最省事；确实要公网直连，改 `web.host=0.0.0.0`、`web.token` 换强随机串，前面加 HTTPS 反向代理并设 `web.cookie_secure=true`（需要按 `X-Forwarded-For` 限流再置 `web.trust_proxy=true`）。QQ 侧只要求机器人能连上开放平台的 WebSocket，服务器不需要公网入站端口。
 
+**换大版本、清空线上数据（"从零部署"）**：同步的排除清单既不会把运行产物推上去，也不会替你删掉它们，所以清空只能手工做（新版数据模型不做旧版迁移，旧库顶上新代码只会缺列报错）。顺序：`systemctl stop ggbot` → 整目录快照到**项目目录之外**（`tar czf /root/ggbot_backup_$(date +%Y%m%d-%H%M%S).tar.gz -C /root GGBot && chmod 600 ...`，里面有密钥，放在项目目录外才躲得过 `--delete` 与 temp 的 TTL）→ 删 `db/*.db*`、`db/config.json`、`db/.bot.lock`、`temp/`、`tool/media/emoji/`、`tool/media/audio/`、`tool/media/generate/` 以及各 `tool/*/config.json` 与已删工具留下的目录壳 → 只把初始化配置推回去（`db/config.json` 与需要的 `tool/*/config.json`；表情素材、记忆、日志这些运行产物不推，表情库首次扫描自动建索引）→ `systemctl enable ggbot` 恢复开机自启 → push 触发 CI。起来以后核对：日志第一条是 `GGBot v3.0 启动`，`工具就绪` 的各分类计数与代码一致，`db/ggbot.db` 是刚建出来的空表，面板 `/api/*` 全 200。
+
 > 密钥不进仓库、不进日志、不进本文：SSH 私钥只在 GitHub Secrets 与服务器上，服务器地址与凭据也不要写进任何被提交的文件。
 
 ## 日志与 Web 运维
