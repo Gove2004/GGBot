@@ -56,7 +56,9 @@ class ToolExecutor:
 
     def __init__(self, cfg, storage, memory, bot):
         self.rt = ToolRuntime(cfg, storage, memory, bot)
-        self.outbound = Outbound(cfg, storage, bot)
+        # 一份出站账本：回合内回复、媒体工具、回合外发言共用同一个频控闸门与锚点序号
+        self.outbox = self.rt.outbox
+        self.outbound = Outbound(cfg, storage, bot, outbox=self.outbox)
         self.registry = ToolRegistry(self.rt)
         counts: dict[str, int] = {}
         for t in self.registry.tools.values():

@@ -22,6 +22,7 @@ import botpy
 from botpy.http import Route
 from botpy.message import C2CMessage, GroupMessage
 
+from ggbot.core.outbox import resolve_media_source
 from ggbot.core.runtime_stats import runtime
 from ggbot.llm.vision import VisionClient
 from ggbot.util.logging_setup import clip
@@ -36,7 +37,6 @@ AT_RE = re.compile(r"<@([0-9A-Fa-f]{32})>")
 AT_TAG_RE = re.compile(r'<qqbot-at-user\s+id="[^"]*"\s*/>')
 # QQ 表情：<faceType=1,faceId="427",ext="<base64>">，ext 内含表情文字
 FACE_RE = re.compile(r'<faceType=\d+,faceId="[^"]*"(?:,ext="([^"]*)")?\s*/?>')
-MAX_INLINE_UPLOAD = 10 * 1024 * 1024
 
 
 def _face_text(match: re.Match) -> str:
@@ -215,9 +215,8 @@ class QQBot(botpy.Client):
     async def on_group_message_create(self, message: GroupMessage) -> None:
         """群全量消息（私域权限，所有普通消息；含@别人的消息，不含对本机器人的@）。
 
-        is_at 判定：全量消息的 mentions / content <@openid> 识别是否@本机器人——
-        优先精确匹配 config.qq.bot_openid；未学到时从第一条含 <@> 的消息自动学习
-        （测试群机器人唯一），之后切回精确匹配。"""
+        is_at 判定：全量消息的 mentions / content <@openid> 与 config.qq.bot_openid 精确比对；
+        认不出来也不要紧——随后送达的 GROUP_AT_MESSAGE_CREATE 会把这行的 @ 标记补上。"""
         me = self._mentioned_self(message)
         sid = session_label(f"group:{message.group_openid}")
         # 全量事件（GROUP_MESSAGE_CREATE）：消息 id 官方文档写明可被动回复，跟着一起传的 event_id
@@ -231,28 +230,48 @@ class QQBot(botpy.Client):
         日志只在去重后打，因此 @事件与全量事件重复推送同一条消息时不会刷两行。
         内存的 _seen 扛不过重启（每次发版都会重启一次），所以未命中时再查一次库：
         重启窗口里平台重推同一条，库里已有记录就当作没看见，不再回第二遍。
+        唯一的例外是 @ 事件比全量事件晚到：那一条没认出是被@本机器人，@ 标记要补回库里那行，
+        否则离线时它只躺在积压里，@ 也唤不醒机器人。
         """
         msg_id = getattr(message, "id", None)
-        if not msg_id or msg_id in self._seen:
+        if not msg_id:
             logger.debug("重复/空消息忽略 id=%s", msg_id)
             return
-        if self.storage is not None and self.storage.message_exists(msg_id):
-            logger.debug("重复/空消息忽略 id=%s（库中已有，重启后重推）", msg_id)
+        in_memory = msg_id in self._seen
+        first = not in_memory and not self._in_db(msg_id)
+        if first:
+            self._seen.add(msg_id)
+            if len(self._seen) > self._max_seen:
+                self._seen = set(list(self._seen)[-self._max_seen // 2 :])
+            logger.info("收到 [%s] @=%d: %s", self._who(message), 1 if is_at else 0,
+                        clip(self._message_text(message), 80), extra={"session": sid})
+        elif is_at and self._upgrade_at(message):
+            logger.debug("@ 事件晚到，补 @ 标记 id=%s", msg_id)
+        else:
+            logger.debug("重复/空消息忽略 id=%s%s", msg_id,
+                         "" if in_memory else "（库中已有，重启后重推）")
             return
-        self._seen.add(msg_id)
-        logger.info("收到 [%s] @=%d: %s", self._who(message), 1 if is_at else 0,
-                    clip(self._message_text(message), 80), extra={"session": sid})
-        if len(self._seen) > self._max_seen:
-            self._seen = set(list(self._seen)[-self._max_seen // 2 :])
         inbound = await self._normalize(message, is_at=is_at, passive_ok=passive_ok,
                                        use_event_id=use_event_id)
         if inbound is None:
             logger.warning("消息归一化失败，跳过 id=%s", msg_id)
             return
+        if not first:
+            inbound["already_stored"] = True  # 正文那行已在库里，presence 只补标记、不再插一条
         if self.presence:
             await self.presence.handle_message(inbound)
         else:
             logger.warning("presence 未注入，消息跳过 id=%s", msg_id)
+
+    def _in_db(self, msg_id: str) -> bool:
+        return self.storage is not None and self.storage.message_exists(msg_id)
+
+    def _upgrade_at(self, message) -> bool:
+        """把已入库那行的 @ 标记补上；真的改过才返回 True（本来就是 @ = 纯重复推送）。"""
+        if self.storage is None:
+            return False
+        return self.storage.mark_message_at(getattr(message, "id", ""),
+                                            getattr(message, "event_id", None))
 
     # ---------- 归一化 ----------
 
@@ -364,33 +383,24 @@ class QQBot(botpy.Client):
         return content
 
     def _mentioned_self(self, message) -> bool:
-        """全量消息识别"被@本机器人"。
+        """全量消息识别"被@本机器人"：只跟 config.qq.bot_openid 精确比。
 
-        QQ 群消息 @ 人/机器人时 content 内嵌 <@openid>（32 位 hex），mentions 亦可能
-        携带被@对象。优先精确匹配 config.qq.bot_openid；未学到（平台未订阅
-        GROUP_AT_MESSAGE_CREATE）时，从第一条含 <@> 的群消息自动学习 bot_openid
-        （测试群机器人唯一，@任何对象即视为@本机），写入 config 后切回精确匹配。
+        QQ 群消息 @ 人/机器人时 content 内嵌 <@openid>（32 位 hex），mentions 亦可能携带被@对象。
+        这里不从全量消息"猜"本机器人是谁：一条 @ 别人的消息里带的也是 openid，
+        猜错一次就把别人的 id 当成自己，之后真的@反而永远认不出来。
+        bot_openid 只由 GROUP_AT_MESSAGE_CREATE 学（见 _learn_bot_openid），或手工写在 config。
         """
         own = str((self.cfg.qq or {}).get("bot_openid") or "").strip().lower()
-        content = (message.content or "") or ""
+        if not own:
+            return False
         ids = set()
         for m in getattr(message, "mentions", None) or []:
             mid = str(getattr(m, "id", "") or "").strip().lower()
             if mid:
                 ids.add(mid)
-        for match in AT_RE.findall(content):
+        for match in AT_RE.findall(message.content or ""):
             ids.add(match.lower())
-        if not ids:
-            return False
-        if own:
-            return own in ids
-        if AT_RE.search(content):
-            for mid in ids:
-                self.cfg.set_by_path("bot_openid", mid)
-                self.cfg.save()
-                logger.info("已学习本机器人 openid=%s（群消息 <@> 识别，写入 config bot_openid）", oid8(mid))
-                return True
-        return False
+        return own in ids
 
     def _learn_bot_openid(self, message) -> None:
         """从第一条 GROUP_AT_MESSAGE_CREATE 事件学习本机器人 openid（mentions[0]=自己），
@@ -544,53 +554,13 @@ class QQBot(botpy.Client):
     ) -> tuple[bool, str]:
         """富媒体上传并发送。file_type: 1 图片 / 2 视频 / 3 语音(silk) / 4 文件。
 
-        source 支持公网 URL，或 temp/tool 下的本地文件。本地文件直接以 base64
-        file_data 上传（QQ 官方接口支持，无需公网地址）；超过 10MB 的文件才退回
-        storage.public_base_url 签名链接，避免请求体过大。
+        「这条 source 到底是什么、允不允许发、走直传还是签名链接」的判定在 ggbot.core.outbox，
+        这里只管按它给的结论去调 QQ 的上传与发送接口。
         返回 (ok, detail)，detail 只含安全的展示名，不含签名 URL。
         """
-        local: Path | None = None
-        url: str | None = None
-        display = "公网素材"
-        if source.startswith(("http://", "https://")):
-            url = source
-        else:
-            p = Path(source).expanduser()
-            if not p.is_absolute():
-                p = self.cfg.temp_dir / p
-            p = p.resolve()
-            # 本地媒体只允许 temp/ 与 tool/：否则低等级发送者可用 send_image 读取任意本机文件
-            temp_root = Path(self.cfg.temp_dir).resolve()
-            tool_raw = getattr(self.cfg, "tool_dir", None)
-            tool_root = Path(tool_raw).resolve() if tool_raw else None
-            inside = None
-            for root in (temp_root, tool_root):
-                if root is not None and (p == root or root in p.parents):
-                    inside = root
-                    break
-            if inside is None:
-                return False, "本地媒体只允许 temp/ 与 tool/media/emoji/ 素材"
-            rel = p.relative_to(inside)
-            if inside == temp_root and rel.parts[:1] == ("logs",):
-                return False, "本地媒体不能发送日志文件"
-            if inside == tool_root:
-                if rel.parts[:2] != ("media", "emoji"):
-                    return False, "本地媒体只允许 temp/ 与 tool/media/emoji/ 素材"
-                if p.name == "config.json" or p.suffix.lower() in {".key", ".pem"}:
-                    return False, "本地媒体不能发送配置/密钥文件"
-            if not p.is_file():
-                return False, f"本地文件不存在: {Path(source).name}"
-            local, display = p, p.name
-            if p.stat().st_size > MAX_INLINE_UPLOAD:
-                from ggbot.util.media import public_media_url
-
-                local = None
-                url = public_media_url(self.cfg, p)
-                if not url:
-                    return False, (
-                        f"文件超过 {MAX_INLINE_UPLOAD // 1048576}MB，"
-                        "需要配置 storage.public_base_url 才能发送"
-                    )
+        local, url, display, error = resolve_media_source(self.cfg, source)
+        if error:
+            return False, error
         try:
             media = await self._upload_media(target, scene, file_type, url=url,
                                              local=local, name=display)

@@ -26,10 +26,11 @@ logger = logging.getLogger("ggbot.outbound")
 class Outbound:
     """把一段正文发到当前会话：拆行、@ 与引用还原、入库、降级主动发送。"""
 
-    def __init__(self, cfg, storage, bot):
+    def __init__(self, cfg, storage, bot, outbox):
         self.cfg = cfg
         self.storage = storage
         self.bot = bot
+        self.outbox = outbox  # 出站账本：每一条发送都记一行 sends，排查不用翻日志
 
     async def send(self, ctx: dict, content) -> dict:
         content = to_str(content).strip()
@@ -64,30 +65,45 @@ class Outbound:
         gap = max(0.0, float(reply_cfg.get("segment_gap_sec", 2) or 0))
         for i, seg in enumerate(segments):
             wire = self._apply_mentions(seg, ctx) if is_group else seg
-            seq = ctx.get("msg_seq", 1)
-            kwargs = {"message_reference": reference} if reference else {}
-            try:
-                await self.bot.send_text(
-                    ctx["target"], wire, ctx["scene"], ctx.get("msg_id"), seq,
-                    ctx.get("event_id"), display=seg, **kwargs
-                )
-            except Exception as e:  # noqa: BLE001
-                if not ctx.get("msg_id"):
-                    raise
-                # 被动回复失败（msg_id 过期等）→ 降级主动发送，确保送达；
-                # 主动通道不带引用，避免已失效的消息 ID 再触发一次失败
-                logger.warning("被动回复失败，降级主动发送: %s", e, extra=extra)
-                await self.bot.send_text(ctx["target"], wire, ctx["scene"], None, seq,
-                                         display=seg)
-            ctx["msg_seq"] = seq + 1
+            await self._send_one(ctx, seg, wire, reference, extra)
+            ctx["msg_seq"] = int(ctx.get("msg_seq") or 1) + 1
             ctx["sent_any"] = True
             logger.info("发送: %s", clip(seg, 200), extra=extra)
             if sid:
-                self.storage.add_message(sid, "assistant", "bot", seg, status="sent")
+                self.storage.add_message(sid, "assistant", "bot", seg)
             if gap and i < len(segments) - 1:
                 await asyncio.sleep(gap)
         # 送达与否只看有没有异常/降级行（同一信息只打一行），成功不再补确认行
         return {"ok": True, "sent": display}
+
+    async def _send_one(self, ctx: dict, seg: str, wire: str,
+                        reference: dict | None, extra: dict) -> None:
+        """发一条正文：先按这一轮的身份发，被动被平台拒了就降级主动重发一次。
+
+        每次尝试都在 sends 里落一行（含被拒的原因），「被动回复是不是过期了」查表即可，
+        不用翻日志；重发仍失败就把异常交给上层，由回合记账为失败。
+        """
+        seq = int(ctx.get("msg_seq") or 1)
+        passive = bool(ctx.get("msg_id"))
+        kwargs = {"message_reference": reference} if reference else {}
+        try:
+            await self.bot.send_text(ctx["target"], wire, ctx["scene"], ctx.get("msg_id"), seq,
+                                     ctx.get("event_id"), display=seg, **kwargs)
+            self.outbox.record(ctx, kind="正文", ok=True, via="passive" if passive else "proactive")
+        except Exception as e:  # noqa: BLE001
+            if not passive:
+                self.outbox.record(ctx, kind="正文", ok=False, via="proactive", detail=str(e))
+                raise
+            self.outbox.record(ctx, kind="正文", ok=False, via="passive", detail=str(e))
+            # 被动回复失败（msg_id 过期等）→ 降级主动发送，确保送达；
+            # 主动通道不带引用，避免已失效的消息 ID 再触发一次失败
+            logger.warning("被动回复失败，降级主动发送: %s", e, extra=extra)
+            try:
+                await self.bot.send_text(ctx["target"], wire, ctx["scene"], None, seq, display=seg)
+            except Exception as e2:  # noqa: BLE001
+                self.outbox.record(ctx, kind="正文", ok=False, via="fallback", detail=str(e2))
+                raise
+            self.outbox.record(ctx, kind="正文", ok=True, via="fallback")
 
     def _parse_quote(self, content: str, ctx: dict) -> tuple[str, dict | None]:
         """解析开头的 [引用 关键词]：回查本会话消息并生成 QQ message_reference。"""

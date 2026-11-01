@@ -124,13 +124,13 @@ async def main(cfg: Config | None = None) -> None:
         n = storage.reset_chat_data()
         log.info("聊天数据已清理: messages=%d sessions=%d（记忆保留）", n["messages"], n["sessions"])
 
-    memory = MemoryStore(cfg, storage)
+    llm = LLMClient(cfg)
+    memory = MemoryStore(cfg, storage, llm)
     if memory.enabled:
         log.info("记忆就绪: %s @ %s", memory.model, memory.base_url)
     else:
         log.info("记忆就绪: 关键词模式（未配置 embedding，可用 embedding.enabled 开启向量检索）")
 
-    llm = LLMClient(cfg)
     log.info("LLM 就绪: %s @ %s", cfg.model, cfg.llm.get("base_url"))
     vision = cfg.vision
     if vision["enabled"]:
@@ -146,11 +146,16 @@ async def main(cfg: Config | None = None) -> None:
 
     await presence.start()
 
+    # 开机扫一次遗忘：到期、淡出、超上限、近似重复一次清掉。放后台线程，不挡启动也不拖首轮回复
+    forget_task = asyncio.create_task(asyncio.to_thread(memory.sweep))  # noqa: F841
+
     from tool.schedule.remind import Reminders
 
     # 提醒的真相在 reminders 表里，这里只是把巡检循环跑起来：重启后错过的按宽限处置
     reminders = Reminders(executor.rt, presence.speak)
     reminder_task = asyncio.create_task(reminders.run())
+    # 开机清一次日程历史（终态行过了保留天数就退场），之后由巡检循环按间隔继续清
+    schedule_sweep_task = asyncio.create_task(asyncio.to_thread(reminders.sweep))  # noqa: F841
 
     async def _temp_cleanup_loop():
         """temp 目录过期文件清理（storage.temp_ttl_hours，默认 24h），每小时巡检一次。"""

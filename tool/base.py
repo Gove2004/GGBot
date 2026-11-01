@@ -25,19 +25,22 @@ import pkgutil
 import threading
 from pathlib import Path
 
+from ggbot.core.outbox import Outbox
 from ggbot.util.session import session_label
 
 logger = logging.getLogger("ggbot.tools")
 
 
 class ToolRuntime:
-    """Tool 的公共运行时：配置读写 + 数据目录 + 富媒体发送（正文走 ggbot.core.outbound）。"""
+    """Tool 的公共运行时：配置读写 + 数据目录 + 富媒体发送（正文走 ggbot.core.outbound，
+    锚点与发送回执走 ggbot.core.outbox）。"""
 
     def __init__(self, cfg, storage, memory, bot):
         self.cfg = cfg
         self.storage = storage
         self.memory = memory
         self.bot = bot
+        self.outbox = Outbox(cfg, storage)
         self._lock = threading.RLock()
         self._config_cache: dict[str, tuple[int, dict]] = {}
 
@@ -126,18 +129,18 @@ class ToolRuntime:
         ok, detail = await self.bot.upload_and_send_media(
             ctx["target"], ctx["scene"], file_type, source, ctx.get("msg_id"), seq
         )
-        if ok:
-            ctx["msg_seq"] = seq + 1
-            ctx["sent_any"] = True
-            sid = ctx.get("session_id")
-            if sid:
-                self.storage.add_message(sid, "assistant", "bot", f"[{label}]", status="sent")
-            logger.info("发送%s: %s", label, detail,
-                        extra={"session": session_label(ctx.get("session_id"))})
-            return {"ok": True, "sent": f"{label}已发送: {detail}"}
-        logger.warning("发送%s失败: %s", label, detail,
-                       extra={"session": session_label(ctx.get("session_id"))})
-        return {"ok": False, "error": detail}
+        sid = ctx.get("session_id")
+        extra = {"session": session_label(sid)}
+        self.outbox.record(ctx, kind=label, ok=ok, detail="" if ok else detail)
+        if not ok:
+            logger.warning("发送%s失败: %s", label, detail, extra=extra)
+            return {"ok": False, "error": detail}
+        ctx["msg_seq"] = seq + 1
+        ctx["sent_any"] = True
+        if sid:
+            self.storage.add_message(sid, "assistant", "bot", f"[{label}]")
+        logger.info("发送%s: %s", label, detail, extra=extra)
+        return {"ok": True, "sent": f"{label}已发送: {detail}"}
 
 
 class Tool:
