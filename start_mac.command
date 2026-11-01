@@ -34,7 +34,7 @@ fi
 
 echo "[GGBot] checking dependencies ..."
 # probe every third-party import the bot needs, in sync with requirements.txt
-if ! "$PY" -c "import botpy, openai, fastapi, uvicorn, numpy, pysilk" >/dev/null 2>&1; then
+if ! "$PY" -c "import botpy, aiohttp, openai, fastapi, uvicorn, numpy, pysilk" >/dev/null 2>&1; then
   echo "[GGBot] installing requirements.txt ..."
   "$PY" -m pip install --upgrade pip
   "$PY" -m pip install -r requirements.txt

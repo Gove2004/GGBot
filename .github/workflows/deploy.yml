@@ -42,25 +42,12 @@ jobs:
 
       - name: 同步代码（跳过密钥与运行时数据）
         run: |
-          # 与 .gitignore 里的运行时项一致：这些文件既不同步，也不会被 --delete 清掉
-          cat > /tmp/exclude.txt <<'EOF'
-          .git/
-          .github/
-          .venv/
-          __pycache__/
-          *.pyc
-          config.json
-          *.db
-          *.db-wal
-          *.db-shm
-          .bot.lock
-          temp/
-          # 表情库整个目录都是这台机器的本地状态（图片 + 由图片算出来的 index/vectors），
-          # 仓库里那份空 index.json 对服务器没有意义，所以整目录既不推送也不 --delete
-          tool/media/emoji/
-          tool/media/audio/
-          EOF
-          rsync -az --delete --exclude-from=/tmp/exclude.txt \
+          # 排除清单只有一份：deploy/rsync-exclude.txt（CI 与手工同步共用；rsync 会忽略清单里的空行和 # / ; 开头的行，
+          # 这份仍保持纯模式，条目的理由写在 README「部署到云服务器」里）。
+          # 为什么必须排除：这些文件在服务器上有、在 CI 的 checkout 里没有（.gitignore 挡掉了），
+          # 而 --delete 会把"服务器有、源没有"的文件删掉——不排除就等于每次部署清一遍密钥和数据库。
+          # 被排除的条目同时受 --delete 保护，不会被清空：表情库/语音素材/库备份都留在服务器上。
+          rsync -az --delete --exclude-from=deploy/rsync-exclude.txt \
             -e "ssh -i ~/.ssh/deploy_key -p ${DEPLOY_SSH_PORT:-22}" \
             ./ "${DEPLOY_SSH_USER:-root}@${DEPLOY_SSH_HOST}:${DEPLOY_SSH_PATH:-/root/GGBot}/"
 

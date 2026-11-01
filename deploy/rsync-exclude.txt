@@ -1,0 +1,14 @@
+.git/
+.github/
+.venv/
+__pycache__/
+*.pyc
+config.json
+*.db
+*.db-wal
+*.db-shm
+*.db.bak-*
+.bot.lock
+temp/
+tool/media/emoji/
+tool/media/audio/
