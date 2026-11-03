@@ -1,32 +1,49 @@
-/* GGBot 控制台 —— 暗色玻璃质感后台 */
+/* GGBot 控制台 —— 「值班中控台」：主色就是机器人的在线色，离线时值班带和侧栏发光边一起转冷 */
 :root {
   color-scheme: dark;
-  --bg: #080c12;
-  --bg-soft: #0c121b;
-  --panel: rgba(18, 25, 35, .82);
-  --panel-solid: #111823;
-  --panel-2: #16202e;
-  --panel-3: #1d293a;
-  --border: #223047;
-  --border-soft: #1a2534;
-  --line: rgba(255, 255, 255, .065);
-  --text: #e9eef7;
-  --muted: #93a4b8;
-  --faint: #61738a;
-  --accent: #6aa8ff;
-  --accent-2: #34d3ee;
-  --green: #39d98a;
-  --amber: #f4b740;
-  --red: #ff6b6b;
-  --violet: #a78bfa;
-  --radius: 18px;
-  --radius-sm: 11px;
-  --ring: 0 0 0 3px rgba(106, 168, 255, .18);
+
+  /* 底色：石墨偏冷，不是纯黑 */
+  --bg: #070c10;
+  --bg-soft: #0b1219;
+  --panel: rgba(17, 26, 36, .86);
+  --panel-solid: #101922;
+  --panel-2: #16212d;
+  --panel-3: #1d2a38;
+  --border: #26374c;
+  --border-soft: #1b2836;
+  --line: rgba(255, 255, 255, .07);
+
+  /* 文字 */
+  --text: #e8eef7;
+  --muted: #93a6bb;
+  --faint: #617689;
+
+  /* 信号色：一个色只说一件事 */
+  --live: #2ee6a8;          /* 在线 / 成功 / 品牌主色 */
+  --live-ink: #04231b;      /* 主色实底上的文字 */
+  --idle: #6c8296;          /* 离线 / 中性 */
+  --info: #6ea8ff;          /* 结构蓝：链接、次级数据、群聊 */
+  --violet: #a78bfa;        /* 私聊 */
+  --amber: #ffb454;         /* 待处理 / 需留意 */
+  --rose: #ff6f82;          /* 失败 / 逾期 */
+
+  /* 兼容旧变量名：面板各处仍写 --accent / --accent-2 / --green / --red，
+     这里一次性映射到新的信号色，避免同一含义出现两套色值 */
+  --accent: var(--live);
+  --accent-2: var(--info);
+  --green: var(--live);
+  --red: var(--rose);
+
+  --radius: 16px;
+  --radius-sm: 10px;
+  --radius-xs: 8px;
+  --gap: 16px;
+  --ring: 0 0 0 3px rgba(46, 230, 168, .18);
   --mono: "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
-  --shadow-sm: 0 8px 24px rgba(0, 0, 0, .22);
-  --shadow-md: 0 16px 44px rgba(0, 0, 0, .32);
-  --shadow-lg: 0 30px 80px rgba(0, 0, 0, .5);
+  --shadow-sm: 0 6px 20px rgba(0, 0, 0, .26);
+  --shadow-md: 0 14px 40px rgba(0, 0, 0, .36);
+  --shadow-lg: 0 30px 80px rgba(0, 0, 0, .52);
 }
 
 * { box-sizing: border-box; }
@@ -36,23 +53,24 @@ body {
   color: var(--text);
   font: 14px/1.55 var(--sans);
   background-color: var(--bg);
+  /* 点阵 + 左上「在线」辉光 + 右下结构蓝辉光：
+     辉光固定在侧栏一侧，滚动时不跟着漂，读起来像一块仪表盘背板而不是一张壁纸 */
   background-image:
-    linear-gradient(rgba(255, 255, 255, .017) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, .017) 1px, transparent 1px),
-    radial-gradient(1000px 520px at 92% -12%, rgba(52, 211, 238, .09), transparent 62%),
-    radial-gradient(860px 500px at 2% -6%, rgba(106, 168, 255, .09), transparent 58%),
-    linear-gradient(180deg, #090e15, #070b11 70%);
-  background-size: 46px 46px, 46px 46px, auto, auto, auto;
+    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, .045) 1px, transparent 1.6px),
+    radial-gradient(900px 520px at 6% -14%, rgba(46, 230, 168, .10), transparent 62%),
+    radial-gradient(820px 480px at 98% 108%, rgba(110, 168, 255, .085), transparent 60%),
+    linear-gradient(180deg, #08111a, #060a0f 72%);
+  background-size: 22px 22px, auto, auto, auto;
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
-::selection { background: rgba(106, 168, 255, .3); color: #fff; }
+::selection { background: rgba(46, 230, 168, .28); color: #fff; }
 
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
-a { color: var(--accent); }
-code { font-family: var(--mono); font-size: 12px; color: var(--accent-2); }
+a { color: var(--info); }
+code { font-family: var(--mono); font-size: 12px; color: var(--live); }
 
 .hidden { display: none !important; }
 .muted { color: var(--muted); }
@@ -60,9 +78,19 @@ code { font-family: var(--mono); font-size: 12px; color: var(--accent-2); }
 .mono { font-family: var(--mono); font-size: 12px; }
 .grow { flex: 1 1 auto; min-width: 0; }
 
-/* ================= 焦点 ================= */
-:focus-visible {
-  outline: 2px solid rgba(106, 168, 255, .65);
-  outline-offset: 2px;
+/* 面板小标题：等宽 + 字距，是这套界面的「仪器」口音 */
+.eyebrow {
+  color: var(--live);
+  font: 700 10.5px/1.4 var(--mono);
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
 }
 
+/* 数字一律等宽对齐，跳动时不抖版 */
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.2px; }
+
+/* ================= 焦点 ================= */
+:focus-visible {
+  outline: 2px solid rgba(46, 230, 168, .6);
+  outline-offset: 2px;
+}
