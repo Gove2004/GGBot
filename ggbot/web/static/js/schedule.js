@@ -80,11 +80,12 @@ function schItem(r, now) {
     ? (gap >= 0 ? `${schSpan(gap)}后` : `过点 ${schSpan(gap)}`)
     : `${schSpan(gap)}${gap >= 0 ? "后" : "前"}`;
   const ops = [];
+  // 三个按钮都用两字标签：单字那颗会被 min-width 撑成正方形，一排看着高低不齐
   if (r.status === "pending") {
-    ops.push(`<button class="btn ghost small" data-action="schedule-edit" data-id="${esc(r.id)}">改</button>`);
+    ops.push(`<button class="btn ghost small" data-action="schedule-edit" data-id="${esc(r.id)}">改期</button>`);
     ops.push(`<button class="btn ghost small" data-action="schedule-cancel" data-id="${esc(r.id)}">取消</button>`);
   }
-  ops.push(`<button class="btn ghost small" data-action="schedule-delete" data-id="${esc(r.id)}">删</button>`);
+  ops.push(`<button class="btn ghost small" data-action="schedule-delete" data-id="${esc(r.id)}">删除</button>`);
   return `<div class="sch-item ${schBucket(r, now)}">
     <div class="sch-when">
       <div class="sch-clock mono">${esc(schDue(r.due_ts))}</div>

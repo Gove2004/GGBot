@@ -9,10 +9,12 @@ async function refreshLogs() {
   if (q) params.set("q", q);
   const d = await api(`/api/logs?${params}`);
   if (d.file) qs("#log-file").textContent = d.file;
-  const lvClass = { DEBUG: "lv-debug", INFO: "lv-info", WARNING: "lv-warning", ERROR: "lv-error", CRITICAL: "lv-critical" };
+  // 行的类名是 log-<级别>，徽章才是 lv-<级别>：两者同名时徽章的半透明底色会涂满整行
+  const badgeCls = { DEBUG: "lv-debug", INFO: "lv-info", WARNING: "lv-warning", ERROR: "lv-error", CRITICAL: "lv-critical" };
   const rows = (d.logs || []).map((l) => {
-    const lv = lvClass[l.level] || "";
-    return `<div class="log-line ${lv}">
+    const key = String(l.level || "").toLowerCase();
+    const lv = badgeCls[l.level] || "";
+    return `<div class="log-line${key ? ` log-${key}` : ""}">
       <span class="log-ts">${esc(fmtLogTs(l.ts))}</span>
       <span class="log-lv"><span class="lv ${lv}">${esc(l.level)}</span></span>
       <span class="log-sess">${logSessChip(l.session)}</span>

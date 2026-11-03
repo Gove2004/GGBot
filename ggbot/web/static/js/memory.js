@@ -49,7 +49,7 @@ function memRow(m) {
     <td class="muted small col-sm-hide">${expire}</td>
     <td class="col-actions"><div class="row-actions">
       <button class="btn ghost small" data-action="memory-edit" data-id="${esc(m.id)}">编辑</button>
-      <button class="btn danger small" data-action="memory-delete" data-id="${esc(m.id)}">删</button>
+      <button class="btn danger small" data-action="memory-delete" data-id="${esc(m.id)}">删除</button>
     </div></td>
   </tr>`;
 }

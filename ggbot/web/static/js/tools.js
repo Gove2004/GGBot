@@ -46,14 +46,14 @@ function renderTools() {
     return `<div class="tool-card ${t.enabled ? "" : "off"}" data-cat="${esc(t.category || "")}">
       <div class="tool-head">
         <div><div class="tool-name"><span class="tool-state ${t.enabled ? "on" : ""}"></span>${esc(t.name)} <span class="badge gray">${esc(toolCat(t.category))}</span> <span class="badge ${adjusted ? "warn" : "gray"}" title="${esc(lvTitle)}">${esc(lv)}${adjusted ? " ↕" : ""}</span></div>
-        <div class="tool-desc muted small">${esc(t.description)}</div></div>
+        <div class="tool-desc muted small" title="${esc(t.description)}">${esc(t.description)}</div></div>
         <button class="btn ${t.enabled ? "ghost" : "primary"} small"
           data-action="tool-toggle" data-tool="${esc(t.name)}" data-enabled="${t.enabled ? 1 : 0}"
           ${t.toggleable === false ? "disabled title=\"随同组工具启停\"" : ""}>
           ${t.toggleable === false ? "同组" : t.enabled ? "停用" : "启用"}
         </button>
       </div>
-      ${cfg ? `<div class="tool-meta">${esc(cfg)}</div>` : ""}
+      ${cfg ? `<div class="tool-meta" title="${esc(cfg)}">${esc(cfg)}</div>` : ""}
     </div>`;
   }).join("");
   qs("#tool-list").innerHTML = rows || `<p class="empty">${state.toolCat ? "该分类下暂无工具" : "（无工具）"}</p>`;

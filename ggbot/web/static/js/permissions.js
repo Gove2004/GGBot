@@ -42,7 +42,7 @@ function renderActors() {
     </td>
     <td><select class="sel small-input" data-actor-level data-openid="${esc(a.openid)}">${levelOptions(a.level, 0, state.maxLevel)}</select></td>
     <td class="muted small col-sm-hide">${a.messages || 0}</td>
-    <td class="muted small col-sm-hide">${esc(a.last_ts || "—")}</td>
+    <td class="muted small col-sm-hide col-ts">${esc(a.last_ts || "—")}</td>
   </tr>`);
   body.innerHTML = rows.join("") || '<tr><td colspan="4" class="empty">还没有发言记录，可在上方直接填 openid 添加</td></tr>';
 }
@@ -56,9 +56,9 @@ function renderPermTools() {
       ${t.level_default != null && Number(t.min_level) !== Number(t.level_default)
         ? `<div class="muted small">默认 L${t.level_default}</div>` : ""}
     </td>
-    <td class="muted small col-sm-hide">${esc(toolCat(t.category))}</td>
+    <td class="muted small col-sm-hide col-cat">${esc(toolCat(t.category))}</td>
     <td><select class="sel small-input" data-tool-level data-tool="${esc(t.name)}">${levelOptions(t.min_level, 1, state.lockedLevel)}</select></td>
-    <td class="muted small col-sm-hide">${esc(t.description)}</td>
+    <td class="muted small col-sm-hide"><div class="cell-clamp" title="${esc(t.description)}">${esc(t.description)}</div></td>
   </tr>`);
   body.innerHTML = rows.join("") || '<tr><td colspan="4" class="empty">（无工具）</td></tr>';
 }

@@ -101,9 +101,10 @@ async function openSessionDetail(sid) {
       return `<div class="chat ${role}"><div class="chat-meta">${senderCell(m)} · ${esc(fmtTs(m.ts))}${msgFlag(m)}</div>${esc(m.content || "（无文本）")}</div>`;
     }).join("");
     const liveS = ((state.status && state.status.sessions) || []).find((x) => x.sid === sid);
+    // 作息胶囊保持单行：之前塞了个 block 的 .cell-note，两行内容把同排的单行胶囊拉成了椭圆
     const stateCell = liveS
-      ? `${stateBadge(liveS.state)}<span class="cell-note">${esc(reasonLabel(liveS.reason))} · 剩 ${Math.max(0, Math.round(liveS.remaining_sec || 0))}s</span>`
-      : `${stateBadge("offline")}<span class="cell-note">静默</span>`;
+      ? `${stateBadge(liveS.state)} ${esc(reasonLabel(liveS.reason))} · 剩 ${Math.max(0, Math.round(liveS.remaining_sec || 0))}s`
+      : `${stateBadge("offline")} 静默`;
     pane.innerHTML = `<div class="detail-inner">
       <div class="detail-head">
         <div>
@@ -118,7 +119,7 @@ async function openSessionDetail(sid) {
         <span class="stat-chip">消息 <b>${s.message_count || 0}</b></span>
         <span class="stat-chip">待处理 <b>${s.waiting_count || 0}</b></span>
         <span class="stat-chip">最近发言 <b>${esc(fmtTs(s.last_ts || s.updated_at))}</b></span>
-        <span class="stat-chip sess-state">作息 ${stateCell}</span>
+        <span class="stat-chip">作息 ${stateCell}</span>
       </div>
       <div class="detail-scroll">
         <div class="modal-section"><h3>最近消息</h3><div class="chat-list">${chats || '<div class="empty">暂无消息</div>'}</div></div>
