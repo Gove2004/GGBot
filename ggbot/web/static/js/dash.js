@@ -1,6 +1,34 @@
 "use strict";
 
 /* ================= 状态 / 统计 ================= */
+/* 本轮窗口：倒计时的三种读数——秒、分:秒、时:分 */
+function remainText(sec) {
+  const n = Math.max(0, Math.round(Number(sec) || 0));
+  const p = (x) => String(x).padStart(2, "0");
+  if (n < 60) return [String(n), "s"];
+  if (n < 3600) return [`${Math.floor(n / 60)}:${p(n % 60)}`, "分:秒"];
+  return [`${Math.floor(n / 3600)}:${p(Math.floor((n % 3600) / 60))}`, "时:分"];
+}
+
+/* 值班带：轨道是「这一轮的名义窗口」，填充是走过的比例。
+ * 回复续期把截止点往后推的时候面板拿不到窗口起点，所以续出来的那截只显示在右侧标签上。 */
+function renderDuty(s, online) {
+  const base = Math.max(1, Math.round(Number(online ? s.online_duration_sec : s.offline_interval_sec) || 0));
+  const remain = Math.max(0, Math.round(Number(s.remaining_sec) || 0));
+  const elapsed = Math.max(0, base - remain);
+  const pct = Math.min(100, Math.round((elapsed / base) * 1000) / 10);
+  const jitter = Math.round((Number(online ? s.online_duration_jitter : s.offline_interval_jitter) || 0) * 100);
+  const over = Math.max(0, remain - base);
+  qs("#duty-label").textContent = online ? "本轮在线窗口" : "本轮离线窗口";
+  qs("#duty-window").textContent = `${fmtAgo(base)}${jitter ? ` ±${jitter}%` : ""}${over ? ` · 续期 +${fmtAgo(over)}` : ""}`;
+  qs("#duty-fill").style.width = `${pct}%`;
+  qs("#duty-now").style.left = `${pct}%`;
+  qs("#duty-elapsed").textContent = `已走 ${fmtAgo(elapsed)}`;
+  qs("#duty-left").textContent = remain > 0 ? `还剩 ${fmtAgo(remain)}` : "到点";
+  const track = qs("#duty-track");
+  if (track) track.title = `名义窗口 ${fmtAgo(base)}，实际每次按 ±${jitter || 0}% 抖动；续期推后的时间不进轨道`;
+}
+
 async function refreshStatus() {
   const s = await api("/api/status");
   state.status = s;
@@ -13,6 +41,8 @@ async function refreshStatus() {
   pend.className = `pill ${waiting > 0 ? "warn" : "ghost"}`;
   pend.textContent = `${waiting} 待处理`;
 
+  // 离线态：侧栏发光边褪成中性（hero 那一侧靠下面摘掉 online 类转成结构蓝），一眼看着不在岗
+  qs("#app").classList.toggle("offline", !online);
   qs("#side-dot").className = `dot${online ? "" : " off"}`;
   qs("#side-state").textContent = online ? "在线" : "离线";
   qs("#side-online").textContent = s.online_sessions != null ? s.online_sessions : "—";
@@ -22,12 +52,10 @@ async function refreshStatus() {
   qs("#dash-dot").className = `state-dot ${online ? "on" : "off"}`;
   qs("#dash-state").textContent = online ? "在线" : "离线";
   qs("#dash-event").textContent = s.next_event || "等待下一次上线";
-  qs("#dash-remain").textContent = s.remaining_sec != null ? Math.max(0, Math.round(s.remaining_sec)) : "—";
-  const base = Number(online ? s.online_duration_sec : s.offline_interval_sec) || 1;
-  const remain = Math.max(0, Number(s.remaining_sec) || 0);
-  const prog = qs("#dash-progress");
-  prog.max = Math.max(1, Math.round(base));
-  prog.value = Math.max(0, Math.min(base, base - remain));
+  const [big, unit] = remainText(s.remaining_sec);
+  qs("#dash-remain").textContent = s.remaining_sec != null ? big : "—";
+  qs("#dash-remain-unit").textContent = unit;
+  renderDuty(s, online);
   const live = (s.sessions && s.sessions[0]) || null;
   qs("#dash-caption").textContent =
     `${reasonLabel(live ? live.reason : "idle")} · ${s.online_sessions || 0} 个会话在线 · ${waiting} 条积压`;

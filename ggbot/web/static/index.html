@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#080c12">
+<meta name="theme-color" content="#070c10">
 <meta name="color-scheme" content="dark">
 <title>GGBot 控制台 v{{VERSION}}</title>
 <link rel="stylesheet" href="/static/css/base.css">
@@ -26,7 +26,7 @@
     <form id="login-form" autocomplete="off">
       <label class="field">
         <span>面板令牌</span>
-        <input id="login-token" type="password" placeholder="输入 web.token" autocomplete="current-password" required>
+        <input id="login-token" class="input" type="password" placeholder="输入 web.token" autocomplete="current-password" required>
       </label>
       <p id="login-error" class="login-error hidden"></p>
       <button class="btn primary block" type="submit">进入控制台</button>
@@ -146,30 +146,41 @@
 
       <!-- 仪表盘 -->
       <section id="page-dash" class="page">
-        <div class="dash-top">
-          <div id="dash-hero" class="hero card">
-            <div class="hero-main">
-              <div class="eyebrow">运行状态</div>
-              <div class="hero-title">
-                <span id="dash-dot" class="state-dot off"></span>
-                <span id="dash-state">离线</span>
-              </div>
-              <p id="dash-event" class="hero-sub">等待下一次上线</p>
+        <div id="dash-hero" class="hero card">
+          <div class="hero-main">
+            <div class="eyebrow">运行状态</div>
+            <div class="hero-title">
+              <span id="dash-dot" class="state-dot off"></span>
+              <span id="dash-state">离线</span>
             </div>
-            <div class="hero-side">
-              <div class="countdown"><span id="dash-remain">—</span><small>s</small></div>
-              <progress id="dash-progress" class="hero-progress" value="0" max="1" aria-label="状态倒计时进度"></progress>
-              <div id="dash-caption" class="hero-caption">—</div>
+            <p id="dash-event" class="hero-sub">等待下一次上线</p>
+          </div>
+          <div class="duty">
+            <div class="duty-head">
+              <span id="duty-label">本轮窗口</span>
+              <span id="duty-window">—</span>
+            </div>
+            <div class="duty-track" id="duty-track">
+              <div id="duty-fill" class="duty-fill"></div>
+              <div id="duty-now" class="duty-now"></div>
+            </div>
+            <div class="duty-foot">
+              <span id="duty-elapsed">—</span>
+              <span id="duty-left">—</span>
             </div>
           </div>
+          <div class="hero-side">
+            <div class="countdown"><span id="dash-remain">—</span><small id="dash-remain-unit">s</small></div>
+            <div id="dash-caption" class="hero-caption">—</div>
+          </div>
+        </div>
 
-          <div class="metrics">
-            <div class="metric"><span class="metric-label">在线会话</span><strong id="m-online">—</strong><span class="metric-foot">当前活跃</span></div>
-            <div class="metric"><span class="metric-label">积压待处理</span><strong id="m-pending">—</strong><span class="metric-foot">离线消息</span></div>
-            <div class="metric"><span class="metric-label">记忆条目</span><strong id="m-memories">—</strong><span class="metric-foot">长期记忆</span></div>
-            <div class="metric"><span class="metric-label">会话总数</span><strong id="m-sessions">—</strong><span class="metric-foot">群聊 + 私聊</span></div>
-            <div class="metric"><span class="metric-label">今日消息</span><strong id="m-today">—</strong><span class="metric-foot">收到 + 发出</span></div>
-          </div>
+        <div class="metrics">
+          <div class="metric"><span class="metric-label">在线会话</span><strong id="m-online">—</strong><span class="metric-foot">当前活跃</span></div>
+          <div class="metric"><span class="metric-label">积压待处理</span><strong id="m-pending">—</strong><span class="metric-foot">离线消息</span></div>
+          <div class="metric"><span class="metric-label">记忆条目</span><strong id="m-memories">—</strong><span class="metric-foot">长期记忆</span></div>
+          <div class="metric"><span class="metric-label">会话总数</span><strong id="m-sessions">—</strong><span class="metric-foot">群聊 + 私聊</span></div>
+          <div class="metric"><span class="metric-label">今日消息</span><strong id="m-today">—</strong><span class="metric-foot">收到 + 发出</span></div>
         </div>
 
         <div class="grid-2">
@@ -269,30 +280,36 @@
           </div>
 
           <div class="memory-tools">
-            <div class="tool-row">
-              <input id="mem-q" class="input grow search-input" placeholder="语义检索，例如：谁喜欢喝咖啡？">
-              <button class="btn" data-action="memory-search">检索</button>
-              <button class="btn ghost" data-action="memory-all">全部</button>
-              <select id="mem-kind" class="sel" title="按类别筛">
-                <option value="">全部类别</option>
-                <option value="profile">人物档案</option>
-                <option value="event">事件流水</option>
-              </select>
-              <select id="mem-session" class="sel"><option value="">全部作用域</option></select>
+            <div class="mem-band">
+              <div class="eyebrow">查</div>
+              <div class="tool-row">
+                <input id="mem-q" class="input grow search-input" placeholder="语义检索，例如：谁喜欢喝咖啡？">
+                <button class="btn" data-action="memory-search">检索</button>
+                <button class="btn ghost" data-action="memory-all">全部</button>
+                <select id="mem-kind" class="sel" title="按类别筛">
+                  <option value="">全部类别</option>
+                  <option value="profile">人物档案</option>
+                  <option value="event">事件流水</option>
+                </select>
+                <select id="mem-session" class="sel"><option value="">全部作用域</option></select>
+              </div>
             </div>
-            <div class="tool-row">
-              <input id="mem-add" class="input grow" placeholder="写入一条记忆，例如：小明周五前要交稿">
-              <input id="mem-add-subject" class="input" placeholder="关于谁">
-              <select id="mem-add-kind" class="sel" title="类别">
-                <option value="profile">人物档案</option>
-                <option value="event">事件流水</option>
-              </select>
-              <input id="mem-add-expires" class="input" type="date" title="到期日（可留空）">
-              <select id="mem-importance" class="sel" title="重要度">
-                <option value="1">★</option><option value="2">★★</option><option value="3">★★★</option>
-                <option value="4">★★★★</option><option value="5">★★★★★</option>
-              </select>
-              <button class="btn primary" data-action="memory-add">写入</button>
+            <div class="mem-band">
+              <div class="eyebrow">写</div>
+              <div class="tool-row">
+                <input id="mem-add" class="input grow" placeholder="写入一条记忆，例如：小明周五前要交稿">
+                <input id="mem-add-subject" class="input" placeholder="关于谁">
+                <select id="mem-add-kind" class="sel" title="类别">
+                  <option value="profile">人物档案</option>
+                  <option value="event">事件流水</option>
+                </select>
+                <input id="mem-add-expires" class="input" type="date" title="到期日（可留空）">
+                <select id="mem-importance" class="sel" title="重要度">
+                  <option value="1">★</option><option value="2">★★</option><option value="3">★★★</option>
+                  <option value="4">★★★★</option><option value="5">★★★★★</option>
+                </select>
+                <button class="btn primary" data-action="memory-add">写入</button>
+              </div>
             </div>
           </div>
 
@@ -461,7 +478,7 @@
           </div>
           <div class="table-wrap">
             <table class="table">
-              <thead><tr><th>成员</th><th>等级</th><th class="col-sm-hide">消息</th><th class="col-sm-hide">最近发言</th></tr></thead>
+              <thead><tr><th class="col-actor">成员</th><th class="col-level">等级</th><th class="col-sm-hide col-num">消息</th><th class="col-sm-hide col-ts">最近发言</th></tr></thead>
               <tbody id="actor-body"><tr><td colspan="4" class="empty">加载中…</td></tr></tbody>
             </table>
           </div>
@@ -473,7 +490,7 @@
           </div>
           <div class="table-wrap">
             <table class="table">
-              <thead><tr><th>工具</th><th class="col-sm-hide">分类</th><th>门槛</th><th class="col-sm-hide">说明</th></tr></thead>
+              <thead><tr><th class="col-tool">工具</th><th class="col-sm-hide col-cat">分类</th><th class="col-level">门槛</th><th class="col-sm-hide col-desc">说明</th></tr></thead>
               <tbody id="perm-tool-body"><tr><td colspan="4" class="empty">加载中…</td></tr></tbody>
             </table>
           </div>
