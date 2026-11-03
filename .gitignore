@@ -39,3 +39,5 @@ tool/media/audio/*.wav
 # 编辑器
 .idea/
 .vscode/
+# Qoder 生成的仓库知识缓存（repowiki / 知识卡），不是项目内容
+.qoder/
