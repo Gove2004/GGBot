@@ -1,24 +1,25 @@
 "use strict";
 
 /* ================= 会话 ================= */
-async function refreshSessions() {
-  const rows = await api("/api/sessions?limit=500");
+/* 会话清单是四页共用的一份数据：写进 state 后，列表、两处下拉和仪表盘表格都从它画 */
+function setSessions(rows) {
   state.sessions = Array.isArray(rows) ? rows : [];
-  renderSessions();
   populateSessionSelects();
+  renderSessions();
   renderDashSessions();
-  if (state.page === "sessions") {
-    const still = state.selectedSession && state.sessions.some((s) => s.id === state.selectedSession);
-    if (!still) {
-      const first = state.sessions[0];
-      if (first) openSessionDetail(first.id);
-      else {
-        state.selectedSession = null;
-        const pane = qs("#session-detail");
-        if (pane) pane.innerHTML = detailEmptyHTML();
-      }
-    }
+}
+
+/* 「会话与上下文」页：选中项还在就保持不动，会话被删了则退回第一个 */
+function renderSessionsPage() {
+  if (state.sessions.some((s) => s.id === state.selectedSession)) return;
+  const first = state.sessions[0];
+  if (first) {
+    openSessionDetail(first.id);
+    return;
   }
+  state.selectedSession = null;
+  const pane = qs("#session-detail");
+  if (pane) pane.innerHTML = detailEmptyHTML();
 }
 
 function renderSessions() {
@@ -138,9 +139,9 @@ async function clearSession(sid) {
   try {
     const r = await api(`/api/sessions/${encodeURIComponent(sid)}/context`, { method: "DELETE" });
     toast(`已清空 ${r.messages || 0} 条消息`, "success");
-    await refreshSessions();
+    await reloadPage();
     openSessionDetail(sid);
-    refreshStatus();
+    refreshShell();
   } catch (err) { toast(err.message, "error"); }
 }
 

@@ -37,12 +37,6 @@ function applyPersona(d) {
   renderPersonaMeta();
 }
 
-// 正在编辑时不重载，免得把没保存的改动冲掉；「重载」按钮传 force
-async function refreshPersona(force) {
-  if (!force && personaBaseline && personaDirty()) return;
-  applyPersona(await api("/api/system-prompt"));
-}
-
 async function savePersona() {
   const text = personaBox().value;
   if (text.length > (state.personaMax || 20000)) {

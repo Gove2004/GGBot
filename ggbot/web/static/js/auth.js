@@ -25,7 +25,8 @@ function showApp() {
   if (PAGE_META[initial]) state.page = initial;
   startPolling();
   switchPage(state.page || "dash");
-  refreshAll();
+  // switchPage 已经拉过这一页了，这里只补外壳的实时读数（定时器第一次跳要等一秒）
+  refreshShell();
 }
 
 async function boot() {

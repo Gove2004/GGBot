@@ -1,13 +1,9 @@
 "use strict";
 
 /* ================= 日志 ================= */
-async function refreshLogs() {
-  const params = new URLSearchParams({ lines: "400", level: qs("#log-level").value });
+function renderLogs(d) {
   const sess = qs("#log-session").value.trim();
   const q = qs("#log-q").value.trim();
-  if (sess) params.set("session", sess);
-  if (q) params.set("q", q);
-  const d = await api(`/api/logs?${params}`);
   if (d.file) qs("#log-file").textContent = d.file;
   // 行的类名是 log-<级别>，徽章才是 lv-<级别>：两者同名时徽章的半透明底色会涂满整行
   const badgeCls = { DEBUG: "lv-debug", INFO: "lv-info", WARNING: "lv-warning", ERROR: "lv-error", CRITICAL: "lv-critical" };

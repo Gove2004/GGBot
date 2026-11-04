@@ -15,21 +15,21 @@ function levelOptions(selected, lo, hi) {
   }
   return out.join("");
 }
-async function refreshPermissions() {
-  const d = await api("/api/actors");
-  state.actors = d.actors || [];
-  state.levelNames = d.level_names || {};
-  state.defaultLevel = d.default_level != null ? d.default_level : 2;
-  state.maxLevel = d.max_level != null ? d.max_level : 5;
-  state.lockedLevel = d.locked_level != null ? d.locked_level : 6;
+/* 权限页一次拿到两份数据：成员等级表 + 共用的工具清单（门槛就在这张表里改）。 */
+function renderPermissions(perms, tools) {
+  state.actors = perms.members || [];
+  state.levelNames = perms.level_names || {};
+  state.defaultLevel = perms.default_level != null ? perms.default_level : 2;
+  state.maxLevel = perms.max_level != null ? perms.max_level : 5;
+  state.lockedLevel = perms.locked_level != null ? perms.locked_level : 6;
   const sub = qs("#perm-sub");
   if (sub) {
     sub.textContent = `发送者等级决定它能触发哪些工具 · 未登记成员默认 ${levelLabel(state.defaultLevel)}`;
   }
   const addSel = qs("#actor-level");
   if (addSel) addSel.innerHTML = levelOptions(state.defaultLevel, 0, state.maxLevel);
+  setTools(tools);
   renderActors();
-  await fetchTools();
   renderPermTools();
 }
 function renderActors() {
@@ -73,14 +73,14 @@ async function addActor() {
     qs("#actor-name").value = "";
     toast(`已设为 ${levelLabel(level)}`, "success");
   } catch (err) { toast(err.message, "error"); }
-  guarded("permissions", refreshPermissions);
+  reloadPage("permissions");
 }
 async function saveActorLevel(openid, level) {
   try {
     await api("/api/actors", { method: "POST", body: { openid, level: Number(level) } });
     toast(`已把 ${openid.slice(0, 8)} 设为 ${levelLabel(level)}`, "success");
   } catch (err) { toast(err.message, "error"); }
-  guarded("permissions", refreshPermissions);
+  reloadPage("permissions");
 }
 async function saveToolLevel(name, level) {
   try {
@@ -89,6 +89,6 @@ async function saveToolLevel(name, level) {
     });
     toast(`已把 ${name} 门槛设为 ${levelLabel(d.level)}`, "success");
   } catch (err) { toast(err.message, "error"); }
-  guarded("permissions", refreshPermissions);
+  reloadPage("permissions");
 }
 

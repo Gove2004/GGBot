@@ -24,13 +24,18 @@ function markRestartFields(paths) {
   });
 }
 
-async function loadConfig() {
-  const d = await api("/api/config");
+function fillConfigFields(config) {
   qsa("[data-path]").forEach((el) => {
-    const v = getPath(d.config, el.dataset.path);
+    const v = getPath(config, el.dataset.path);
     if (el.type === "checkbox") el.checked = !!v;
     else if (v !== undefined && v !== null) el.value = v;
   });
+}
+
+/* 设置页一次拿到 {config,allowed,restart}：config 是脱敏后的整份配置，
+   restart 是后端点名的「改这几项得重启」，前端只负责把标记挂到对应字段上。 */
+function renderSettings(d) {
+  fillConfigFields(d.config);
   markRestartFields(d.restart);
   setConfigDirty(false);
   qs("#cfg-msg").textContent = "修改后点击保存，写回 config.json 并热生效（标了「需重启」的除外）";
@@ -60,13 +65,7 @@ async function saveConfig() {
     setConfigDirty(false);
     qs("#cfg-msg").textContent = `已保存 ${(r.updated || []).length} 项${rejected ? `，拒绝 ${rejected} 项` : ""}`;
     toast(`设置已保存${rejected ? `（${rejected} 项无效）` : ""}`, rejected ? "info" : "success");
-    if (r.config) {
-      qsa("[data-path]").forEach((el) => {
-        const v = getPath(r.config, el.dataset.path);
-        if (el.type === "checkbox") el.checked = !!v;
-        else if (v !== undefined && v !== null) el.value = v;
-      });
-    }
+    if (r.config) fillConfigFields(r.config);
   } catch (err) {
     toast(err.message, "error");
     setConfigDirty(true);

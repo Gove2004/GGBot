@@ -29,8 +29,19 @@ function renderDuty(s, online) {
   if (track) track.title = `名义窗口 ${fmtAgo(base)}，实际每次按 ±${jitter || 0}% 抖动；续期推后的时间不进轨道`;
 }
 
-async function refreshStatus() {
-  const s = await api("/api/status");
+/* 外壳读数：顶栏胶囊、侧栏状态与仪表盘指标都从这一份画，一次请求一次渲染。
+   每秒一次的轮询也走这个入口：服务端慢的时候不排队叠加，请求失败只提示一次。 */
+function refreshShell() {
+  return guarded("shell", loadShell);
+}
+
+async function loadShell() {
+  const d = await api("/api/shell");
+  renderStatus(d.status);
+  renderStats(d.stats);
+}
+
+function renderStatus(s) {
   state.status = s;
   const online = s.state === "online";
   const conn = qs("#conn-pill");
@@ -65,8 +76,7 @@ async function refreshStatus() {
   renderDashSessions();
 }
 
-async function refreshStats() {
-  const d = await api("/api/stats");
+function renderStats(d) {
   state.stats = d;
   qs("#m-online").textContent = d.online_sessions != null ? d.online_sessions : "—";
   qs("#m-pending").textContent = d.waiting != null ? d.waiting : "—";
@@ -146,8 +156,7 @@ function renderDashSessions() {
   body.innerHTML = rows.join("") || '<tr><td colspan="5" class="empty">暂无会话</td></tr>';
 }
 
-async function refreshDashRecent() {
-  const rows = await api("/api/messages?limit=8");
+function renderDashRecent(rows) {
   const box = qs("#dash-recent");
   box.innerHTML = (rows || []).map((m) => `<div class="mini-item">
     <span class="mini-role ${m.role === "assistant" ? "assistant" : ""}"></span>

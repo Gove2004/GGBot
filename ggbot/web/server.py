@@ -58,6 +58,9 @@ LOGIN_WINDOW_SEC = 60
 API_RATE_LIMIT = 240
 API_RATE_WINDOW_SEC = 10
 RATE_MAP_MAX = 2048
+# 页面读数的两份「不跟筛选走」的固定量：会话清单一次给全、仪表盘最近消息 8 条
+SESSIONS_LIMIT = 500
+RECENT_LIMIT = 8
 
 # 安全响应头（无内联脚本/样式，前端全部走 /static）
 CSP = (
@@ -424,38 +427,22 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         response.delete_cookie(COOKIE_NAME, path="/")
         return {"ok": True}
 
-    # ---------- 状态 ----------
+    # ---------- 外壳读数 ----------
 
-    @app.get("/api/status")
-    async def status(request: Request, x_token: str | None = Header(default=None)):
+    @app.get("/api/shell")
+    async def shell(request: Request, x_token: str | None = Header(default=None)):
         _auth(request, x_token)
-        return presence.status()
-
-    @app.get("/api/stats")
-    async def stats(request: Request, x_token: str | None = Header(default=None)):
-        _auth(request, x_token)
-        out = storage.stats()
+        # 在线态只算一次：以前 /api/status 与 /api/stats 各自跑一遍 presence.status()，
+        # 面板每秒打两次卡，两份读数还可能对不上
         live = presence.status()
+        out = storage.stats()
         out["online_sessions"] = live.get("online_sessions", 0)
         out["state"] = live.get("state", "offline")
         out["runtime"] = runtime.snapshot()
         out["env"] = _env_info(cfg)
-        return out
+        return {"status": live, "stats": out}
 
-    @app.get("/api/sessions")
-    async def sessions(
-        request: Request,
-        limit: int = 200,
-        x_token: str | None = Header(default=None),
-    ):
-        _auth(request, x_token)
-        rows = storage.list_sessions(min(max(limit, 1), 1000))
-        live = {s["sid"]: s for s in (presence.status().get("sessions") or [])}
-        for row in rows:
-            row["label"] = session_label(row.get("id"))
-            st = live.get(row.get("id"))
-            row["live"] = st or {"state": "offline", "reason": "idle", "remaining_sec": 0, "idle_sec": None}
-        return rows
+    # ---------- 会话详情 ----------
 
     @app.get("/api/sessions/{sid}/messages")
     async def session_messages(
@@ -491,21 +478,6 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         logger.info("Web 清理会话上下文 %s: %d 条消息", session_label(sid), removed["messages"])
         return {"ok": True, **removed}
 
-    # ---------- 消息 ----------
-
-    @app.get("/api/messages")
-    async def messages(
-        request: Request,
-        limit: int = 30,
-        session_id: str | None = None,
-        role: str | None = None,
-        x_token: str | None = Header(default=None),
-    ):
-        _auth(request, x_token)
-        return storage.recent_messages_global(
-            min(max(limit, 1), 500), session_id=session_id or None, role=role or None
-        )
-
     # ---------- 表情包 ----------
     # 素材目录是唯一真相，工具与面板读写同一份索引/向量/使用统计；这里只是开了第二条入口，
     # 写入全部走 EmojiLibrary（去重、上限、向量重算都在它身上，面板不另存一套状态）。
@@ -521,36 +493,6 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         if lib is None:
             raise HTTPException(503, "表情工具未启用（工具页里打开 send_emoji 才能管理素材）")
         return lib
-
-    @app.get("/api/emojis")
-    async def emojis(
-        request: Request,
-        force: int = 0,
-        x_token: str | None = Header(default=None),
-    ):
-        _auth(request, x_token)
-        lib = _emoji_lib()
-        if lib is None:
-            return {"items": [], "mode": "none", "max_stickers": 0, "max_image_bytes": 0}
-        # force=1：面板「刷新」按钮要立刻看到刚丢进目录的图；平时用扫目录缓存
-        rows = await lib.rows(force=bool(force))
-        return {
-            "mode": lib.matcher.mode,
-            "max_stickers": int(lib.config.get("max_stickers", 0) or 0),
-            "max_image_bytes": lib.max_image_bytes,
-            "items": [
-                {
-                    "file": r["file"],
-                    "desc": r["desc"],
-                    "added_at": r["added_at"],
-                    "use_count": r["use_count"],
-                    "last_used_at": r["last_used_at"],
-                    "has_vec": r["vec"] is not None,
-                    "url": f"/emoji/{quote(r['file'])}",
-                }
-                for r in rows
-            ],
-        }
 
     @app.post("/api/emojis/import")
     async def emoji_import(
@@ -626,35 +568,6 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         if rem is None:
             raise HTTPException(503, "日程工具未挂载，暂时改不了日程")
         return rem
-
-    @app.get("/api/reminders")
-    async def reminders(
-        request: Request,
-        status: str = "pending",
-        session_id: str | None = None,
-        q: str | None = None,
-        limit: int = 200,
-        offset: int = 0,
-        x_token: str | None = Header(default=None),
-    ):
-        _auth(request, x_token)
-        from tool.schedule._rule import rule_label as _rule_label
-
-        st = None if status in ("", "all") else status
-        n = min(max(limit, 1), 500)
-        rows = await asyncio.to_thread(
-            storage.list_reminders, session_id or None, st, n, max(offset, 0), q or None)
-        total = storage.count_reminders(session_id or None, st, q or None)
-        now = int(time.time())
-        stats = await asyncio.to_thread(storage.reminder_stats, now, _day_start_ts(now))
-        for r in rows:
-            r["rule_label"] = _rule_label(r.get("rule") or "")
-        rem = _schedule_or_none()
-        cfg = rem.config if rem else {}
-        return {"items": rows, "total": total, "offset": max(offset, 0), "stats": stats,
-                "limits": {k: cfg.get(k) for k in
-                           ("max_pending", "max_days", "max_text_chars",
-                            "keep_history_days", "max_rows", "miss_grace_sec")}}
 
     @app.post("/api/reminders/{rid}/cancel")
     async def cancel_reminder(
@@ -750,43 +663,6 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
 
     # ---------- 记忆 ----------
 
-    @app.get("/api/memories")
-    async def memories(
-        request: Request,
-        limit: int = 50,
-        offset: int = 0,
-        session_id: str | None = None,
-        subject: str | None = None,
-        kind: str | None = None,
-        x_token: str | None = Header(default=None),
-    ):
-        _auth(request, x_token)
-        sid = session_id or None
-        n = min(max(limit, 1), 500)
-        rows = await asyncio.to_thread(storage.list_memories, sid, n, max(offset, 0), subject, kind)
-        cfg = memory.m
-        return {
-            "items": await asyncio.to_thread(memory.panel_rows, rows),
-            "total": storage.count_memories(sid, subject, kind),
-            "limits": {"max_memories": cfg["max_memories"],
-                       "max_per_subject": cfg["max_per_subject"],
-                       "forget_after_days": cfg["forget_after_days"]},
-        }
-
-    @app.get("/api/memories/search")
-    async def memory_search(
-        q: str,
-        request: Request,
-        k: int = 5,
-        session_id: str | None = None,
-        x_token: str | None = Header(default=None),
-    ):
-        _auth(request, x_token)
-        hits = await asyncio.to_thread(
-            memory.search, q, min(max(k, 1), 50), session_id or None, None
-        )
-        return await asyncio.to_thread(memory.panel_rows, hits)
-
     @app.post("/api/memories")
     async def memory_add(
         body: MemoryIn,
@@ -871,17 +747,6 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
 
     # ---------- 工具（插件清单 / 启停） ----------
 
-    @app.get("/api/tools")
-    async def list_tools(request: Request, x_token: str | None = Header(default=None)):
-        _auth(request, x_token)
-        ex = getattr(presence, "executor", None)
-        if ex is None:
-            return {"tools": []}
-        rows = ex.list_tools()
-        for row in rows:
-            row["config"] = mask_secrets(row.get("config") or {})
-        return {"tools": rows}
-
     @app.post("/api/tools/{name}/toggle")
     async def toggle_tool(
         name: str,
@@ -909,18 +774,6 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         if p is None:
             raise HTTPException(status_code=503, detail="权限模块未就绪")
         return p
-
-    @app.get("/api/actors")
-    async def list_actors(request: Request, x_token: str | None = Header(default=None)):
-        _auth(request, x_token)
-        p = _perms()
-        return {
-            "actors": p.members(),
-            "default_level": p.default_level,
-            "level_names": {str(k): v for k, v in LEVEL_NAMES.items()},
-            "max_level": LEVEL_MAX,
-            "locked_level": LEVEL_LOCKED,
-        }
 
     @app.post("/api/actors")
     async def set_actor(
@@ -960,12 +813,6 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         return {"ok": True, "level": level, "config": mask_secrets(data)}
 
     # ---------- 配置（Web 热更新） ----------
-
-    @app.get("/api/config")
-    async def get_config(request: Request, x_token: str | None = Header(default=None)):
-        _auth(request, x_token)
-        return {"config": mask_secrets(cfg.data), "allowed": ALLOWED_SETTINGS,
-                "restart": RESTART_SETTINGS}
 
     @app.post("/api/config")
     async def update_config(
@@ -1019,11 +866,6 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
             "max_chars": SYSTEM_PROMPT_MAX_CHARS,
         }
 
-    @app.get("/api/system-prompt")
-    async def get_system_prompt(request: Request, x_token: str | None = Header(default=None)):
-        _auth(request, x_token)
-        return _system_prompt_payload()
-
     @app.post("/api/system-prompt")
     async def update_system_prompt(
         body: SystemPromptIn,
@@ -1043,26 +885,61 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
                     "自定义" if text.strip() else "回到内置默认", len(text))
         return _system_prompt_payload()
 
-    # ---------- 日志查看 ----------
+    # ---------- 页面读数：一进页面一次拿齐 ----------
+    # 面板的读全部收在 GET /api/page/<name>：一次往返就是这一页要画的完整快照，
+    # 筛选/分页参数原样带在 query 上，口径校验留在各页自己的 loader 里。
+    # 写操作不跟着动——仍然按资源走，改完由前端重新拉一次这一页。
+    # 一份数据一个名字（sessions / memories / reminders…），多页共用的那份只有一份实现。
 
-    @app.get("/api/logs")
-    async def get_logs(
-        request: Request,
-        lines: int = 200,
-        level: str = "DEBUG",
-        session: str | None = None,
-        q: str | None = None,
-        x_token: str | None = Header(default=None),
-    ):
-        _auth(request, x_token)
+    class _Q:
+        """query 参数的取值口径：缺省、非法、越界都在这层收掉，loader 里只留业务。"""
+
+        def __init__(self, request: Request):
+            self._d = request.query_params
+
+        def text(self, key: str) -> str:
+            return (self._d.get(key) or "").strip()
+
+        def num(self, key: str, default: int, lo: int | None = None, hi: int | None = None) -> int:
+            raw = self._d.get(key)
+            try:
+                n = default if raw in (None, "") else int(raw)
+            except ValueError:
+                n = default
+            if lo is not None:
+                n = max(lo, n)
+            if hi is not None:
+                n = min(hi, n)
+            return n
+
+    # 会话清单与最近消息不带参数：面板要的永远是「全部会话 + 最近 8 条」，
+    # 参数留着只会让「记忆页的 limit」和「会话清单的 limit」撞名。
+    async def _ds_sessions(q: _Q) -> dict:
+        return {"sessions": await asyncio.to_thread(_live_sessions, SESSIONS_LIMIT)}
+
+    def _live_sessions(limit: int) -> list[dict]:
+        rows = storage.list_sessions(limit)
+        live = {s["sid"]: s for s in (presence.status().get("sessions") or [])}
+        for row in rows:
+            row["label"] = session_label(row.get("id"))
+            st = live.get(row.get("id"))
+            row["live"] = st or {"state": "offline", "reason": "idle",
+                                 "remaining_sec": 0, "idle_sec": None}
+        return rows
+
+    async def _ds_recent(q: _Q) -> dict:
+        return {"recent": await asyncio.to_thread(storage.recent_messages_global, RECENT_LIMIT)}
+
+    async def _ds_logs(q: _Q) -> dict:
         from ggbot.util.logging_setup import tail_log
 
-        n = min(max(lines, 1), 2000)
+        level = q.text("level") or "DEBUG"
+        session, needle = q.text("session"), q.text("q")
+        n = q.num("lines", 200, 1, 2000)
         # 会话/内容筛选要先筛后截：先取最近 n 行再筛，等于只能在这么宽的窗口里搜，
         # 窗口外的日志永远筛不出来（等级门槛在 tail_log 里已经先筛过）
-        raw = tail_log(cfg.log_file, None if (session or q) else n, level)
-        ses = (session or "").lower()
-        needle = (q or "").lower()
+        raw = tail_log(cfg.log_file, None if (session or needle) else n, level)
+        ses, want = session.lower(), needle.lower()
         logs = []
         for line in raw:
             m = LOG_LINE_RE.match(line)
@@ -1081,7 +958,7 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
                         sess = SYSTEM_LABEL
             if ses and ses not in sess.lower():
                 continue
-            if needle and needle not in content.lower():
+            if want and want not in content.lower():
                 continue
             logs.append({"ts": ts[:23], "level": lv, "session": sess, "content": content})
         total = len(logs)
@@ -1089,7 +966,132 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
             log_name = cfg.log_file.relative_to(cfg.log_file.parent.parent.parent).as_posix()
         except ValueError:
             log_name = cfg.log_file.name
-        return {"level": level, "file": log_name, "logs": logs[-n:], "total": total}
+        return {"logs": {"level": level, "file": log_name, "logs": logs[-n:], "total": total}}
+
+    async def _ds_reminders(q: _Q) -> dict:
+        from tool.schedule._rule import rule_label as _rule_label
+
+        st = q.text("status") or "pending"
+        st = None if st == "all" else st
+        sid, needle = q.text("session_id") or None, q.text("q") or None
+        offset = q.num("offset", 0, 0)
+        rows = await asyncio.to_thread(
+            storage.list_reminders, sid, st, q.num("limit", 200, 1, 500), offset, needle)
+        total = storage.count_reminders(sid, st, needle)
+        now = int(time.time())
+        stats = await asyncio.to_thread(storage.reminder_stats, now, _day_start_ts(now))
+        for r in rows:
+            r["rule_label"] = _rule_label(r.get("rule") or "")
+        rem = _schedule_or_none()
+        tool_cfg = rem.config if rem else {}
+        return {"reminders": {
+            "items": rows, "total": total, "offset": offset, "stats": stats,
+            "limits": {k: tool_cfg.get(k) for k in
+                       ("max_pending", "max_days", "max_text_chars",
+                        "keep_history_days", "max_rows", "miss_grace_sec")}}}
+
+    async def _ds_memories(q: _Q) -> dict:
+        sid, subject, kind = q.text("session_id") or None, q.text("subject") or None, q.text("kind") or None
+        needle = q.text("q")
+        mcfg = memory.m
+        out = {
+            "limits": {"max_memories": mcfg["max_memories"],
+                       "max_per_subject": mcfg["max_per_subject"],
+                       "forget_after_days": mcfg["forget_after_days"]},
+            # 整库容量读数与筛选无关，而且已经按遗忘扫描的口径扣掉到期/淡出
+            "usage": await asyncio.to_thread(memory.usage),
+            "searched": bool(needle),
+        }
+        if needle:
+            # 「检索」也只列命中，但 limits/usage 照样带上——临界提示在检索时说的是同一套口径
+            hits = await asyncio.to_thread(
+                memory.search, needle, q.num("k", 50, 1, 50), sid, None)
+            out["items"] = await asyncio.to_thread(memory.panel_rows, hits)
+            out["total"] = len(out["items"])
+        else:
+            rows = await asyncio.to_thread(
+                storage.list_memories, sid, q.num("limit", 200, 1, 500), q.num("offset", 0, 0),
+                subject, kind)
+            out["items"] = await asyncio.to_thread(memory.panel_rows, rows)
+            out["total"] = storage.count_memories(sid, subject, kind)
+        return {"memories": out}
+
+    async def _ds_emojis(q: _Q) -> dict:
+        lib = _emoji_lib()
+        if lib is None:
+            return {"emojis": {"items": [], "mode": "none", "max_stickers": 0, "max_image_bytes": 0}}
+        # force=1：面板「刷新」按钮要立刻看到刚丢进目录的图；平时用扫目录缓存
+        rows = await lib.rows(force=bool(q.num("force", 0, 0, 1)))
+        return {"emojis": {
+            "mode": lib.matcher.mode,
+            "max_stickers": int(lib.config.get("max_stickers", 0) or 0),
+            "max_image_bytes": lib.max_image_bytes,
+            "items": [
+                {
+                    "file": r["file"],
+                    "desc": r["desc"],
+                    "added_at": r["added_at"],
+                    "use_count": r["use_count"],
+                    "last_used_at": r["last_used_at"],
+                    "has_vec": r["vec"] is not None,
+                    "url": f"/emoji/{quote(r['file'])}",
+                }
+                for r in rows
+            ],
+        }}
+
+    async def _ds_tools(q: _Q) -> dict:
+        ex = getattr(presence, "executor", None)
+        if ex is None:
+            return {"tools": []}
+        rows = ex.list_tools()
+        for row in rows:
+            # 密钥只在这里脱敏：工具配置既给「工具」页也给「权限」页，两份都得是脱敏后的
+            row["config"] = mask_secrets(row.get("config") or {})
+        return {"tools": rows}
+
+    async def _ds_system_prompt(q: _Q) -> dict:
+        return {"system_prompt": _system_prompt_payload()}
+
+    async def _ds_settings(q: _Q) -> dict:
+        return {"settings": {"config": mask_secrets(cfg.data), "allowed": ALLOWED_SETTINGS,
+                             "restart": RESTART_SETTINGS}}
+
+    async def _ds_permissions(q: _Q) -> dict:
+        p = _perms()
+        return {"permissions": {
+            "members": p.members(),
+            "default_level": p.default_level,
+            "level_names": {str(k): v for k, v in LEVEL_NAMES.items()},
+            "max_level": LEVEL_MAX,
+            "locked_level": LEVEL_LOCKED,
+        }}
+
+    # 一页要读哪几份数据，全在这张表里；前端 PAGE_META 有同名条目才拉得到数据
+    PAGES: dict[str, list] = {
+        "dash": [_ds_sessions, _ds_recent],
+        "logs": [_ds_logs],
+        "sessions": [_ds_sessions],
+        "schedule": [_ds_sessions, _ds_reminders],
+        "memory": [_ds_sessions, _ds_memories],
+        "emojis": [_ds_emojis],
+        "persona": [_ds_system_prompt],
+        "settings": [_ds_settings],
+        "permissions": [_ds_permissions, _ds_tools],
+        "tools": [_ds_tools],
+    }
+
+    @app.get("/api/page/{name}")
+    async def page_data(name: str, request: Request, x_token: str | None = Header(default=None)):
+        _auth(request, x_token)
+        loaders = PAGES.get(name)
+        if loaders is None:
+            raise HTTPException(status_code=404, detail="没有这一页")
+        q = _Q(request)
+        out: dict = {}
+        for load in loaders:
+            out.update(await load(q))
+        return out
 
     # ---------- WebSocket ----------
 

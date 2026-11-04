@@ -102,24 +102,16 @@ function schItem(r, now) {
 const SCH_PAGE = 50;       // 一次拉 50 条；「载入更多」是把窗口撑大，不是翻页
 const SCH_WINDOW = 500;    // 后端单次最多给 500 条，再要靠筛选缩小范围
 
-async function refreshSchedule() {
-  const params = new URLSearchParams({
-    status: qs("#sch-status").value,
-    limit: String(Math.min(state.schLimit || SCH_PAGE, SCH_WINDOW)),
-  });
-  const sid = qs("#sch-session").value;
-  if (sid) params.set("session_id", sid);
-  const q = (qs("#sch-q").value || "").trim();
-  if (q) params.set("q", q);
-  const d = await api(`/api/reminders?${params}`);
+/* 日程页一次拿到 {items,total,offset,stats,limits}；筛选参数由 refresh.js 从这几个控件读。 */
+function renderSchedule(d) {
   state.schItems = d.items || [];
   state.schTotal = Number(d.total) || 0;
   state.schStats = d.stats || {};
   state.schLimits = d.limits || {};
-  renderSchedule();
+  paintSchedule();
 }
 
-function renderSchedule() {
+function paintSchedule() {
   const now = Date.now() / 1000;
   const items = state.schItems;
   const body = qs("#sch-body");
@@ -167,7 +159,7 @@ function renderSchedule() {
 
 function loadMoreSchedule() {
   state.schLimit = Math.min((state.schLimit || SCH_PAGE) + SCH_PAGE, SCH_WINDOW);
-  guarded("schedule", refreshSchedule);
+  reloadPage("schedule");
 }
 
 function openScheduleEdit(id) {
@@ -201,7 +193,7 @@ async function saveSchedule(id) {
     await api(`/api/reminders/${encodeURIComponent(id)}`, { method: "PUT", body });
     closeModal();
     toast(body.due_ts ? `已改到 ${schDue(body.due_ts)}` : "已改正文", "success");
-    guarded("schedule", refreshSchedule);
+    reloadPage("schedule");
   } catch (err) { toast(err.message, "error"); }
 }
 
@@ -216,7 +208,7 @@ async function cancelSchedule(id) {
   try {
     await api(`/api/reminders/${encodeURIComponent(id)}/cancel`, { method: "POST" });
     toast(`已取消 #${id}`, "success");
-    guarded("schedule", refreshSchedule);
+    reloadPage("schedule");
   } catch (err) { toast(err.message, "error"); }
 }
 
@@ -227,7 +219,7 @@ async function deleteSchedule(id) {
   try {
     await api(`/api/reminders/${encodeURIComponent(id)}`, { method: "DELETE" });
     toast(`已删除 #${id}`, "success");
-    guarded("schedule", refreshSchedule);
+    reloadPage("schedule");
   } catch (err) { toast(err.message, "error"); }
 }
 
@@ -271,7 +263,7 @@ async function purgeSchedule() {
     closeModal();
     toast(`已删掉 ${r.removed || 0} 条历史日程`, "success");
     state.schLimit = SCH_PAGE;
-    guarded("schedule", refreshSchedule);
+    reloadPage("schedule");
   } catch (err) { toast(err.message, "error"); }
 }
 
@@ -286,6 +278,6 @@ async function sweepSchedule() {
     const r = await api("/api/reminders/sweep", { method: "POST" });
     toast(`到期删 ${r.aged || 0} · 超限删 ${r.over || 0}（剩 ${r.total || 0} 条）`, "success");
     state.schLimit = SCH_PAGE;
-    guarded("schedule", refreshSchedule);
+    reloadPage("schedule");
   } catch (err) { toast(err.message, "error"); }
 }

@@ -1,14 +1,14 @@
 "use strict";
 
 /* ================= 表情包 ================= */
-async function refreshEmojis(force) {
-  // force=1：刚丢进目录/刚改完删完，要立刻重扫一遍；平时吃服务端的扫目录缓存
-  const d = await api("/api/emojis" + (force ? "?force=1" : ""));
-  state.emojiItems = (d && d.items) || [];
-  state.emojiMode = (d && d.mode) || "none";
-  state.emojiMax = Number(d && d.max_stickers) || 0;
-  state.emojiMaxBytes = Number(d && d.max_image_bytes) || 0;
-  renderEmojis();
+/* 表情页一次拿到 {items,mode,max_stickers,max_image_bytes}。
+   force=1 只来自「刷新」按钮：刚丢进目录的图要立刻重扫一遍，平时吃服务端的扫目录缓存。 */
+function renderEmojis(d) {
+  state.emojiItems = d.items || [];
+  state.emojiMode = d.mode || "none";
+  state.emojiMax = Number(d.max_stickers) || 0;
+  state.emojiMaxBytes = Number(d.max_image_bytes) || 0;
+  paintEmojiGrid();
 }
 
 function filteredEmojis() {
@@ -18,7 +18,7 @@ function filteredEmojis() {
   );
 }
 
-function renderEmojis() {
+function paintEmojiGrid() {
   const body = qs("#emoji-body");
   if (!body) return;
   const rows = filteredEmojis();
@@ -77,7 +77,7 @@ async function saveEmojiDesc(file) {
     });
     closeModal();
     toast(out.note || "已保存", "success");
-    guarded("emojis", () => refreshEmojis(true));
+    reloadPage("emojis", { force: "1" });
   } catch (err) { toast(err.message, "error"); }
 }
 
@@ -89,7 +89,7 @@ async function deleteEmoji(file) {
   try {
     await api(`/emoji/${emojiUrl(file)}`, { method: "DELETE" });
     toast("已删除", "success");
-    guarded("emojis", () => refreshEmojis(true));
+    reloadPage("emojis", { force: "1" });
   } catch (err) { toast(err.message, "error"); }
 }
 
@@ -103,6 +103,6 @@ async function uploadEmoji(file) {
     const params = new URLSearchParams({ name: file.name });
     const out = await api(`/api/emojis/import?${params}`, { method: "POST", body: file });
     toast(out.note ? `${out.name} ${out.note}` : `已导入 ${out.name}`, "success");
-    guarded("emojis", () => refreshEmojis(true));
+    reloadPage("emojis", { force: "1" });
   } catch (err) { toast(err.message, "error"); }
 }

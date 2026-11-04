@@ -13,13 +13,13 @@ function fmtCfgValue(v) {
   if (v && typeof v === "object") return JSON.stringify(v);
   return String(v);
 }
-async function fetchTools() {
-  const d = await api("/api/tools");
-  state.tools = (d.tools || []).slice().sort((a, b) =>
+/* 工具清单是「工具」页与「权限」页共用的那份数据，后端一次给全（配置已脱敏）。 */
+function setTools(rows) {
+  state.tools = (rows || []).slice().sort((a, b) =>
     toolOrder(a.category) - toolOrder(b.category) || a.name.localeCompare(b.name));
 }
-async function refreshTools() {
-  await fetchTools();
+function renderToolsPage(rows) {
+  setTools(rows);
   renderToolCats();
   renderTools();
 }
