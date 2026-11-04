@@ -3,22 +3,27 @@
   .app.rail .sidebar { width: 78px; flex-basis: 78px; }
   .app.rail .side-brand { justify-content: center; padding: 18px 0; }
   .app.rail .side-brand > div { display: none; }
-  .app.rail .side-nav { padding: 16px 12px; }
+  .app.rail .side-nav { padding: var(--s-4) var(--s-3); }
   .app.rail .nav-label { display: none; }
   .app.rail .nav-group { margin-bottom: 8px; }
   .app.rail .nav-group + .nav-group { padding-top: 10px; border-top: 1px solid var(--border-soft); }
   .app.rail .nav-item { justify-content: center; gap: 0; padding: 10px 0; font-size: 0; }
-  .app.rail .nav-item > span { display: none; }
+  /* 收起态只剩图标，但文字不能 display:none——那会把按钮的可访问名一起删掉。
+     压成 1px 裁掉：视觉上消失了，读屏仍然念得出「仪表盘」。 */
+  .app.rail .nav-item > span {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap;
+  }
   .app.rail .nav-item svg { width: 19px; height: 19px; }
   .app.rail .nav-item.active::before { left: -12px; }
   .app.rail .side-live span:last-child, .app.rail .side-stat-row, .app.rail .side-ver { display: none; }
-  .app.rail .side-foot { align-items: center; padding: 16px 0; }
+  .app.rail .side-foot { align-items: center; padding: var(--s-4) 0; }
 }
 
 /* ================= 响应式 ================= */
 @media (max-width: 1080px) {
   /* 值班带三列在 1080 以下挤不下，把倒计时收进左侧状态块，进度条独占一行 */
-  .hero { grid-template-columns: minmax(0, 1fr) auto; gap: 20px 26px; padding: 20px 22px; }
+  .hero { grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-5) var(--s-6); padding: var(--s-5); }
   .duty { grid-column: 1 / -1; grid-row: 2; }
   .grid-2 { grid-template-columns: minmax(0, 1fr); }
   .settings-grid { grid-template-columns: minmax(0, 1fr); }
@@ -33,13 +38,13 @@
     position: fixed; left: 0; top: 0; bottom: 0;
     width: min(260px, 84vw); flex-basis: auto;
     transform: translateX(-100%); transition: transform .22s ease;
-    box-shadow: 20px 0 60px rgba(0, 0, 0, .5);
+    box-shadow: var(--shadow-drawer);
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
   }
   .sidebar.open { transform: translateX(0); }
-  .side-overlay { position: fixed; inset: 0; z-index: 35; background: rgba(0, 0, 0, .48); }
-  .content { padding: 16px 14px 22px; }
+  .side-overlay { position: fixed; inset: 0; z-index: 35; background: var(--scrim); }
+  .content { padding: var(--s-4) var(--s-4) var(--s-6); }
   .hero { grid-template-columns: minmax(0, 1fr); }
   .hero-side { flex-direction: row; align-items: baseline; justify-content: space-between; width: 100%; text-align: left; }
   .duty { grid-row: auto; }
@@ -58,15 +63,15 @@
 }
 
 @media (max-width: 620px) {
-  .topbar { padding: 0 10px; gap: 8px; }
+  .topbar { padding: 0 var(--s-3); gap: var(--s-2); }
   .topbar-actions { gap: 2px; }
   .topbar-actions .pill { display: none; }
   .icon-btn { width: 40px; height: 40px; }
-  .page-heading h1 { font-size: 16px; }
+  .page-heading h1 { font-size: var(--fs-5); }
 
-  .content { padding: 12px 10px 20px; padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
-  .card { padding: 15px 14px; border-radius: 15px; }
-  .card-head { margin-bottom: 12px; gap: 10px; }
+  .content { padding: var(--s-3) var(--s-3) var(--s-5); padding-bottom: calc(var(--s-5) + env(safe-area-inset-bottom)); }
+  .card { padding: var(--s-4) var(--s-3); border-radius: 15px; }
+  .card-head { margin-bottom: var(--s-3); gap: var(--s-2); }
   .card-head .head-ops { width: 100%; gap: 6px; }
   .head-ops .small-input {
     flex: 1 1 128px; width: auto; min-width: 0;
@@ -75,16 +80,17 @@
   #page-logs .head-ops .check-field { min-height: 40px; }
   .tool-row { gap: 6px; }
 
+  /* 16px 是给 iOS 的特例，不上阶梯：低于它的输入框一聚焦页面就放大 */
   .input, .sel, textarea, .small-input, .login-card .field > .input { font-size: 16px; }
   .input, .sel { height: 42px; }
   .btn { min-height: 38px; }
   .btn.small { min-height: 34px; }
 
-  .hero { padding: 16px 15px; gap: 16px; }
-  .hero-title { font-size: 25px; }
-  .countdown { font-size: 31px; }
-  .hero-sub { font-size: 12.5px; }
-  .duty-head { font-size: 9.5px; letter-spacing: .5px; }
+  .hero { padding: var(--s-4); gap: var(--s-4); }
+  .hero-title { font-size: var(--fs-7); }
+  .countdown { font-size: var(--fs-8); }
+  .hero-sub { font-size: var(--fs-2); }
+  .duty-head { letter-spacing: .5px; }
 
   /* 记忆两条工具条的小标题在手机上没有横向空间，收掉；控件自己换行 */
   .mem-band { grid-template-columns: minmax(0, 1fr); gap: 6px; }
@@ -96,26 +102,25 @@
   .memory-tools #mem-session,
   .memory-tools #mem-add-expires { width: auto; flex: 1 1 118px; }
 
-  .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
-  .metric { padding: 13px 13px 12px; }
-  .metric strong { font-size: 22px; }
+  /* 读数带在手机上收两列：分隔线还是靠那条 1px 的 gap，字号跟桌面同一档 */
+  .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metric { padding: var(--s-3); }
 
-  .runtime-card { padding: 14px 14px 15px; }
-  .runtime-grid { gap: 8px; grid-template-columns: repeat(auto-fit, minmax(94px, 1fr)); }
-  .rt-item { padding: 8px 10px; }
-  .rt-item strong { font-size: 15px; }
-  .env-item { grid-template-columns: 74px minmax(0, 1fr); padding: 8px 10px; }
-  .env-value { font-size: 12.5px; }
+  .runtime-card { padding: var(--s-4); }
+  .rt-item { padding: var(--s-2) var(--s-3); }
+  .rt-item strong { font-size: var(--fs-5); }
+  .env-item { grid-template-columns: 74px minmax(0, 1fr); padding: var(--s-2) var(--s-3); }
+  .env-value { font-size: var(--fs-2); }
   .col-num { width: 60px; }
 
   .session-list { max-height: 260px; }
   .detail-pane { min-height: 0; height: 68vh; }
   .detail-head { flex-direction: column; }
   .detail-head .row-actions { opacity: 1; }
-  .detail-head, .detail-stats { padding-left: 14px; padding-right: 14px; }
+  .detail-head, .detail-stats { padding-left: var(--s-3); padding-right: var(--s-3); }
   .detail-stats { gap: 6px; }
   .stat-chip { height: auto; padding: 5px 10px; }
-  .detail-scroll { padding: 14px; }
+  .detail-scroll { padding: var(--s-3); }
   .chat { max-width: 92%; }
 
   .log-wrap { max-height: calc(100dvh - 196px); min-height: 200px; }
@@ -125,50 +130,53 @@
     grid-template-areas:
       "ts lv sess"
       "msg msg msg";
-    gap: 3px 8px;
-    padding: 8px 10px 8px 8px;
-    font-size: 11px;
+    gap: var(--s-1) var(--s-2);
+    padding: var(--s-2) var(--s-3) var(--s-2) var(--s-2);
+    font-size: var(--fs-1);
   }
   .log-ts { grid-area: ts; }
   .log-lv { grid-area: lv; }
   .log-sess { grid-area: sess; display: block; }
   .log-msg { grid-area: msg; margin-top: 2px; }
 
-  .table th, .table td { padding: 8px 9px; }
+  .table th, .table td { padding: var(--s-2) var(--s-3); }
   .col-sm-hide { display: none; }
   .table td.msg { max-width: 220px; }
   .table td .badge { white-space: nowrap; }
   #page-dash .table th:nth-child(5), #page-dash .table td:nth-child(5) { display: none; }
   /* 日程行：钟点那一格挤不进三列布局，改成整行占满、正文与按钮再并排 */
   #page-schedule .sch-body { max-height: none; }
-  #page-schedule .sch-item { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; padding: 9px 10px 9px 13px; }
-  #page-schedule .sch-when { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 8px; }
+  #page-schedule .sch-item { grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-1) var(--s-2); padding: var(--s-2) var(--s-2) var(--s-2) var(--s-3); }
+  #page-schedule .sch-when { grid-column: 1 / -1; display: flex; align-items: baseline; gap: var(--s-2); }
   #page-schedule .sch-gap { margin-top: 0; }
   #page-schedule .sch-meta { gap: 6px; }
 
-  .save-bar { flex-direction: column; align-items: stretch; bottom: 0; padding: 12px 14px; }
+  .save-bar { flex-direction: column; align-items: stretch; bottom: 0; padding: var(--s-3) var(--s-4); }
   .form-grid { grid-template-columns: 1fr; }
-  .settings-grid { gap: 12px; }
+  /* 勾选项那 36px 的上内边距是为了和同排别的字段的标题+控件对齐；单列时旁边没有别的字段，
+     留着就是勾选框上面一块空白，所以收掉，只保留点击区高度 */
+  .form-grid .field.check-field { padding-top: 0; min-height: 36px; }
+  .settings-grid { gap: var(--s-3); }
 
-  .login-screen { padding: 16px; }
-  .login-card { padding: 28px 20px 22px; }
-  .login-card h1 { font-size: 22px; }
+  .login-screen { padding: var(--s-4); }
+  .login-card { padding: var(--s-6) var(--s-5) var(--s-5); }
+  .login-card h1 { font-size: var(--fs-7); }
 
-  .modal-root { padding: 10px; }
+  .modal-root { padding: var(--s-3); }
   .modal { max-height: calc(100dvh - 20px); border-radius: 16px; }
-  .modal-head { padding: 14px 16px; }
-  .modal-body { padding: 16px; }
-  .modal-foot { padding: 12px 16px; }
+  .modal-head { padding: var(--s-3) var(--s-4); }
+  .modal-body { padding: var(--s-4); }
+  .modal-foot { padding: var(--s-3) var(--s-4); }
 
-  .toast-stack { left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); }
+  .toast-stack { left: var(--s-3); right: var(--s-3); bottom: calc(var(--s-3) + env(safe-area-inset-bottom)); }
   .toast { max-width: none; min-width: 0; }
   .chip-row { gap: 6px; }
-  .chip { height: 30px; padding: 0 10px; font-size: 11.5px; }
+  .chip { height: 30px; padding: 0 var(--s-3); }
   .tool-grid { grid-template-columns: 1fr; }
 
   /* 手机上素材网格跟着页面一起滚，不再套一层内滚动 */
   .emoji-wrap { max-height: none; overflow: visible; }
-  .emoji-grid { grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); gap: 9px; }
+  .emoji-grid { grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); gap: var(--s-2); }
   .emoji-thumb { height: 96px; }
   .emoji-thumb img { max-height: 96px; }
 }

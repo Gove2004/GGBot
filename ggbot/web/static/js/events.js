@@ -22,31 +22,36 @@ document.addEventListener("click", async (event) => {
     case "toggle-rail":
       setRail(!qs("#app").classList.contains("rail"));
       break;
+    case "toggle-theme":
+      // 切换本身由 theme.js 负责（写 localStorage + 翻 data-theme），这里只挂事件
+      toggleTheme();
+      break;
     case "refresh":
       toast("正在刷新…", "info");
-      refreshAll();
+      refreshShell();
+      reloadPage();
       break;
     case "logout":
       doLogout();
       break;
     case "refresh-sessions":
-      guarded("sessions", refreshSessions);
+      reloadPage("sessions");
       break;
     case "refresh-emojis":
       // 手动刷新就是要立刻重扫目录（子目录里刚丢的图，扫目录缓存可能还没跟上）
-      guarded("emojis", () => refreshEmojis(true));
+      reloadPage("emojis", { force: "1" });
       break;
     case "refresh-logs":
-      guarded("logs", refreshLogs);
+      reloadPage("logs");
       break;
     case "refresh-schedule":
-      guarded("schedule", refreshSchedule);
+      reloadPage("schedule");
       break;
     case "refresh-tools":
-      guarded("tools", refreshTools);
+      reloadPage("tools");
       break;
     case "refresh-permissions":
-      guarded("permissions", refreshPermissions);
+      reloadPage("permissions");
       break;
     case "actor-add":
       addActor();
@@ -64,7 +69,7 @@ document.addEventListener("click", async (event) => {
           method: "POST", body: { enabled: !enabled },
         });
         toast(`已${enabled ? "停用" : "启用"} ${name}`, "success");
-        refreshTools();
+        reloadPage();
       } catch (err) { toast(err.message, "error"); }
       break;
     }
@@ -81,7 +86,7 @@ document.addEventListener("click", async (event) => {
       qs("#mem-q").value = "";
       state.memoryQuery = "";
       state.memoryUseSearch = false;
-      guarded("memories", refreshMemories);
+      reloadPage("memory");
       break;
     case "memory-add":
       addMemory();
@@ -141,7 +146,8 @@ document.addEventListener("click", async (event) => {
       saveConfig();
       break;
     case "refresh-persona":
-      guarded("persona", () => refreshPersona(true));
+      // 带参数就是「明确要拉」：正在编辑时靠这个绕过 PAGE_HOLD（见 refresh.js）
+      reloadPage("persona", { force: "1" });
       break;
     case "persona-default":
       fillPersonaDefault();
@@ -196,8 +202,11 @@ document.addEventListener("DOMContentLoaded", () => {
   try { rail = localStorage.getItem("ggbot.rail") === "1"; } catch (_) { /* ignore */ }
   setRail(rail);
 
+  // 主题色在 <head> 的 theme.js 里就翻好了，这里只补一次按钮的提示文字——那时 body 还不存在
+  applyTheme(currentTheme());
+
   qs("#sess-q").addEventListener("input", renderSessions);
-  qs("#emoji-q").addEventListener("input", renderEmojis);
+  qs("#emoji-q").addEventListener("input", paintEmojiGrid);
   // 选完就上传，不排队：传完清空，同一张图可以连着试两次
   qs("#emoji-file").addEventListener("change", (e) => {
     const file = e.target.files && e.target.files[0];
@@ -205,32 +214,32 @@ document.addEventListener("DOMContentLoaded", () => {
     if (file) uploadEmoji(file);
   });
   qs("#persona-text").addEventListener("input", renderPersonaMeta);
-  qs("#mem-session").addEventListener("change", () => guarded("memories", refreshMemories));
-  qs("#mem-kind").addEventListener("change", () => guarded("memories", refreshMemories));
+  qs("#mem-session").addEventListener("change", () => reloadPage("memory"));
+  qs("#mem-kind").addEventListener("change", () => reloadPage("memory"));
   // 换筛选条件时把载入窗口收回默认，否则会带着上一次「载入更多」的偏移量
   ["#sch-session", "#sch-status"].forEach((sel) =>
     qs(sel).addEventListener("change", () => {
       state.schLimit = 0;
-      guarded("schedule", refreshSchedule);
+      reloadPage("schedule");
     }));
   let schTimer = null;
   qs("#sch-q").addEventListener("input", () => {
     clearTimeout(schTimer);
     schTimer = setTimeout(() => {
       state.schLimit = 0;
-      guarded("schedule", refreshSchedule);
+      reloadPage("schedule");
     }, 350);
   });
 
   qs("#mem-q").addEventListener("keydown", (e) => { if (e.key === "Enter") searchMemories(); });
   qs("#mem-add").addEventListener("keydown", (e) => { if (e.key === "Enter") addMemory(); });
 
-  qs("#log-level").addEventListener("change", () => guarded("logs", refreshLogs));
+  qs("#log-level").addEventListener("change", () => reloadPage("logs"));
   qs("#log-auto").addEventListener("change", (e) => {
     if (!e.target.checked) return;
     const wrap = qs(".log-wrap");
     if (wrap) wrap.scrollTop = wrap.scrollHeight;
-    guarded("logs", refreshLogs);
+    reloadPage("logs");
   });
   qsa("[data-path]").forEach((el) => {
     el.addEventListener("input", () => setConfigDirty(true));
@@ -240,12 +249,12 @@ document.addEventListener("DOMContentLoaded", () => {
   ["#log-session", "#log-q"].forEach((sel) => {
     qs(sel).addEventListener("input", () => {
       clearTimeout(logTimer);
-      logTimer = setTimeout(() => guarded("logs", refreshLogs), 350);
+      logTimer = setTimeout(() => reloadPage("logs"), 350);
     });
   });
 
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && !qs("#app").classList.contains("hidden")) guarded("status", refreshStatus);
+    if (!document.hidden && !qs("#app").classList.contains("hidden")) refreshShell();
   });
 
   boot();

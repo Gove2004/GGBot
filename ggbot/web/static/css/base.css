@@ -1,49 +1,206 @@
-/* GGBot 控制台 —— 「值班中控台」：主色就是机器人的在线色，离线时值班带和侧栏发光边一起转冷 */
+/* GGBot 控制台 —— 「值班中控台」：主色就是机器人的在线色，离线时值班带和侧栏发光边一起转冷
+ *
+ * 颜色只有这一处：:root 定暗色，[data-theme="light"] 把同一批令牌反转。
+ * 其余五张样式表里不该再出现任何字面色值——出现一个，浅色主题就漏一块。
+ *
+ * 信号色写成「通道 + alpha」：rgba(var(--live-ch), .26)。
+ * → 淡底、描边、光晕全从同一个通道算出来，换主题只改通道值，
+ *   不会留下「浅底下顶着一层暗色主题淡彩」这种谁都看不见的色。 */
 :root {
   color-scheme: dark;
 
-  /* 底色：石墨偏冷，不是纯黑 */
+  /* 信号色通道：一个色只说一件事 */
+  --live-ch: 46, 230, 168;    /* 在线 / 成功 / 品牌主色 */
+  --info-ch: 110, 168, 255;   /* 结构蓝：链接、次级数据、群聊 */
+  --violet-ch: 167, 139, 250; /* 私聊 */
+  --amber-ch: 255, 180, 84;   /* 待处理 / 需留意 */
+  --rose-ch: 255, 111, 130;   /* 失败 / 逾期 */
+  --idle-ch: 108, 130, 150;   /* 离线 / 中性 */
+  --teal-ch: 77, 216, 232;    /* 分类色：七个工具分类，信号色只有六种，联网这一类补一个 */
+  /* 通道是唯一的真值来源，实心色由它拼出来——改色只改上面一行，实心色不会跟着漏 */
+  --live: rgb(var(--live-ch));
+  --info: rgb(var(--info-ch));
+  --violet: rgb(var(--violet-ch));
+  --amber: rgb(var(--amber-ch));
+  --rose: rgb(var(--rose-ch));
+  --idle: rgb(var(--idle-ch));
+  --teal: rgb(var(--teal-ch));
+  --live-deep: #17b98a;       /* 主色实底的渐变收尾（主按钮、勾选块、品牌标） */
+  --live-ink: #04231b;        /* 主色实底上的文字 */
+
+  /* 表面色：从页面底到浮层，一层比一层亮；嵌进卡片的暗格单独一档 */
   --bg: #070c10;
   --bg-soft: #0b1219;
-  --panel: rgba(17, 26, 36, .86);
   --panel-solid: #101922;
   --panel-2: #16212d;
-  --panel-3: #1d2a38;
+  --body-grad: linear-gradient(180deg, #08111a, #060a0f 72%);
+  --card-grad: linear-gradient(168deg, rgba(23, 34, 47, .9), rgba(12, 18, 26, .94));
+  --side-grad: linear-gradient(180deg, #0d1620, #080e15 55%, #060b11);
+  --topbar-grad: linear-gradient(180deg, rgba(11, 18, 26, .92), rgba(8, 13, 19, .7));
+  --hero-mid: rgba(17, 26, 36, .88);   /* 值班带渐变的中段与收尾，浅色主题要跟着抬亮 */
+  --hero-end: rgba(13, 20, 28, .92);
+  --float-bg: rgba(12, 19, 27, .95);   /* 吸底保存条：浮在内容上的实底 */
+  /* 提示条比卡片更要「盖住」下面的字，alpha 单独一档 .98，不跟着卡片阶梯走 */
+  --float-grad: linear-gradient(180deg, rgba(24, 35, 47, .98), rgba(13, 20, 28, .98));
+  --head-bg: #111a24;                   /* 吸顶表头必须实底，不然滚上来的行会透过去 */
+  --recess: rgba(6, 11, 17, .45);      /* 暗格：读数块、胶囊、缩略图底 */
+  --recess-deep: rgba(6, 11, 17, .6);  /* 槽：值班带轨道 */
+  --console-bg: rgba(4, 8, 12, .66);   /* 日志控制台 */
+  --scrim: rgba(3, 7, 12, .72);        /* 弹窗遮罩 / 抽屉遮罩 */
+
+  /* 描边、淡线、顶部那道 1px 边 */
   --border: #26374c;
   --border-soft: #1b2836;
-  --line: rgba(255, 255, 255, .07);
+  --border-hover: #36506e;   /* 悬停时抬起一档的描边：按钮/输入/卡片原本各写了一个近似值 */
+  --line: rgba(255, 255, 255, .07);        /* 极淡的分隔线，也当值班带的刻度 */
+  --grid-dot: rgba(255, 255, 255, .045);   /* 页面底那点阵 */
+  --edge-top: rgba(255, 255, 255, .05);    /* 抬起的表面顶部内边线 */
+  --hairline: rgba(255, 255, 255, .03);      /* 更淡的一档：行分隔线、压在暗格上的内边线 */
+  --edge-top-on-live: rgba(255, 255, 255, .4);  /* 主色实底上的内高光 */
+  --wash-hover: rgba(255, 255, 255, .035); /* 悬停时给表面抬的一层 */
+  --zebra: rgba(255, 255, 255, .017);      /* 长表偶数行 */
+  --btn-sheen: rgba(255, 255, 255, .05);   /* 按钮表面的上半截高光 */
+  --btn-sheen-hover: rgba(255, 255, 255, .07);
+  --field-inset: inset 0 1px 2px rgba(0, 0, 0, .2);
+  --scroll-thumb: #24323f;
+  --scroll-thumb-hover: #33475a;
 
-  /* 文字 */
+  /* 文字：正文只有三档墨色，其余按语义取 */
   --text: #e8eef7;
   --muted: #93a6bb;
-  --faint: #617689;
+  --faint: #7b90a3;   /* 最淡的一档也得过 4.5：#617689 压在日志暗格上只有 4.0，而这一档还要经得起 .btn、.metric 悬停时抬亮的那层底 */
 
-  /* 信号色：一个色只说一件事 */
-  --live: #2ee6a8;          /* 在线 / 成功 / 品牌主色 */
-  --live-ink: #04231b;      /* 主色实底上的文字 */
-  --idle: #6c8296;          /* 离线 / 中性 */
-  --info: #6ea8ff;          /* 结构蓝：链接、次级数据、群聊 */
-  --violet: #a78bfa;        /* 私聊 */
-  --amber: #ffb454;         /* 待处理 / 需留意 */
-  --rose: #ff6f82;          /* 失败 / 逾期 */
+  /* 语义墨色：读数、正文、以及「跟着信号色走的那批字」都从这里取。
+     暗色是亮字、浅色是暗字——只有这套令牌能同时喂两个主题。 */
+  --ink-strong: #f4f9ff;    /* 大数字与卡片主标题 */
+  --ink-body: #cbdaea;      /* 日志正文、聊天气泡、摘要框 */
+  --ink-live: #d8f5ea;      /* 成功/在线读数的字色 */
+  --ink-info: #c6dcff;      /* 群聊标签 */
+  --ink-violet: #ddd2ff;    /* 私聊标签 */
+  --ink-amber: #ffd27a;
+  --ink-rose: #ff9ba8;
+  --ink-off: #7f93a8;       /* DEBUG 这类「不上报」的行 */
+  --sel-ink: #fff;          /* 选区文字 */
 
-  /* 兼容旧变量名：面板各处仍写 --accent / --accent-2 / --green / --red，
-     这里一次性映射到新的信号色，避免同一含义出现两套色值 */
-  --accent: var(--live);
-  --accent-2: var(--info);
-  --green: var(--live);
-  --red: var(--rose);
+  /* 图标：data-URI 里的颜色吃不到 var()，只能整条换成对应主题的描边色 */
+  --chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%237f93a8' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><path d='m6 9 6 6 6-6'/></svg>");
+  --search-ico: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%237b90a3' stroke-width='2' stroke-linecap='round'><circle cx='11' cy='11' r='6.5'/><path d='m20 20-3.5-3.5'/></svg>");
+
+  /* 字号阶梯：九档，相邻档至少差 1px——之前 21 个字号里有 10/10.5/11/11.5/12/12.5
+     六档挤在 2.5px 里，看着就是「哪儿都不太对」。11px 是含中文的最小档，再小糊。
+     1 仪器小标签 · 2 次级说明 · 3 辅助正文 · 4 正文 · 5 卡片标题
+     6 页标题 · 7 读数 · 8 hero 状态 · 9 倒计时 */
+  --fs-1: 11px;
+  --fs-2: 12px;
+  --fs-3: 13px;
+  --fs-4: 14px;
+  --fs-5: 15px;
+  --fs-6: 17px;
+  --fs-7: 22px;
+  --fs-8: 28px;
+  --fs-9: 40px;
+
+  /* 间距节奏：4 的倍数。块与块之间只用 3/4/5，卡片内缩进用 2/3 */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-7: 32px;
 
   --radius: 16px;
   --radius-sm: 10px;
   --radius-xs: 8px;
-  --gap: 16px;
-  --ring: 0 0 0 3px rgba(46, 230, 168, .18);
+  --ring: 0 0 0 3px rgba(var(--live-ch), .18);
   --mono: "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
   --shadow-sm: 0 6px 20px rgba(0, 0, 0, .26);
   --shadow-md: 0 14px 40px rgba(0, 0, 0, .36);
   --shadow-lg: 0 30px 80px rgba(0, 0, 0, .52);
+  --shadow-up: 0 -10px 30px rgba(0, 0, 0, .3);
+  /* 抽屉的投影只出现在移动端把侧栏推开的瞬间，方向朝右（内容区在右），不能借用通用的向下投影 */
+  --shadow-drawer: 20px 0 60px rgba(0, 0, 0, .5);
+}
+
+/* ================= 浅色主题 =================
+ * 只有这一处反转：表面色压白、墨色压暗、信号色通道变深。
+ * → 通道变深不是审美选择，是必需的：#2ee6a8 这种荧光绿落在白底上对比度只有 1.6:1，
+ *   当正文色根本读不出来；那批 alpha .09 的淡底也从通道算，通道一变淡底自动跟着变浅。
+ * 层次换了撑法：暗色靠「比底亮」表示抬起来，浅色靠顶部一道淡暗线 + 更柔的投影，
+ *   同一套令牌，两种读法。 */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --live-ch: 8, 114, 78;      /* 七个信号通道全部按 ≥4.5:1 反解过：暗色那批荧光值落在浅底上只有 1.6~2.9:1，
+                                 同一通道还兼着主按钮的实底，白色字落在 #0a8a5e 上也只差一点，取到 .0872 亮度两边才都过 */
+  --info-ch: 30, 99, 188;
+  --violet-ch: 103, 72, 184;
+  --amber-ch: 143, 87, 6;
+  --rose-ch: 187, 43, 67;
+  --idle-ch: 86, 102, 118;
+  --teal-ch: 10, 110, 128;
+  --live-deep: #065c3f;
+  --live-ink: #ffffff;
+
+  --bg: #e9eef5;
+  --bg-soft: #f7f9fc;
+  --panel-solid: #ffffff;
+  --panel-2: #eef2f8;
+  --body-grad: linear-gradient(180deg, #f4f7fb, #e6ecf4 72%);
+  --card-grad: linear-gradient(168deg, #ffffff, #f2f6fb);
+  --side-grad: linear-gradient(180deg, #ffffff, #f3f7fb 55%, #eaf0f7);
+  --topbar-grad: linear-gradient(180deg, rgba(255, 255, 255, .95), rgba(246, 249, 252, .8));
+  --hero-mid: rgba(255, 255, 255, .9);
+  --hero-end: rgba(244, 248, 252, .94);
+  --float-bg: rgba(255, 255, 255, .96);
+  --float-grad: linear-gradient(180deg, #ffffff, #eef3fa);
+  --head-bg: #ffffff;
+  --recess: rgba(15, 32, 50, .045);
+  --recess-deep: rgba(15, 32, 50, .07);
+  --console-bg: rgba(15, 32, 50, .05);
+  --scrim: rgba(15, 32, 50, .38);
+
+  --border: #c4d0de;
+  --border-soft: #dfe7ef;
+  --border-hover: #9ab0c8;
+  --line: rgba(15, 32, 50, .1);
+  --grid-dot: rgba(15, 32, 50, .06);
+  --edge-top: rgba(15, 32, 50, .06);
+  --hairline: rgba(15, 32, 50, .035);
+  --edge-top-on-live: rgba(255, 255, 255, .32);
+  --wash-hover: rgba(15, 32, 50, .05);
+  --zebra: rgba(15, 32, 50, .035);
+  --btn-sheen: rgba(255, 255, 255, .85);
+  --btn-sheen-hover: rgba(255, 255, 255, .98);
+  --field-inset: inset 0 1px 2px rgba(15, 32, 50, .06);
+  --scroll-thumb: #bcccdd;
+  --scroll-thumb-hover: #93a9bf;
+
+  --text: #1c2a38;
+  --muted: #35465a;       /* 浅色的三档墨色靠亮度差分开：faint 为过 4.5 压深之后，muted 不同步往下走就和它糊成一档 */
+  --faint: #4d5b68;       /* 时间戳、sid 这类最小一档：浅色落在 .05 的暗格上，#586674 只剩 4.3，压深一档到 5.1 */
+  --ink-strong: #0d1a26;
+  --ink-body: #23364a;
+  --ink-live: #05583e;
+  --ink-info: #17539f;    /* 群聊标签的字：落在同色 .08 淡底上，通道那个蓝只剩 4.1 */
+  --ink-violet: #5b3fb0;
+  --ink-amber: #7a4508;
+  --ink-rose: #8d2035;
+  --ink-off: #4e5c6b;       /* DEBUG 这类「不上报」的行：浅色要让 11px 的小字也过 4.5:1，
+                               所以 faint / muted / ink-off 三档整体压深，彼此靠亮度差而不是透明度分。
+                               语义墨色整体比通道深一档：级别小牌、危险按钮的字都落在同色 .07~.1 的淡底上，
+                               直接用通道当字色只剩 4.0~4.3，淡底把底压暗了——字要走在底之下才够差 */
+  --sel-ink: #16232f;
+
+  --chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%234d5b68' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><path d='m6 9 6 6 6-6'/></svg>");
+  --search-ico: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%234d5b68' stroke-width='2' stroke-linecap='round'><circle cx='11' cy='11' r='6.5'/><path d='m20 20-3.5-3.5'/></svg>");
+
+  --shadow-sm: 0 6px 20px rgba(15, 32, 50, .10);
+  --shadow-md: 0 14px 40px rgba(15, 32, 50, .13);
+  --shadow-lg: 0 30px 80px rgba(15, 32, 50, .18);
+  --shadow-up: 0 -10px 30px rgba(15, 32, 50, .10);
+  --shadow-drawer: 20px 0 60px rgba(15, 32, 50, .22);
 }
 
 * { box-sizing: border-box; }
@@ -51,38 +208,38 @@ html, body { height: 100%; }
 body {
   margin: 0;
   color: var(--text);
-  font: 14px/1.55 var(--sans);
+  font: var(--fs-4)/1.6 var(--sans);
   background-color: var(--bg);
   /* 点阵 + 左上「在线」辉光 + 右下结构蓝辉光：
      辉光固定在侧栏一侧，滚动时不跟着漂，读起来像一块仪表盘背板而不是一张壁纸 */
   background-image:
-    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, .045) 1px, transparent 1.6px),
-    radial-gradient(900px 520px at 6% -14%, rgba(46, 230, 168, .10), transparent 62%),
-    radial-gradient(820px 480px at 98% 108%, rgba(110, 168, 255, .085), transparent 60%),
-    linear-gradient(180deg, #08111a, #060a0f 72%);
+    radial-gradient(circle at 1px 1px, var(--grid-dot) 1px, transparent 1.6px),
+    radial-gradient(900px 520px at 6% -14%, rgba(var(--live-ch), .10), transparent 62%),
+    radial-gradient(820px 480px at 98% 108%, rgba(var(--info-ch), .085), transparent 60%),
+    var(--body-grad);
   background-size: 22px 22px, auto, auto, auto;
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
-::selection { background: rgba(46, 230, 168, .28); color: #fff; }
+::selection { background: rgba(var(--live-ch), .28); color: var(--sel-ink); }
 
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 a { color: var(--info); }
-code { font-family: var(--mono); font-size: 12px; color: var(--live); }
+code { font-family: var(--mono); font-size: var(--fs-2); color: var(--live); }
 
 .hidden { display: none !important; }
 .muted { color: var(--muted); }
-.small { font-size: 12px; }
-.mono { font-family: var(--mono); font-size: 12px; }
+.small { font-size: var(--fs-2); }
+.mono { font-family: var(--mono); font-size: var(--fs-2); }
 .grow { flex: 1 1 auto; min-width: 0; }
 
 /* 面板小标题：等宽 + 字距，是这套界面的「仪器」口音 */
 .eyebrow {
   color: var(--live);
-  font: 700 10.5px/1.4 var(--mono);
-  letter-spacing: 1.6px;
+  font: 700 var(--fs-1)/1.4 var(--mono);
+  letter-spacing: 1.4px;
   text-transform: uppercase;
 }
 
@@ -91,6 +248,6 @@ code { font-family: var(--mono); font-size: 12px; color: var(--live); }
 
 /* ================= 焦点 ================= */
 :focus-visible {
-  outline: 2px solid rgba(46, 230, 168, .6);
+  outline: 2px solid rgba(var(--live-ch), .6);
   outline-offset: 2px;
 }

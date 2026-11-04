@@ -2,31 +2,31 @@
 .login-screen {
   position: fixed; inset: 0; z-index: 100;
   display: flex; align-items: center; justify-content: center;
-  padding: 24px; overflow: hidden;
+  padding: var(--s-6); overflow: hidden;
 }
 .login-orb {
   position: absolute; border-radius: 50%; filter: blur(80px); opacity: .5; pointer-events: none;
 }
 .login-orb-a {
   width: 460px; height: 460px; left: -140px; top: -170px;
-  background: radial-gradient(circle, rgba(46, 230, 168, .42), transparent 68%);
+  background: radial-gradient(circle, rgba(var(--live-ch), .42), transparent 68%);
 }
 .login-orb-b {
   width: 500px; height: 500px; right: -170px; bottom: -200px;
-  background: radial-gradient(circle, rgba(110, 168, 255, .3), transparent 68%);
+  background: radial-gradient(circle, rgba(var(--info-ch), .3), transparent 68%);
 }
 .login-card {
   position: relative; width: min(430px, 100%);
-  padding: 38px 34px 28px;
-  background: linear-gradient(160deg, rgba(24, 37, 48, .95), rgba(11, 17, 24, .97));
+  padding: var(--s-7) var(--s-7) var(--s-6);
+  background: var(--card-grad);
   border: 1px solid var(--border-soft);
   border-radius: 20px;
-  box-shadow: var(--shadow-lg), inset 0 1px 0 rgba(255, 255, 255, .06);
+  box-shadow: var(--shadow-lg), inset 0 1px 0 var(--edge-top);
   animation: rise .45s cubic-bezier(.2, .7, .2, 1) both;
 }
 .login-card::before {
   content: ""; position: absolute; inset: 0 auto auto 0; right: 0; height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(46, 230, 168, .6), transparent);
+  background: linear-gradient(90deg, transparent, rgba(var(--live-ch), .6), transparent);
   opacity: .75;
 }
 /* 品牌标：一颗会呼吸的「在线」灯，和侧栏、hero 用的是同一个形状 */
@@ -34,27 +34,27 @@
   position: relative;
   width: 48px; height: 48px; border-radius: 15px;
   display: grid; place-items: center;
-  font: 800 23px/1 var(--mono); color: var(--live-ink); letter-spacing: -.5px;
-  background: linear-gradient(150deg, var(--live), #12a97d);
-  box-shadow: 0 10px 28px rgba(46, 230, 168, .3), inset 0 1px 0 rgba(255, 255, 255, .45);
+  font: 800 var(--fs-7)/1 var(--mono); color: var(--live-ink); letter-spacing: -.5px;
+  background: linear-gradient(150deg, var(--live), var(--live-deep));
+  box-shadow: 0 10px 28px rgba(var(--live-ch), .3), inset 0 1px 0 var(--edge-top-on-live);
 }
 .brand-mark::after {
   content: ""; position: absolute; inset: -5px; border-radius: 19px;
-  border: 1px solid rgba(46, 230, 168, .3); animation: breathe 3.4s ease-in-out infinite;
+  border: 1px solid rgba(var(--live-ch), .3); animation: breathe 3.4s ease-in-out infinite;
 }
-.brand-mark.small { width: 35px; height: 35px; border-radius: 11px; font-size: 16px; }
+.brand-mark.small { width: 35px; height: 35px; border-radius: 11px; font-size: var(--fs-6); }
 .brand-mark.small::after { inset: -4px; border-radius: 14px; }
-.login-card h1 { margin: 20px 0 6px; font-size: 25px; letter-spacing: .2px; }
-.login-sub { margin: 0 0 24px; color: var(--muted); font-size: 13px; }
+.login-card h1 { margin: var(--s-5) 0 var(--s-1); font-size: var(--fs-8); letter-spacing: .2px; }
+.login-sub { margin: 0 0 var(--s-6); color: var(--muted); font-size: var(--fs-3); }
 /* 表单自己排间距：令牌框和「进入控制台」以前贴在一起 */
-.login-card form { display: grid; gap: 14px; }
-.login-card .field > .input { height: 42px; font-size: 14px; letter-spacing: .5px; }
-.login-error { margin: 0; color: var(--rose); font-size: 13px; }
-.login-hint { margin: 20px 0 0; color: var(--faint); font-size: 12px; text-align: center; }
+.login-card form { display: grid; gap: var(--s-3); }
+.login-card .field > .input { height: 42px; font-size: var(--fs-4); letter-spacing: .5px; }
+.login-error { margin: 0; color: var(--rose); font-size: var(--fs-3); }
+.login-hint { margin: var(--s-5) 0 0; color: var(--faint); font-size: var(--fs-2); text-align: center; }
 .login-hint code { color: var(--muted); }
 .ver-tag {
   display: inline-block; vertical-align: middle; margin-left: 8px;
   padding: 2px 9px; border-radius: 999px;
-  font: 600 12px/1.6 var(--mono); letter-spacing: .3px; color: var(--live);
-  background: rgba(46, 230, 168, .09); border: 1px solid rgba(46, 230, 168, .26);
+  font: 600 var(--fs-2)/1.6 var(--mono); letter-spacing: .3px; color: var(--live);
+  background: rgba(var(--live-ch), .09); border: 1px solid rgba(var(--live-ch), .26);
 }

@@ -8,38 +8,21 @@ function switchPage(name) {
   qsa(".page").forEach((p) => p.classList.add("hidden"));
   const page = qs(`#page-${name}`);
   if (page) page.classList.remove("hidden");
-  qsa(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.page === name));
+  qsa(".nav-item").forEach((n) => {
+    const on = n.dataset.page === name;
+    n.classList.toggle("active", on);
+    // 分组重排后组名靠 role=group 念出来，当前页要靠 aria-current，不然读屏只听得见一串同名按钮
+    if (on) n.setAttribute("aria-current", "page");
+    else n.removeAttribute("aria-current");
+  });
   const meta = PAGE_META[name];
   qs("#page-title").textContent = meta[0];
   qs("#page-sub").textContent = meta[1];
   closeSidebar();
-  if (name === "dash") {
-    guarded("status", refreshStatus);
-    guarded("stats", refreshStats);
-    guarded("sessions", refreshSessions);
-    guarded("recent", refreshDashRecent);
-  } else if (name === "sessions") {
-    guarded("sessions", refreshSessions);
-  } else if (name === "memory") {
-    guarded("sessions", refreshSessions);
-    guarded("memories", refreshMemories);
-  } else if (name === "emojis") {
-    guarded("emojis", refreshEmojis);
-  } else if (name === "persona") {
-    guarded("persona", refreshPersona);
-  } else if (name === "settings") {
-    guarded("config", loadConfig);
-  } else if (name === "permissions") {
-    guarded("permissions", refreshPermissions);
-  } else if (name === "tools") {
-    guarded("tools", refreshTools);
-  } else if (name === "logs") {
-    state.logsRendered = false;
-    guarded("logs", refreshLogs);
-  } else if (name === "schedule") {
-    guarded("sessions", refreshSessions);
-    guarded("schedule", refreshSchedule);
-  }
+  if (name === "logs") state.logsRendered = false;
+  // 进页面只发一次请求：这一页要画的数据后端一次给齐（见 refresh.js）
+  armPageTimer();
+  reloadPage(name);
 }
 
 function closeSidebar() {
