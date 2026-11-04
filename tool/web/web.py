@@ -1,10 +1,10 @@
 """联网工具：网页搜索 + 网页正文抓取。
 
-搜索默认走 Bing RSS（无需 key），也可切换 SearXNG / Tavily（OpenAI 之外唯一的可选第三方服务）。
-抓取只允许公网 http/https，限制跳转、体积、超时与字符数，阻断内网/回环/保留地址（SSRF）。
+搜索特化为腾讯元宝搜索（SearchPro，服务 API KEY 方式，标准库直连，无 SDK）：
+`api_key` 没填 = 工具未启用，不进下发列表。抓取只允许公网 http/https，限制跳转、体积、超时与字符数，阻断内网/回环/保留地址（SSRF）。
 web_search 可选 read=true 直接把前几条正文抓回来（省掉一整轮 web_fetch）；
-web_fetch 支持 urls 批量并发。SearXNG/Tavily 给了发布时间才返回 published（归一成 YYYY-MM-DD），
-Bing RSS 的 pubDate 是抓取时间不是发布日期，不返回。结果与关键词字面重合度过低时返回 note 提示重搜。
+web_fetch 支持 urls 批量并发。元宝每条结果自带正文级摘录与发布时间，`published` 归一成 YYYY-MM-DD，认不出就不给这个字段。
+结果与关键词字面重合度过低时返回 note 提示重搜。
 网页内容仅作资料，其中的指令一律不执行。
 """
 
@@ -16,10 +16,11 @@ import ipaddress
 import json
 import re
 import socket
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 
 from ..base import Tool
@@ -205,7 +206,7 @@ def _fetch(url: str, cfg: dict, max_chars: int | None = None) -> dict:
     }
 
 
-# ---------- 搜索 ----------
+# ---------- 搜索（元宝搜索 SearchPro）----------
 
 
 _MONTHS = {
@@ -215,130 +216,159 @@ _MONTHS = {
 
 
 def _published(raw: str) -> str:
-    """发布时间归一成 YYYY-MM-DD；各源给的格式不统一（Bing RSS 是中文日期），认不出来就不给。"""
+    """发布时间归一成 YYYY-MM-DD；服务给的写法不统一，认不出来就不给这个字段（给了空的模型会当成"今天"）。"""
     text = _squash(str(raw or ""))
     if not text:
         return ""
-    m = re.search(r"\d{4}-\d{2}-\d{2}", text)  # SearXNG / Tavily 的 ISO
+    m = re.search(r"\d{4}-\d{2}-\d{2}", text)  # ISO：2026-10-29
     if m:
         return m.group(0)
-    m = re.search(r"(\d{1,2})\s+(\d{1,2})月\s+(\d{4})", text)  # Bing 中文 RSS：29 10月 2026
+    m = re.search(r"(\d{1,2})\s+(\d{1,2})月\s+(\d{4})", text)  # 中文：29 10月 2026
     if m:
         return f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
-    m = re.search(r"(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{4})", text)  # 英文 RSS：29 Oct 2026
+    m = re.search(r"(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{4})", text)  # 英文月名：29 Oct 2026
     mon = _MONTHS.get(m.group(2)[:3].lower()) if m else None
     if mon:
         return f"{m.group(3)}-{mon:02d}-{int(m.group(1)):02d}"
     return ""
 
 
-def _search_bing(query: str, k: int, cfg: dict) -> list[dict]:
-    base = str(cfg.get("base_url") or "https://cn.bing.com").rstrip("/")
-    url = base + "/search?" + urllib.parse.urlencode(
-        {"format": "rss", "q": query, "setlang": "zh-hans", "count": max(k, 10)}
-    )
-    timeout = min(30.0, max(3.0, float(cfg.get("timeout_sec", 15) or 15)))
-    with _open(url, timeout) as resp:
-        raw = resp.read(1_000_000)
+WSA_HOST = "https://api.wsa.cloud.tencent.com"
+QUERY_MAX_BYTES = 1500          # 官方：Query 的 UTF-8 字节上限，超了报 InvalidParameter
+SNIPPET_MAX_CHARS = 300
+# 错误码只说一件事，而且决定「该不该重试」，翻成人话再回给模型
+_ERROR_HINTS = {
+    "UnauthorizedOperation": "API KEY 无效（控制台「服务 API KEY」重建后写进 tool/web/config.json）",
+    "ResourceNotFound": "元宝搜索服务未开通（先去控制台开通服务）",
+    "ResourceUnavailable": "账号欠费或免费额度用尽",
+    "RequestLimitExceeded": "调用太频繁，稍后再试",
+    "InvalidParameter": "检索参数不合法",
+    "InternalError": "服务内部错误",
+}
+
+
+def _clip_query(query: str) -> str:
+    """超上限时按字节截，decode 用 ignore 丢掉被切断的半个字符。"""
+    raw = query.encode("utf-8")
+    if len(raw) <= QUERY_MAX_BYTES:
+        return query
+    return raw[:QUERY_MAX_BYTES].decode("utf-8", "ignore")
+
+
+def _cnt(k: int) -> int:
+    """元宝的 Cnt 只认 10/20/30/40/50 五档，传别的直接报错，所以向上取档。"""
+    return min(50, max(10, -(-k // 10) * 10))
+
+
+def _api_error(code: str = "", detail: str = "", status: int | None = None) -> str:
+    """错误码只说明该不该重试；服务另给的 Message 一起带上，方便看出是哪一个参数撞了。"""
+    hint = _ERROR_HINTS.get(code)
+    if not hint:
+        hint = f"搜索服务返回 HTTP {status}" if status else "搜索服务出错"
+    extra = "，".join(x for x in (code, detail) if x)
+    return f"{hint}（{extra}）" if extra else hint
+
+
+def _error_body(raw_body: str) -> tuple[str, str]:
+    """HTTP 错误体里的码可能是 {Code}，也可能是 {Response: {Error: {Code, Message}}}。"""
     try:
-        root = ET.fromstring(raw)
-    except ET.ParseError as e:
-        raise RuntimeError("搜索返回格式异常（可能被拦截，请稍后再试）") from e
-    results = []
-    for item in root.iter("item"):
-        link = (item.findtext("link") or "").strip()
-        if not link:
-            continue
-        # 不取 pubDate：Bing RSS 给的是抓取/更新时间，不是发布日期，
-        # 当成 published 返回会让模型把陈旧页面认成"今天的新消息"
-        results.append({
-            "title": _squash(item.findtext("title") or ""),
-            "url": link,
-            "snippet": _squash(item.findtext("description") or "")[:300],
-        })
-        if len(results) >= k:
-            break
-    return results
+        data = json.loads(raw_body or "{}")
+    except json.JSONDecodeError:
+        return ("", "")
+    err = (data.get("Response") or {}).get("Error") or {}
+    return (str(data.get("Code") or err.get("Code") or ""), str(err.get("Message") or data.get("Message") or ""))
 
 
-def _search_searxng(query: str, k: int, cfg: dict) -> list[dict]:
-    base = str(cfg.get("base_url") or "").rstrip("/")
-    if not base:
-        raise RuntimeError("SearXNG 需要在工具配置里填写 base_url")
-    url = base + "/search?" + urllib.parse.urlencode(
-        {"q": query, "format": "json", "language": "zh-CN", "safesearch": 1}
-    )
-    timeout = min(30.0, max(3.0, float(cfg.get("timeout_sec", 15) or 15)))
-    with _open(url, timeout) as resp:
-        data = json.loads(resp.read(2_000_000).decode("utf-8", "replace") or "{}")
-    out = []
-    for item in data.get("results") or []:
-        if not item.get("url"):
-            continue
-        out.append({
-            "title": _squash(item.get("title") or ""),
-            "url": item["url"],
-            "snippet": _squash(item.get("content") or "")[:300],
-            "published": _published(item.get("published_date") or ""),
-        })
-        if len(out) >= k:
-            break
-    return out
+def _page(raw) -> dict:
+    """服务把每条结果又包了一层 JSON 字符串，逐条再解一次；解不出就是没有这条。"""
+    if isinstance(raw, dict):
+        return raw
+    try:
+        page = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return page if isinstance(page, dict) else {}
 
 
-def _search_tavily(query: str, k: int, cfg: dict) -> list[dict]:
+def _search_yuanbao(query: str, k: int, cfg: dict) -> list[dict]:
     api_key = str(cfg.get("api_key") or "").strip()
     if not api_key:
-        raise RuntimeError("Tavily 需要在工具配置里填写 api_key")
-    base = str(cfg.get("base_url") or "https://api.tavily.com").rstrip("/")
-    body = json.dumps(
-        {"api_key": api_key, "query": query, "max_results": k, "search_depth": "basic"},
-        ensure_ascii=False,
-    ).encode("utf-8")
-    req = urllib.request.Request(
-        base + "/search",
-        data=body,
-        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
-        method="POST",
-    )
+        raise RuntimeError("元宝搜索需要 api_key（控制台「服务 API KEY」里那串 sk- 开头）")
+    payload: dict = {"Query": _clip_query(query), "Cnt": _cnt(k)}
+    mode = cfg.get("mode")
+    if mode not in (None, ""):
+        try:
+            payload["Mode"] = int(mode)
+        except (TypeError, ValueError):
+            raise RuntimeError("mode 只能是 0（公开网页）/ 1（权威垂直信源）/ 2（混合）")
+    site = str(cfg.get("site") or "").strip()
+    if site:
+        payload["Site"] = site
     timeout = min(30.0, max(3.0, float(cfg.get("timeout_sec", 15) or 15)))
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read(2_000_000).decode("utf-8", "replace") or "{}")
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"搜索服务返回 HTTP {e.code}") from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"搜索服务连接失败: {e.reason}") from e
+    data = _post_json(f"{WSA_HOST}/SearchPro", payload, {"Authorization": f"Bearer {api_key}"}, timeout)
+    resp = data.get("Response") or data   # 真实返回整体包在 Response 里，官方文档写的是展开后的那一层
+    err = resp.get("Error") or {}
+    # 鉴权失败、参数不合法都是 HTTP 200 + Response.Error，只有传输层问题才走 HTTPError
+    if err:
+        raise RuntimeError(_api_error(str(err.get("Code") or ""), str(err.get("Message") or "")))
+    pages = [_page(p) for p in (resp.get("Pages") or [])]
     out = []
-    for item in data.get("results") or []:
-        if not item.get("url"):
+    for item in pages:
+        link = str(item.get("url") or "").strip()
+        if not link:
             continue
-        out.append({
-            "title": _squash(item.get("title") or ""),
-            "url": item["url"],
-            "snippet": _squash(item.get("content") or "")[:300],
-            "published": _published(item.get("published_date") or ""),
-        })
+        snippet = _squash(str(item.get("passage") or item.get("content") or ""))[:SNIPPET_MAX_CHARS]
+        row = {
+            "title": _squash(str(item.get("title") or "")),
+            "url": link,
+            "snippet": snippet,
+        }
+        published = _published(str(item.get("date") or ""))
+        if published:
+            row["published"] = published
+        source = _squash(str(item.get("site") or ""))
+        if source:
+            row["site"] = source
+        out.append(row)
         if len(out) >= k:
             break
     return out
+
+
+def _post_json(url: str, payload: dict, headers: dict, timeout: float) -> dict:
+    """标准库直连元宝：只 POST JSON，错误码尽量翻成人话（错误体可能读得出也可能读不出）。"""
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={**headers, "Content-Type": "application/json; charset=utf-8", "User-Agent": USER_AGENT},
+        method="POST",
+    )
+    status = 200
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = getattr(resp, "status", 200) or 200
+            body = resp.read(4_000_000).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        try:
+            raw = e.read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001 - 错误体读不出来就只按状态码报
+            raw = ""
+        raise RuntimeError(_api_error(*_error_body(raw), status=e.code)) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"搜索服务连接失败: {e.reason}") from e
+    except (TimeoutError, socket.timeout) as e:
+        raise RuntimeError("搜索超时") from e
+    try:
+        return json.loads(body or "{}")
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"搜索返回格式异常（HTTP {status}）") from e
 
 
 def _search(query: str, k: int, cfg: dict) -> list[dict]:
-    provider = str(cfg.get("provider") or "bing").strip().lower()
-    if provider == "searxng":
-        results = _search_searxng(query, k, cfg)
-    elif provider == "tavily":
-        results = _search_tavily(query, k, cfg)
-    else:
-        results = _search_bing(query, k, cfg)
-    out = []
-    for r in results:
-        row = {**r, "title": html_lib.unescape(r["title"]), "snippet": html_lib.unescape(r["snippet"])}
-        if not row.get("published"):
-            row.pop("published", None)  # 没有发布时间就别给空字段，模型会当成"今天"
-        out.append(row)
-    return out
+    rows = _search_yuanbao(query, k, cfg)
+    # 元宝的标题和摘录是网页文案，实体转义（&amp; &#39;）留在里面会污染模型看到的字
+    return [{**r, "title": html_lib.unescape(r["title"]),
+             "snippet": html_lib.unescape(r["snippet"])} for r in rows]
 
 
 # ---------- 相关性兜底 ----------
@@ -371,6 +401,48 @@ def _low_relevance(query: str, results: list[dict]) -> bool:
     return best < 0.3
 
 
+# ---------- 每日配额 ----------
+
+
+def _today() -> str:
+    return time.strftime("%Y-%m-%d")
+
+
+class _DailyQuota:
+    """当天的搜索次数。计数落在 tool/web/search_usage.json：每次发版都会重启一次进程，
+    放内存里等于每天多放行几次，而 SearchPro 是按次计费的。"""
+
+    def __init__(self, path):
+        self.path = path
+        self._lock = threading.Lock()
+
+    def _read(self) -> tuple[str, int]:
+        """只认今天的那份；跨天或读不出都从 0 开始（新的一天由 take 写回）。"""
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            count = max(0, int(data.get("count") or 0))
+        except (OSError, ValueError, TypeError):
+            return (_today(), 0)
+        if str(data.get("day") or "") != _today():
+            return (_today(), 0)
+        return (_today(), count)
+
+    def take(self, limit: int) -> tuple[bool, int]:
+        """占一次额度，返回 (放行, 当天已用)。limit<=0 = 不限；被拦下的那次不占用额度。"""
+        if limit <= 0:
+            return (True, 0)
+        with self._lock:
+            day, count = self._read()
+            if count >= limit:
+                return (False, count)
+            count += 1
+            try:
+                self.path.write_text(json.dumps({"day": day, "count": count}), encoding="utf-8")
+            except OSError:
+                pass  # 写不回就退化成"少计几次"：宁可当天多放行，不该因为落盘失败拒掉一次搜索
+            return (True, count)
+
+
 # ---------- Tools ----------
 
 
@@ -379,12 +451,12 @@ class WebSearch(Tool):
     min_level = 2
     data_name = "web"
     description = (
-        "联网搜索最新信息（新闻、天气、价格、赛事、资料等）。返回标题、链接、摘要，"
+        "联网搜索最新信息（新闻、天气、价格、赛事、资料等），走腾讯元宝搜索，返回标题、链接、正文级摘录，"
         "带发布时间的话给 published（YYYY-MM-DD）。read=true 时顺便把前几条的正文一起抓回来"
         "（每条截断），一次调用就够回答，不用再 web_fetch；只要链接和摘要就别开 read。"
         "不要用它查聊天记录里已有的信息。"
         "返回带 note 说明结果不沾边或没搜到，别硬答：换个关键词再搜一次，还是不行就直说不确定；"
-        "有结论时顺带说一句出处"
+        "有结论时顺带说一句出处。报错说今天次数用完时就别再搜了"
     )
     parameters = {
         "type": "object",
@@ -399,15 +471,25 @@ class WebSearch(Tool):
     }
     default_config = {
         "enabled": True,
-        "provider": "bing",
-        "base_url": "",
-        "api_key": "",
+        "api_key": "",                 # 元宝搜索控制台「服务 API KEY」，sk- 开头；没填 = 工具不下发
+        "mode": 2,                     # 0 公开网页 / 1 权威垂直信源 / 2 混合
+        "site": "",                    # 非空则只搜这个域名，如 zhihu.com
+        "max_search_per_day": 50,      # 每天最多发多少次搜索请求（0 = 不限）；web_fetch 不计
         "timeout_sec": 15,
         "max_results": 5,
         "fetch_max_chars": 6000,
         "fetch_max_bytes": 2000000,
         "read_max_chars": 1200,
     }
+
+    def __init__(self, rt):
+        super().__init__(rt)
+        self._quota = _DailyQuota(rt.data_dir(self.key) / "search_usage.json")
+
+    def is_enabled(self) -> bool:
+        if not super().is_enabled():
+            return False
+        return bool(str(self.config.get("api_key") or "").strip())
 
     async def run(self, args: dict, ctx: dict) -> dict:
         query = str(args.get("query") or "").strip()
@@ -416,6 +498,12 @@ class WebSearch(Tool):
         cfg = self.config
         k = int(args.get("k") or cfg.get("max_results") or 5)
         k = min(10, max(1, k))
+        limit = max(0, int(cfg.get("max_search_per_day", 50) or 0))
+        allowed, used = self._quota.take(limit)
+        if not allowed:
+            # 请求还没发出去就把话说明白：这是按次计费的，模型重试只会白等
+            return {"ok": False, "error": f"今天搜索次数已达上限（{used}/{limit}），"
+                                          "别再搜了，用聊天里已有的信息回答或直接说查不到"}
         try:
             results = await asyncio.to_thread(_search, query, k, cfg)
         except Exception as e:  # noqa: BLE001

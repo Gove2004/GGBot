@@ -69,9 +69,9 @@ LLM 与 embedding 都不绑定厂商：DeepSeek、OpenAI、通义、SiliconFlow�
 ### 4. Tool 配置与素材
 
 - 各工具的 `tool/<分类>/config.json` 在首次运行时按代码里的 `default_config` 自动生成，新增字段自动补齐；模板见同目录 `config.example.json`。
-- 含密钥的工具配置（MiMo key、Agnes key、SMTP 授权码、Tavily key）不入库；邮件收件人白名单、语音克隆、表情限流、搜索服务等可在 Web「工具」页或直接改配置文件；生图的比例与尺寸只改 `tool/media/generate/config.json`（面板工具页没有逐工具的参数编辑）。
+- 含密钥的工具配置（MiMo key、Agnes key、SMTP 授权码、元宝搜索 key）不入库；邮件收件人白名单、语音克隆、表情限流、搜索服务等可在 Web「工具」页或直接改配置文件；生图的比例与尺寸只改 `tool/media/generate/config.json`（面板工具页没有逐工具的参数编辑）。
 - **调用门槛**：每个工具的默认门槛写在代码里（`min_level`），可在 `tool/<分类>/config.json → levels` 单独覆盖（1–6，6 = 永久锁）；发送者等级在 Web「权限」页设置。详见「权限与工具门槛」。
-- 可选素材与凭据不入库。**部署时就定好的东西缺失 = 工具未启用**（不进下发列表）：生图要 `tool/media/generate/config.json → api_key`（Agnes AI），语音克隆要 MiMo `api_key` 且 `tool/media/audio/voice_ref.wav` 在位。**会随聊天长大的素材不做下发条件**：表情库默认空，为空时 `send_emoji` 照样下发、调用时才如实返回"表情库为空"并给出放素材的路径（图片直接放 `tool/media/emoji/`，一个统一库，不分内置/收藏；手动放进去的图只有文件名兜底描述，挑图质量差，在面板「表情包」页点开补一句描述，或用 `emoji_save` 让识图自动写）。
+- 可选素材与凭据不入库。**部署时就定好的东西缺失 = 工具未启用**（不进下发列表）：生图要 `tool/media/generate/config.json → api_key`（Agnes AI），语音克隆要 MiMo `api_key` 且 `tool/media/audio/voice_ref.wav` 在位，联网搜索要 `tool/web/config.json → api_key`（元宝搜索控制台的「服务 API KEY」，`sk-` 开头）。**会随聊天长大的素材不做下发条件**：表情库默认空，为空时 `send_emoji` 照样下发、调用时才如实返回"表情库为空"并给出放素材的路径（图片直接放 `tool/media/emoji/`，一个统一库，不分内置/收藏；手动放进去的图只有文件名兜底描述，挑图质量差，在面板「表情包」页点开补一句描述，或用 `emoji_save` 让识图自动写）。
 
 ### 5. 启动
 
@@ -115,7 +115,7 @@ unit 里有 `LimitNOFILE=65535`：systemd 拉起的服务 soft nofile 默认只�
 
 **每次 push 做的事**（`.github/workflows/deploy.yml`，也可在 Actions 页手动触发）
 
-1. `rsync -az --delete` 同步代码，排除项只有**一份**：`deploy/rsync-exclude.txt`（CI 与手工同步共用同一份；清单里保持纯模式，rsync 虽然会忽略空行和 `#`/`;` 开头的行，但条目的理由写在下面而不是塞进清单）。清单：`.git/ .github/ .venv/ __pycache__/ *.pyc config.json *.db *.db-wal *.db-shm *.db.bak-* .bot.lock temp/ tool/media/emoji/ tool/media/audio/`。为什么必须排除：CI 的 checkout 里没有这些文件（`.gitignore` 挡掉了），而 `--delete` 会把"服务器有、源没有"的东西删掉——不排除就等于每次部署清一遍密钥、数据库和 `--reset-db` 生成的库备份。被排除的条目同时受 `--delete` 保护，所以服务器上的 `db/config.json`、数据库与备份、表情素材、语音参考音频、日志都不受影响；服务器原来手工放的 `start.sh` 会被删（systemd 接管后不再需要）。表情库整目录排除是因为它整个就是这台机器的本地状态：图片在服务器上，`index.json`/`vectors.json`/`usage.json` 又是按目录扫出来的，仓库里那份空索引对服务器没有意义（新机器首次扫描会自动建）。手工同步（从本地推）用同一份清单：`rsync -az --delete --exclude-from=deploy/rsync-exclude.txt ./ user@host:/path/GGBot/`。
+1. `rsync -az --delete` 同步代码，排除项只有**一份**：`deploy/rsync-exclude.txt`（CI 与手工同步共用同一份；清单里保持纯模式，rsync 虽然会忽略空行和 `#`/`;` 开头的行，但条目的理由写在下面而不是塞进清单）。清单：`.git/ .github/ .venv/ __pycache__/ *.pyc config.json *.db *.db-wal *.db-shm *.db.bak-* .bot.lock temp/ tool/media/emoji/ tool/media/audio/ tool/web/search_usage.json`。为什么必须排除：CI 的 checkout 里没有这些文件（`.gitignore` 挡掉了），而 `--delete` 会把"服务器有、源没有"的东西删掉——不排除就等于每次部署清一遍密钥、数据库和 `--reset-db` 生成的库备份。被排除的条目同时受 `--delete` 保护，所以服务器上的 `db/config.json`、数据库与备份、表情素材、语音参考音频、日志都不受影响；当天的搜索计数（`tool/web/search_usage.json`）也不被本地那份覆盖——SearchPro 按次计费，"今天用了多少次"只有跑着它的那台机器知道。服务器原来手工放的 `start.sh` 会被删（systemd 接管后不再需要）。表情库整目录排除是因为它整个就是这台机器的本地状态：图片在服务器上，`index.json`/`vectors.json`/`usage.json` 又是按目录扫出来的，仓库里那份空索引对服务器没有意义（新机器首次扫描会自动建）。手工同步（从本地推）用同一份清单：`rsync -az --delete --exclude-from=deploy/rsync-exclude.txt ./ user@host:/path/GGBot/`。
 2. （例外）换过工具分类目录或工具名时，先 SSH 跑一次 `bash deploy/migrate_tool_dirs.sh` 再重启：数据目录不在同步范围内，旧路径上的素材与配置不会自己搬到新分类下，漏跑一次对应工具就"未启用"。脚本按文件逐项搬、目标已存在只跳过不覆盖，可以重复跑，也会把 `config.json → levels` 里的旧工具名键改成新名字（旧键不改就是静默回到代码默认门槛）。
 3. SSH 执行 `deploy/deploy_server.sh`（同一份逻辑也能手动在服务器上跑，systemd 托管时要 `sudo`）：先补 `.venv`（新服务器第一次部署、或系统升级掉 Python 导致旧 venv 软链接失效时 `python3 -m venv .venv`）→ `requirements.txt` 的 sha1 变了才 `pip install`（平时几毫秒跳过）→ 按项目目录渲染 unit 并与 `/etc/systemd/system/ggbot.service` 比对，不一致才覆盖 + `daemon-reload` → `systemctl restart ggbot`；这台机器没有 systemd 时退回 `start_linux.sh` 后台启动并提醒该接管（此时以普通用户跑也能干活，不会死在写不了 `/etc` 上）。
 4. 探活看的是配置，不是固定端口：读 `db/config.json → web.enable / web.port`（配置还没生成或读不懂就按代码默认「面板开、11028」算），最多探测 30 秒。面板开着就 `curl` 它的首页，响应即打「面板端口 11028 响应正常，重启成功」；`web.enable=false` 是故意关的，那就改看服务还活着（systemd 用 `systemctl is-active`，nohup 用「工作目录等于本项目根的 `main.py` 进程」，不认领同机上别的同名进程）——以前一律探端口，关掉面板的部署每次都被判成失败。起不来就以非零退出（Actions 里直接红叉），并把现场打全：`systemctl status` + `journalctl -u ggbot.service -n 40`（systemd 下控制台输出在 journal 里，`temp/logs/stdout.log` 只是上一次 nohup 留下的旧文件，别再当现场）+ `tail -40 temp/logs/ggbot.log`。
@@ -189,7 +189,7 @@ unit 里有 `LimitNOFILE=65535`：systemd 拉起的服务 soft nofile 默认只�
 - `send_voice_clone` 产出 wav 后由 `pysilk` 转成 24kHz silk 再发送；QQ 语音富媒体只接受 silk
 - 表情包以图片富媒体发送（非 QQ 商城表情）；本地素材走 base64 直传，不需要公网地址
 - 工具目录 `tool/*/config.json` 含第三方密钥/授权码，已在 `.gitignore` 中排除；首次运行会按 `config.example.json`/代码默认值自动生成，无需手工创建
-- 联网搜索受收录情况限制：Bing 对没收录的词会退化成单字匹配，返回一堆不相干的页面，代码只能在结果上挂 `note` 提醒模型别硬答，不能替它保证搜得到；要更稳的结果就切 `searxng`（自建实例）或 `tavily`
+- 联网搜索特化为腾讯元宝搜索（SearchPro，`POST https://api.wsa.cloud.tencent.com/SearchPro`，标准库直连、无 SDK）：`api_key` 没填 = `web_search` 不下发（口径同语音克隆/生图），`web_fetch` 不受影响。按次计费，所以 `max_search_per_day`（默认 50）在请求发出前就拦下，计数写在 `tool/web/search_usage.json` 里、跨天归零、发版重启不清零。搜索质量仍受收录情况限制：结果与关键词字面重合度过低时挂 `note` 提醒模型换词或直说不确定，代码不能替它保证搜得到
 - 一轮里的工具动作不进下一轮历史：`messages` 表只存发出去的消息（含代发的正文）与用户消息，`web_search` / `memory_fetch` 这类中间结果只在当轮请求里存在，下一轮模型看不到自己查过什么；要跨轮记住就让它写进正文或主动 `memory_save`
 - 日程的触发精度就是 `scan_interval_sec`（默认 15s）；停机期间错过的按 `miss_grace_sec` 处置——一次性项作废不补发，周期项只跳过没赶上的那几场、整条继续往后排。日程行存在 `reminders` 表里，`--reset-chat` 只清 messages + sessions + 出站记账（已排好的日程**仍在**，要停得在对话里 `remind_cancel` 或在面板点「取消」），`--reset-db` 删整个库文件时才一起没了；面板「日程」页能看、能改时间正文、能取消删除与清理历史，但**排新日程与设周期仍然只能在对话里说**
 - 自动部署只在 Linux + systemd 这条路上验证过：unit 模板里写死的 `/root/GGBot` 会在装/部署时换成本机项目根，所以换目录不用改 unit，但 `DEPLOY_SSH_PATH` 得指对（渲染取的就是代码实际落地的那个目录）；`rsync --delete` 只保住在 `deploy/rsync-exclude.txt` 里的运行时数据，服务器上手工放的其他文件会被清掉
@@ -350,7 +350,7 @@ stateDiagram-v2
 | media | `generate_image` | Agnes 文生图，生成完直接发（L4 心腹）；带 `refs`（temp/ 或 emoji/ 素材的本地路径）就是改图或跟风格 | `generate/config.json`（Agnes key、`image_size` / `image_ratio` / `max_refs`） |
 | memory | `memory_fetch` / `memory_save` | 记忆检索（命中即强化）/ 沉淀（`kind`=profile 人物档案、event 事件，可带 `subject` 与 `expires_in_days`；写入先判取代） | 无 |
 | memory | `clear_context` | 清空**本会话**上下文：删除全部消息并把归档游标归零，长期记忆不动（L4 心腹） | 无 |
-| web | `web_search` / `web_fetch` | 联网搜索（Bing RSS / SearXNG / Tavily；`read=true` 顺带抓回前 3 条正文；结果与关键词几乎不沾边时返回 `note` 让模型换词或承认不确定）/ 抓取网页正文（`urls` 可批量并发，最多 5 个） | `config.json`（搜索服务、超时、抓取上限、`read_max_chars`） |
+| web | `web_search` / `web_fetch` | 联网搜索（腾讯元宝搜索 SearchPro，每天默认最多 50 次；`read=true` 顺带抓回前 3 条正文；结果与关键词几乎不沾边时返回 `note` 让模型换词或承认不确定）/ 抓取网页正文（`urls` 可批量并发，最多 5 个） | `config.json`（`api_key`、`mode`、`site`、`max_search_per_day`、超时、抓取上限、`read_max_chars`） |
 | mail | `send_email` | SMTP 发邮件（文本/HTML + 附件，L3） | `config.json` |
 | admin | `manage_permission` | 权限管理（L5）：`grant` / `revoke` / `list` / `help`，支持昵称 / 8 位 id / openid | 无（首次停用才生成 config） |
 
@@ -414,11 +414,14 @@ stateDiagram-v2
 
 ### 联网（web）
 
-- `tool/web/config.json`：`provider`（`bing` / `searxng` / `tavily`）、`base_url`、`api_key`、`timeout_sec`、`max_results`、`fetch_max_chars`、`fetch_max_bytes`、`read_max_chars`（`read=true` 时每页正文截断，默认 1200）
-- 默认 `bing` 走 Bing RSS（`https://cn.bing.com/search?format=rss`，无需 key）；`searxng` 需填实例地址，`tavily` 需填 key
-- `web_search` 返回标题 / 链接 / 摘要；`published`（`YYYY-MM-DD`）只在 SearXNG / Tavily 真给了发布时间时返回，认不出就不给这个字段。**Bing RSS 的 `pubDate` 是抓取/更新时间、不是发布日期，刻意不返回**——实测会把 2024 年的页面标成昨天，模型据此说"最新"比不说更糟
+- 搜索特化为腾讯元宝搜索（SearchPro）：`POST https://api.wsa.cloud.tencent.com/SearchPro`，标准库直连、无 SDK，`Authorization: Bearer <api_key>`
+- `tool/web/config.json`：`api_key`（控制台「服务 API KEY」，`sk-` 开头；**没填 = `web_search` 不下发**，口径同语音克隆/生图，`web_fetch` 不受影响）、`mode`（0 公开网页 / 1 权威垂直信源 / 2 混合，默认 2）、`site`（非空则只搜这个域名，默认空）、`max_search_per_day`（每天最多发多少次搜索，默认 50，填 0 = 不限；`web_fetch` 不计）、`timeout_sec`、`max_results`、`fetch_max_chars`、`fetch_max_bytes`、`read_max_chars`（`read=true` 时每页正文截断，默认 1200）
+- `Cnt` 只认 10/20/30/40/50 五档（传别的直接报错），按 `k` 向上取档、本地再截到 `k` 条；`Query` 超官方 1500 字节上限时按字节截，落在半个汉字上就丢掉半个
+- **每天最多 50 次搜索**：额度在请求发出之前就用掉，所以拦住的那次根本不碰服务，也告诉模型"今天到头了，别再搜，用已有信息回答或直说查不到"。计数写在 `tool/web/search_usage.json`（`{"day":"YYYY-MM-DD","count":N}`，gitignored 且 rsync 排除）而不是内存里——每次发版都会重启进程，放内存等于每天多发一轮次数，而 SearchPro 是按次计费的；跨到新的日期自动归零，`max_search_per_day=0` 时不计数也不拦
+- `web_search` 返回标题 / 链接 / 正文级摘录（`passage` 截 300 字，没给才退到 `content`）与来源站点名（`site` 是「腾讯网」这类名字，不是域名）；`published`（`YYYY-MM-DD`）取服务的 `date`，实测多为空、非空时是 `2026-09-29 00:00:00` 这种形状，认不出就不给这个字段。**这修掉了旧 Bing RSS 的坑**：那边的 `pubDate` 是抓取/更新时间，会把 2024 年的页面标成昨天，模型据此说"最新"比不说更糟
+- 服务的错误码翻成人话再回给模型（错误码决定该不该重试）：`UnauthorizedOperation`＝key 无效、`ResourceNotFound`＝服务未开通、`ResourceUnavailable`＝欠费或免费额度用尽、`RequestLimitExceeded`＝太频繁、`InvalidParameter`＝参数不合法、`InternalError`。**鉴权与参数错误都是 HTTP 200 + `Response.Error`**（实测拿到无效 key 就是这个形状），只有传输层问题才走 HTTP 错误码；空 `Pages` 且没有 `Error` 才是真 0 条，回 `note` 让模型换词
 - **结果不沾边就说破**：中文按二元组、英文按词，把 `query` 拆成词去比对标题+摘要，最高重合度 < 0.3 时整批结果挂一条 `note`（"多半是这个词没被收录或写法不对，别当成答案，换个说法再搜一次"），此时 `read=true` 也不再浪费一轮去抓这些垃圾正文；空结果同样回 `note`
-- `query` 写法已按此约束在 schema 里提示：2~6 个关键词、不要写成整句、专有名词配类型词（如「XX 游戏 TapTap」）——Bing 对收录不到的词会退化成单字匹配，整句几乎必然命中上面那条 `note`
+- `query` 写法已按此约束在 schema 里提示：2~6 个关键词、不要写成整句、专有名词配类型词（如「XX 游戏 TapTap」）——收录不到的词会退化成单字匹配，整句几乎必然命中上面那条 `note`
 - `read=true` 时并发抓回前 3 条结果的正文一起返回（单页失败只标 `content_error`，不影响别的页），省掉"搜完再逐条 fetch"的一整轮往返
 - `web_fetch` 支持 `urls` 批量（最多 5 个，并发；只给一个 `url` 时返回结构与以前一样），返回 `pages` 与 `N/M 页抓取成功`
 - **抓取安全**：只允许公网 http/https，拒绝回环/内网/链路本地/保留地址与含账号密码的 URL；每次重定向重新校验，最多 3 跳；限制超时、响应体积与返回字符数，只接收文本类内容（HTML/JSON/XML）
@@ -449,7 +452,7 @@ stateDiagram-v2
 
 > **本地媒体上传**：本地文件（**仅限 `temp/` 与 `tool/media/emoji/` 素材**，日志、工具配置与密钥会被拒绝）直接以 base64 `file_data` 调 `POST /v2/groups/{group_openid}/files`（或 `/v2/users/{openid}/files`）上传，再用返回的 `file_info` 发 `msg_type=7`，不依赖公网地址；超过 10MB 的本地文件改用 `ggbot/util/media.py` 生成的 HMAC 签名链接 `/media/<exp>/<sig>/<rel>`（由 Web 面板提供，无需 Cookie，仅限媒体扩展名，禁止目录穿越与日志），此时需配置 `storage.public_base_url`。签名密钥取自 `web.token`（或 `appsecret`），有效期默认 1 小时。
 
-> **版本库边界**：真正的 `tool/*/config.json` 含 MiMo / Agnes key、SMTP 授权码，由全局 `config.json` 规则忽略；同目录的 `config.example.json` 是入库模板（无密钥）。表情库是一个统一目录：`tool/media/emoji/**` 全忽略，只放行入库的 `index.json`（素材清单与一句话描述，不含图片本体）与 `config.example.json`——图片体积大且是个人素材，`vectors.json`（描述向量缓存，可从 `index.json` 重算）与 `usage.json`（发过几次的统计）也不入库，2560 维向量塞进 `index.json` 会让入库文件膨胀到几十 KB 且没法 review。`tool/media/audio/*.wav` 含个人音频同样忽略。换机重建时把图片放回 `tool/media/emoji/`、参考音频放回 `tool/media/audio/voice_ref.wav` 即可，运行时会自动生成缺失的配置并补齐字段、按描述重建向量缓存。部署侧的 rsync 更保守：整个 `tool/media/emoji/` 目录都在排除清单里，`--delete` 不会碰服务器上的素材。
+> **版本库边界**：真正的 `tool/*/config.json` 含 MiMo / Agnes key、SMTP 授权码，由全局 `config.json` 规则忽略；同目录的 `config.example.json` 是入库模板（无密钥）。表情库是一个统一目录：`tool/media/emoji/**` 全忽略，只放行入库的 `index.json`（素材清单与一句话描述，不含图片本体）与 `config.example.json`——图片体积大且是个人素材，`vectors.json`（描述向量缓存，可从 `index.json` 重算）与 `usage.json`（发过几次的统计）也不入库，2560 维向量塞进 `index.json` 会让入库文件膨胀到几十 KB 且没法 review。`tool/media/audio/*.wav` 含个人音频同样忽略。`tool/web/search_usage.json`（元宝搜索当天用了几次）是这台机器当天的运行状态，入库或推上服务器都没意义，同样忽略。换机重建时把图片放回 `tool/media/emoji/`、参考音频放回 `tool/media/audio/voice_ref.wav` 即可，运行时会自动生成缺失的配置并补齐字段、按描述重建向量缓存。部署侧的 rsync 更保守：整个 `tool/media/emoji/` 目录与 `tool/web/search_usage.json` 都在排除清单里，`--delete` 不会碰服务器上的素材与当天的搜索计数。
 
 ## 权限与工具门槛
 
@@ -566,7 +569,7 @@ GGBot/
 │   │   ├── audio/       #     语音克隆配置（MiMo key）+ voice_ref.wav（参考音频）
 │   │   └── generate/    #     生图配置（Agnes key、默认比例/尺寸/参考图上限）
 │   ├── memory/          #   memory_fetch / memory_save / clear_context
-│   ├── web/             #   web_search / web_fetch + config.json（搜索服务 / 抓取上限）
+│   ├── web/             #   web_search / web_fetch + config.json（元宝 api_key / mode / 每日次数 / 抓取上限）+ search_usage.json（当天用了几次，gitignored）
 │   ├── mail/            #   email.py + config.example.json（SMTP 账号 / 收件人白名单）
 │   └── admin/           #   manage_permission（L5：按昵称 / 8 位 id 授予或收回等级）
 ├── temp/                # 富媒体附件临时落地 + 日志 + Tool 运行产物（temp/tool/<name>/；默认 24h 清理，gitignored）

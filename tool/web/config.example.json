@@ -1,8 +1,9 @@
 {
   "enabled": true,
-  "provider": "bing",
-  "base_url": "",
-  "api_key": "",
+  "api_key": "元宝搜索服务 API KEY（sk- 开头）",
+  "mode": 2,
+  "site": "",
+  "max_search_per_day": 50,
   "timeout_sec": 15,
   "max_results": 5,
   "fetch_max_chars": 6000,
