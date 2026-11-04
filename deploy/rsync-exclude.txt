@@ -12,3 +12,4 @@ config.json
 temp/
 tool/media/emoji/
 tool/media/audio/
+tool/web/search_usage.json

@@ -35,6 +35,8 @@ tool/media/emoji/**
 !tool/media/emoji/index.json
 !tool/media/emoji/config.example.json
 tool/media/audio/*.wav
+# 元宝搜索的当天用量计数（按次计费，发版会重启进程，计数要留在服务器上；本地运行数据，不进仓库）
+tool/web/search_usage.json
 
 # 编辑器
 .idea/
