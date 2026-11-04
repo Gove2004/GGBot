@@ -93,15 +93,15 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   → 前两段字节级跨会话不变，厂商前缀缓存才命中得了；记忆段和本轮消息每次都变，只能放尾巴上。
   改动时注意：想把任何"每次都不同"的东西（动态人设、按等级裁剪的 schema、摘要）往前挪，先想清楚它会不会劈开前缀。
 - **人设在配置里，代码只留兜底**：整段 system prompt = `llm.system_prompt`，留空（或全空白）就用 `presence/defaults.py` 的 `SYSTEM_TEMPLATE`；
-  面板侧栏「人设」页是一整块编辑器，读写走独立的 `GET/POST /api/system-prompt`，刻意不进 `POST /api/config` 的白名单。
+  面板侧栏「人设」页是一整块编辑器，读在 `GET /api/page/persona`、写走独立的 `POST /api/system-prompt`，刻意不进 `POST /api/config` 的白名单。
   → 为什么能改：调语气是日常动作，以前每改一句都要动代码重启。为什么单独一条路由：这段是缓存前缀，存一次就失效一次，
   不该被设置页那套批量保存顺带碰到；一个键只留一条写入路径。
   → v3 的内置默认在最前面加了【你的底子】：GGBot 由 Gove 研发、当前 v3、开发测试阶段、成本由 鹿LwL 赞助、扮演一位女生。
     这几句写成"给你自己看的来历，不是台词"，人设里明确要求不主动交代——它是模型的自我口径，不是自我介绍的稿子；
     被追问是不是机器人时用玩笑岔开，不去编身世、也不论证自己多像人。说话方式/断句/语气/防注入那几段原样保留。
   → 改动时注意：`pm.context.system_prompt` 每轮现读，保存即生效不用重启；老配置没这个键要靠 `Config._migrate` 补空串
-  （`set_by_path` 拒绝创建新键，不补就永远存不进去）；20000 字上限前端和后端各挡一道；这页不在 1s 轮询里，
-  编辑器有未保存改动时切页回来也不被后端值覆盖（要丢弃得点「重载」），别把它接进 `refreshAll`/`poll.js`。
+  （`set_by_path` 拒绝创建新键，不补就永远存不进去）；20000 字上限前端和后端各挡一道；这页不进 `PAGE_LIVE`，
+  编辑器有未保存改动时切页回来也不被后端值覆盖（要丢弃得点「重载」），别把它接进 `PAGE_LIVE`。
 - **不做工具提示词注入**：`prompt_hint` 与 system 里的【工具提示】段删了。→ 好的工具描述写在 schema 的 `description` 里，
   下发列表本来就有；提示词里再复述一遍等于每个可能用到的工具都花一份 token，还和 `description` 有两处口径。
   代价是表情/语音这类靠暗示拉触发率的调用变少，实测由 `temp/test_tool_usage.py` 观察。
@@ -224,7 +224,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   所以按发出结果记，失败只说 `发送未成功: …`，不再出现 `工具 send_text（admin=…, content=…）`。
 - 每行都带调用方会话列（工具/LLM/识图/作息都是），特权工具（L3+）INFO、空转上下线降 DEBUG。
 - **默认等级是 DEBUG**（代码兜底、`config.example.json`、本地与线上的 `db/config.json` 四处一致），要 quieter 就在面板「日志等级」里切，保存即热生效。
-  → 用户两次报「看不到 DEBUG」，原因有叠加的两层，改一层没用：**文件里没写**（以前默认 INFO，且 `deploy/ggbot.service` 曾钉死 `--log-level INFO`——启动参数盖掉配置，unit 里现在不带这个参数）；**界面又默认筛掉**（日志页下拉和 `GET /api/logs` 的 `level` 都曾默认 `INFO 及以上`）。现在两处默认都是 DEBUG。
+  → 用户两次报「看不到 DEBUG」，原因有叠加的两层，改一层没用：**文件里没写**（以前默认 INFO，且 `deploy/ggbot.service` 曾钉死 `--log-level INFO`——启动参数盖掉配置，unit 里现在不带这个参数）；**界面又默认筛掉**（日志页下拉和 `page/logs` 的 `level` 都曾默认 `INFO 及以上`）。现在两处默认都是 DEBUG。
   改动时注意：手工起 `start_*.sh` 才用 `--log-level DEBUG` 这个参数，别把它抄进 unit；DEBUG 只放业务行，第三方库固定 WARNING，体积靠 5MB × 5 轮转封顶。
 - 改动时注意：措辞被 `temp/test_log_format.py` 锁住，改文案要同步改测试。
 
@@ -360,7 +360,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 ## 安全与部署边界
 
 - `db/config.json` 与 `tool/**/config.json` 有密钥（AppSecret、LLM/Embedding/MiMo/SMTP/搜索 key、`web.token`），
-  `.gitignore` 已忽略；日志、面板、提示词都不出现明文密钥（`GET /api/config` 脱敏）。
+  `.gitignore` 已忽略；日志、面板、提示词都不出现明文密钥（`page/settings` 与 `page/tools` 里的配置都过 `mask_secrets`）。
 - 发送本地媒体只允许 `temp/` 与 `tool/media/emoji/`；邮件收件人白名单、附件只走 temp 运行时文件。
 - 面板：Cookie 登录（HttpOnly+SameSite）、每 IP 限流、CSP 无内联脚本、WS 鉴权、`trust_proxy` 默认关（防伪造 XFF 绕过限流）。
   `web.host=0.0.0.0` 时面板对整个公网可见，上云要么配 `web.token`，要么只绑 127.0.0.1 走反代。
@@ -410,16 +410,48 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   会话/关键词筛选扫全文、只在最后一步截到 N 行，且忽略大小写。
   → 用户报「筛选失效」的四个原因全在这一条里：以前是先读尾部 400 行再筛（老日志根本进不了视野）、
   等级按字面相等（选 INFO 就看不到 ERROR）、解析不出格式的行直接绕过筛选（堆栈被单列为 INFO 之外）、
-  会话 id 大小写敏感。改动时注意：`/api/logs` 的 `total` 是命中总数、`logs` 是截断后的显示行，
+  会话 id 大小写敏感。改动时注意：`page/logs` 的 `total` 是命中总数、`logs` 是截断后的显示行，
   面板副标题靠这两个数说「命中 N 条，显示最近 M 条」，别只回一个数组让用户自己猜被截了多少。
-- **面板的视觉主角是「在线/离线」，不是蓝色渐变。** 品牌色就是在线信号色 `--live`（`base.css` 的 `:root`），旧令牌名
-  `--accent/--accent-2/--green/--red` 仍在，只是别名指向新值，没改到的规则不会突然变样。
+- **面板的视觉主角是「在线/离线」，不是蓝色渐变。** 品牌色就是在线信号色 `--live`（`base.css` 的 `:root`）；
+  旧别名 `--accent/--accent-2/--green/--red` 和没人用的 `--panel/--panel-3/--gap` 已删干净——铺完令牌后没有任何一条规则引用它们，
+  留着只会让人以为新规则还可以那么写。新增语义色一律进 `:root`（`--ink-*` 是墨色、`--teal` 是第七类分类色），不要硬编码十六进制。
   离线态有两个由 `dash.js` 挂/摘的类：`#app.offline`（侧栏那条发光边褪成中性）和 `#dash-hero.online`（值班带从结构蓝翻成在线绿）。
   → 这是机器人的核心特征：不在的时候它什么都不做，用文字提示"离线"不如让面板一眼看着不在岗。
   改动时注意：**信号色只说在线这件事，别把 `--live` 在离线时整体改映射**——同一个令牌还兼着「成功/已送达」的徽章色，
   离线时把成功色一起拉灰就等于撒谎；新增组件想跟着状态变色，用 `.hero.online` 这一层的定向规则，不要动全局令牌。
+- **主题不是两套样式表，是同一批令牌读两次。** 颜色的字面量只准出现在 `base.css`：`:root` 定暗色，`:root[data-theme="light"]`
+  是**唯一**一处反转（表面压白、墨色压暗、七条信号通道变深），另外五张样式表只写 `var(--x)`。
+  → 只要浅色的覆盖漏一个令牌，页面就「半深半浅」——有些元素跟着翻转走、有些还吃暗色字面量，而这种错在暗色下永远看不出来。
+  改动时注意三条：① **通道只当底用**（点、填充、辉光、淡底都从 `rgba(var(--*-ch), a)` 算），压在同色 .07~.1 淡底上的**小字必须走 `--ink-*`**——
+  `#2ee6a8` 这类荧光值落在白底上只有 1.6:1，当正文色读不出来，所以浅色的语义墨色整体比通道深一档，暗色同理；元数据档（`--faint`/`--muted`）
+  要经得起它实际压到的每一层表面（页面底 / 卡片 / 面板 / 日志暗格），暗色 `--faint` 因此从 `#617689` 抬到 `#7b90a3`；
+  ② 浅色的信号通道**必须比暗色更暗**，不然白字压在主按钮实底上不过线；③ 下拉箭头和搜索图标是 data-URI，`--faint` 一改就得同步那两处里的十六进制，
+  否则淡底跟着主题走了、图标还是上一版的灰。`temp/test_web_theme.py` 离线钉死这五条（含 4.5:1 的实际反解），改令牌跑一遍就知道漏没漏。
+- **`theme.js` 只能排在样式表之后、`</head>` 之前。** CSP 是 `script-src 'self'`，内联脚本进不来；外链脚本会被未加载完的样式表挡住，
+  所以这个位置既能读到令牌、又抢在 body 画出来之前。
+  → 放进 body 就是每次刷新先黑一下（暗色是 `:root` 默认值，浅色要等脚本挂 `data-theme`）。三档状态：没表过态=跟随系统，手动按过=以选的为准，
+  只有按过才写 `ggbot.theme`；`theme-color` 那个 meta 从 `--bg` 现读，不在 HTML 里抄第二份十六进制。
+- **侧栏的四组说的是「我此刻来面板干什么」，不是后端的模块边界。** 现场（仪表盘 / 日志）、对话（会话 / 日程）、知识（记忆 / 表情 / 人设）、配置（设置 / 权限 / 工具）。
+  → 以前十项平铺，「日程」和「提醒」的词在面板里指同一件事，工具页和权限页隔着一屏却改的是同一批 Tool；重排只动分组与命名，页面和接口没动。
+  改动时注意：组名同时是 `.nav-label` 的可见文字和 `nav-group` 的 `aria-label`，两处必须一致（`temp/test_web_nav.py` 钉着）；
+  收起态（`.rail`）藏的是文字的**形状**（`visibility: hidden` + 宽度收 0），不是文字本身——`display:none` 会把按钮的可访问名一起删掉，读屏就只剩一串没有名字的按钮。
+- **面板的读只剩两条路：`GET /api/shell` 每秒一次，`GET /api/page/<name>` 按页拉。** 后端 `PAGES` 表决定这一页要读哪几份数据，
+  一页一次往返画完整页；`/api/status|stats|sessions|messages|logs|memories|memories/search|reminders|tools|config|emojis|actors|system-prompt`
+  这十三条按资源开的 GET 全删了，只剩 `/api/shell`、`/api/page/<name>`、`/api/auth` 和会话详情那一条 `GET /api/sessions/{sid}/messages`。
+  → 以前不管停在哪一页，每秒都要打三个请求，而一页的数据分四五次回来，中间态就是「表格画了、徽标还是上一轮的」。在线态也因此被算了两遍
+  （`/api/status` 与 `/api/stats` 各跑一次 `presence.status()`），两份读数还可能对不上——现在 `/api/shell` 一次算完。
+  改动时注意：① **页面上的筛选控件就是这一页请求的 query**（`PAGE_PARAMS`），轮询、切页、刷新按钮读同一份口径，别再在某个 js 里单开一次 fetch；
+  ② 只有会自己变的页面挂定时器（`PAGE_LIVE`：仪表盘与日程 5s、日志 1s），其余进出才拉；③ 编辑器页不吃自动重载靠 `PAGE_HOLD`，
+  带 params 的调用（刷新按钮、写完回读、人设页的「重载」）是明确要拉的，绕过这条限制；④ 写操作照旧按资源走，改完调 `reloadPage()`，
+  不要在模块里自己拼「该刷哪几块」；⑤ **新增一页要同时动六处**（`index.html` 的 section、`index.html` 里挂进某一组的 nav 按钮、
+  `util.js` 的 `PAGE_META`、`server.py` 的 `_ds_*` 装载函数、`server.py` 的 `PAGES`、`refresh.js` 的 `PAGE_RENDER`），少一处就是点了没反应或画成空白页；要自动刷新再补 `PAGE_LIVE`，页面上有筛选控件再补 `PAGE_PARAMS`。
+- **记忆的临界提示只在记忆页出现，且用遗忘扫描的口径。** `usage()` 回的是 `countable`（已经扣掉到期与淡出的条数）＋最满的那个主体的档案条数：
+  到 80% 起挂提示、到顶转危险色，行尾直接给「立即遗忘扫描」。
+  → 两条上限都会先撞（整库与每人档案），只看整库等于提示永远不响；把到期/淡出算进「离上限还有多远」会让提示在扫描前一秒变成假警报。
+  仪表盘不挂这条：那个数字没有上下文，说「快满了」没人知道在说什么。改动时注意：检索模式（`q`）下 `limits`/`usage` 照样得带上——
+  同一句话在两种视图里说的是同一个口径；`memory.js` 只画后端给的数，别在前端按 `items.length` 自己估。
 - **仪表盘的倒计时配一条「值班带」，不是 `<progress>`。** `.duty-track` 是这一轮的名义窗口，填充是走过的比例，
-  `renderDuty()` 用 `/api/status` 的 `online_duration_sec` / `offline_interval_sec` 当分母、`remaining_sec` 反推已走时长，
+  `renderDuty()` 用 `/api/shell` 里 `status` 的 `online_duration_sec` / `offline_interval_sec` 当分母、`remaining_sec` 反推已走时长，
   抖动（`*_jitter`）和续期推后的秒数只写进右侧标签（`duty-window`），不进轨道。
   → 续期把截止点往后推时面板拿不到窗口起点，轨道只能表达名义窗口；把续出来的时间画进轨道会显示"走过 120%"。
   改动时注意：轨道用 `<div>` + 内联 `width`/`left` 百分比，不用 `value/max`，所以 `prefers-reduced-motion` 下只需停动画不用换渲染路径；
@@ -430,6 +462,17 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   改动时注意：长文本列（工具说明、最近发言、表情描述）一律 `cell-clamp`/`emoji-desc` 掐两到三行并把全文放进 `title`；
   权限两张表的列宽在 `pages.css` 里写死（`.col-actor/.col-tool/...`），不写死浏览器按内容分，长备注能把「成员」列撑肥、
   门槛下拉飘到行中间；手机端要收掉的列统一挂 `col-sm-hide`，只在 `responsive.css` 里控制显隐。
+- **面板只有两套尺子：九档字号 `--fs-1..9` 与七档间距 `--s-1..7`（都在 `base.css` 的 `:root`）。** 改之前 111 条字号声明里冒出 21 个值，
+  10/10.5/11/11.5/12/12.5 六档挤在 2.5px 里——不是哪一处特别丑，是每一处都差半档，整页看着谁也没对齐。
+  → 相邻两档至少差 1px 才分得出层级；11px 是含中文的最小可读档，再小就糊。
+  改动时注意：新字号从阶梯里挑一档，别再造 13.5px；块间距用 `--s-3/4/5`，卡片内缩进用 `--s-2/3`。两个刻意留在阶梯外的字面值：
+  手机输入框的 `font-size: 16px`（低于它 iOS 一聚焦就放大页面）和控件高度 36/30/44（那是点击区，不是节奏）。
+  阶梯升档会连带顶宽固定列，改的时候一起看：日志等级列跟着 `.lv` 从 10px 涨到 11px 加到 72px（不然 `WARNING` 被切），
+  运行读数 `minmax` 从 88px 加到 104px（不然 `128,456` 在数字中间折行）。
+- **仪表盘只有值班带在说「在线」，指标带退成次级读数。** 五格指标以前按 `nth-child` 轮流刷 info/amber/violet/live/rose，
+  可「会话总数」既不是在线、「今日消息」也不是失败——信号色在这里说的全是假话，还把次级数据抬得和值班带一样响。
+  → 现在 `.metrics` 是 `gap: 1px` 的分栏读数带，分隔线靠容器底色透出，读数压到 `--fs-7`，状态色只留在 `.hero.online` 那一层。
+  改动时注意：给 `.metrics` 补 `gap` 等于把分隔线画丢；手机上只收列数（`repeat(2, minmax(0, 1fr))`），别再叠 `gap`/`padding`/字号覆盖。
 - **控件只有一种高度语言**：常规控件 36px、胶囊/小按钮 30px、整块按钮 44px（`components.css`）。按钮标签至少两个字——
   单字那颗会被 `min-width` 撑成正方形，一排看着高低不齐（日程页的「改/删」已改成「改期/删除」）。
   → 以前乱的主要来源是同一排里混了三种来源的宽度（`width` 写死的 select、按内容收的 input、被 `min-width` 顶住的按钮）。
@@ -437,19 +480,20 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 - **版本号只有一处：`ggbot.__version__`。** 页面标题、登录卡、侧栏徽标写的是 `{{VERSION}}`，`GET /` 返回前一次性替换；
   启动日志第一行也打它。→ 前端是可独立热改的静态文件，硬编码第二份版本号一定会过期，
   而面板显示的版本对不上部署版本，等于排查时多一个假线索。改动时注意：发版只改 `ggbot/__init__.py`。
-- **前端按页拆在 `static/js/`（19 个）与 `static/css/`（6 个），没有打包步骤，靠 `index.html` 的引用顺序拼回来。**
+- **前端按页拆在 `static/js/`（20 个）与 `static/css/`（6 个），没有打包步骤，靠 `index.html` 的引用顺序拼回来。**
   脚本仍是经典脚本（不是 module），全局 `const/function` 跨文件可见，所以顺序 = 原来单个 `app.js` 的行序，
-  `events.js` 必须最后（它挂 DOMContentLoaded 并 `boot()`）；样式表 `responsive.css` 必须最后（层叠覆盖）。
+  `events.js` 必须最后（它挂 DOMContentLoaded 并 `boot()`）；样式表 `responsive.css` 必须最后（层叠覆盖）；`theme.js` 见上面那条主题契约。
   → 用户要求「不要全堆在三个文件」，而拆分的唯一风险就是漏引/错序——`temp/test_web_schedule.py` 里那半截
   就是守这个的：引用的文件必须存在、`js/` 与 `css/` 里不许有没被引用的文件、首尾顺序钉死（`schedule.js` 排在 `refresh.js` 之前，页面自己也要在 nav 里登记）。
-  改动时注意：**新增一页要同时动五处**（`index.html` 的 section + nav、`util.js` 的 `PAGE_META`、
-  `nav.js` 的 `switchPage` 分支、`refresh.js` 的 `refreshAll`、`poll.js`/`events.js` 的入口），少一处就是点了没反应。
-  例外是"编辑器页"：「人设」刻意不进 `refreshAll`/`poll.js`，只在 `switchPage` 进那一次拉数据，
-  否则 1s 轮询会把用户正在敲的字冲掉——`temp/test_web_persona.py` 把"poll/refresh 里不许出现 persona"钉成了断言。
+  改动时注意：**新增一页要动的就是上面那条读模型列出的六处**（`index.html` 的 section 与 nav、`util.js` 的 `PAGE_META`、
+  `server.py` 的 `_ds_*` 与 `PAGES`、`refresh.js` 的 `PAGE_RENDER`），少一处就是点了没反应或画成空白页；
+  `nav.js` 的 `switchPage` 不再按页面分支取数（只管 `reloadPage(name)`），要自动刷新再补 `PAGE_LIVE`、有筛选控件再补 `PAGE_PARAMS`。
+  例外是"编辑器页"：「人设」不进 `PAGE_LIVE`，编辑中还由 `PAGE_HOLD` 暂缓自动重载，只有带 params 的调用（「重载」按钮 `{ force: "1" }`）绕得过——
+  否则轮询会把用户正在敲的字冲掉；`temp/test_web_persona.py` 把"poll.js 与 PAGE_LIVE 里不许出现 persona"钉成了断言。
 - **面板「日程」页能看、能改、能删，但刻意没有新建入口。** 分组视图（已经过点 / 今天要发 / 这周之内 / 以后 / 历史）+ 全局统计 + 三个筛选 + 逐行改时间正文/取消/删 + 批量清理历史与按保留期清理；排日程仍然只有对话里那三个工具。
   → 时间语法只在 `_rule.py` 解析一次：面板上真要做"明天 8 点、每个工作日"就得多养一套输入与校验，两边对同一句话的理解迟早分叉。用户要的"看看挂着什么、点掉某条、改个时间"不需要理解规则。
   改动时注意三件事：① 列表是卡片行不是表格，手机端只需放开 `.sch-body` 的 `max-height`；② `stats` 走**全表口径**、`total` 跟着筛选条件走，别拿其中一个当另一个用；
-  ③ 这一页在 1s 轮询里会被整片重画，所以渲染要保住 `#sch-body` 的滚动位置，写完请求再用 `guarded("schedule", refreshSchedule)` 顶一下——
+  ③ 这一页在 5 秒一轮的自动刷新里会被整片重画，所以渲染要保住 `#sch-body` 的滚动位置，写完请求再用 `guarded("schedule", refreshSchedule)` 顶一下——
   `guarded` 会丢掉并发调用，因此"点完没立刻变"是既有 house 行为，下一轮轮询自然追上，不要为它加乐观改本地状态。
 - **会话详情多了一块「最近出站」，读的是 `sends` 表不是日志。** `GET /api/sessions/{sid}/messages` 一次回
   `{session, messages, sends}`（出站只给最近 10 条），前端把 `via` 翻成「被动回复 / 主动发送 / 降级主动」、把 `ok` 翻成
@@ -457,10 +501,11 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   → 以前判断"这条到底发出去了没"要开日志页搜关键词：日志会轮转、发版即丢、还混着别的会话，而这是运维最想看的一列。
   改动时注意：`cli context` 末尾那 5 行读的是同一张表，别在面板里再拼一套口径；「清空上下文」
   （`DELETE /api/sessions/{sid}/context`）与 CLI `clear` 都走 `storage.clear_session_context`，连该会话的锚点与出站记录一起删。
-- **「消息流」页已经换成「表情包」浏览页，但 `/api/messages` 留着。** 消息流和会话详情读的是同一张 `messages` 表，
-  跨会话那份没人翻（要看历史就进「会话与上下文」按会话看），仪表盘的「最近消息」还在调这个接口
-  → 删的是页面不是接口，`refreshDashRecent()` 因此从 `js/messages.js` 搬进了 `js/dash.js`；
-  仪表盘那张「查看全部」按钮也改成跳「会话与上下文」，别留一个指向不存在页面的 `data-page`。
+- **「消息流」页换成「表情包」浏览页，`/api/messages` 也一起删了。** 消息流和会话详情读的是同一张 `messages` 表，
+  跨会话那份没人翻（要看历史就进「会话与上下文」按会话看）；仪表盘要的「最近消息」现在由 `PAGES["dash"]` 里的 `_ds_recent`
+  随这一页的快照一次给回（键名 `recent`），不再单独占一条 GET
+  → 删页面却留接口，接口就成了没人认领的第二真相；`renderDashRecent()` 因此从 `js/messages.js` 搬进 `js/dash.js`，
+  由 `PAGE_RENDER.dash` 调用；仪表盘那张「查看全部」按钮也改成跳「会话与上下文」，别留一个指向不存在页面的 `data-page`。
 - **表情包页能浏览也能管素材，图片路由刻意不在 `/api` 下。** 列表复用 `emoji_list` 那份 `EmojiLibrary.rows()`（目录仍是唯一真相），
   缩略图走 `GET /emoji/<rel>`，越界判定放在 `EmojiLibrary.image_path()` 里（限定素材根目录 + 只认图片扩展名），
   鉴权复用 `_auth`——Cookie 也能过，所以 `<img src>` 不需要带令牌。
@@ -469,7 +514,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   → 以前定过"网页只浏览"，理由是写入只有"往目录放文件"和 `emoji_save` 两条路；实际管素材时改一句描述要跑终端，
     那条老规矩把便捷性换成了"少一个真相源"的执念。现在真相源仍然是目录，网页只是 `emoji_save` 之外的第二个入口，
     走的是同一个入库函数（摘要命名 + 去重 + 上限）。
-  改动时注意：这页不在 1 秒轮询里（纯手动刷新），删/传之后要把扫目录缓存打掉，否则列表还留着刚删掉的那张；
+  改动时注意：这页不进 `PAGE_LIVE`（进出才拉一次，其余靠手动刷新），删/传之后要把扫目录缓存打掉，否则列表还留着刚删掉的那张；
   前端对 `/static/*` 用 `no-cache`（带 ETag 回源，没改照样 304），因为这套前端是"改了刷新一下就生效"的设计，
   抱着旧 JS 跑新页面比多一次 304 难查得多。
 
@@ -485,7 +530,8 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   `TurnDecider._agent_loop` 就是为这个接缝留的（拼上下文 + 归档触发都在这儿，不经模型也能单测）。
   → 这次拆分的收益就在这儿：内部实现改名不该让测试报废，而测试一旦开始伸进别的私有步骤，说明那段职责又混回去了。
 - 每次改动同步 README；**文档不写代码里没有的行为**。
-- **用例清单**：README 只留「跑 `sh temp/run_all.sh`」那一句，这里记每一条锁住了什么行为。标签是当时从输出抓下来的，和今天的 43 个脚本不是一对一——有的已并进别的脚本（`messages_state` 就在 `temp/test_sender_quote.py` 第 5 节），有的是一次性的真实调用或浏览器实测（`llm_chat`、`voice_clone`、`email_tool`、`web_ui*`，脚本早删了，结论还值得留着）。改行为时按说明去找脚本，别按标签猜文件名。
+- **用例清单**：README 只留「跑 `sh temp/run_all.sh`」那一句，这里记每一条锁住了什么行为。标签是当时从输出抓下来的，和今天的 46 个脚本不是一对一——有的已并进别的脚本（`messages_state` 就在 `temp/test_sender_quote.py` 第 5 节），有的是一次性的真实调用或浏览器实测（`llm_chat`、`voice_clone`、`email_tool`、`web_ui*`，脚本早删了，结论还值得留着）。改行为时按说明去找脚本，别按标签猜文件名。
+  → 面板改成一页一次 `GET /api/page/<name>` 之后，早先那几条 `web_*` 记录里写的「`GET /api/memories` / `/api/logs` / `/api/emojis` …」都应读成 `page/<对应页>`（口径没变，只是并入快照）；本轮重写的 `web_page` / `web_nav` / `web_theme` 三条才是当前的读模型与主题契约。
 
 ```
 [PASS] import_all        # 全部模块导入
@@ -561,6 +607,9 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 [PASS] web_ui_schedule   # 日程页浏览器实测（本地预览服务 + 无头窗口截图核对，1440×900 / 1280×800 / 390×844，控制台无 JS 报错、无横向溢出）：待触发按「已经过点 / 今天要发 / 这周之内 / 以后」四堆 + 「历史」一堆，每堆自己按到期时间排序（「全部」视图里后端按落定时间排的历史混进 pending 就没有方向了）；顶栏一行统计与筛选（状态/会话/关键词，搜「登山」当场只剩 1 行）；周期行挂「每天 已发 0」「每周 0/8」徽标，终态行挂状态徽标与「落定 <时间>」；行内「改 / 取消 / 删」——改弹窗预填 datetime-local 与正文且**只发人真动过的那一格**（逾期项的时间本来就是过去的，改个错别字不该被「必须是将来」挡回来），保存后 toast 报新时间；清理历史弹窗按状态实时给出「已触发 / 已取消 / 已过期」条数再确认删除；「按保留期清理」确认后 toast「到期删 0 · 超限删 0（剩 8 条）」；66 条 pending 时首屏拉 50，点「载入更多」把窗口撑到 66、按钮消失、提示改「共 66 条」，随后两轮 1s 轮询不重复插行；1s 轮询重画列表时保持滚动位置（读到一半不被弹回顶部）；手机端列折进行内、操作按钮仍点得到
 
 [PASS] web_emojis        # 表情包页（`temp/test_web_emojis.py`）：`GET /api/emojis` 列的就是目录里的图（库目录与旧 stickers//user/ 子目录并列、手动丢进去的当场出现、删掉的条目失效），回 file/desc/added_at/url/use_count/last_used_at/has_vec 与 mode/上限，既不给向量也没有来源字段；浏览只读——不写索引、不建向量与使用统计文件；`PUT /emoji/<rel>` 改描述（清空退回文件名、超长 400、不在库里 404）、`DELETE /emoji/<rel>` 连图片文件一起删、`POST /api/emojis/import?name=` 收原始字节上传并按摘要去重（非图片 / 空文件 400），三个写动作都要登录；`GET /emoji/<rel>` 出图且 `Cache-Control: private`，非图片 / 不存在 / `%2e%2e%2f` 越界一律 404；扫目录缓存：库目录一变立刻重扫，没变时 TTL 内复用同一次结果，`?force=1` 强制重扫；面板不再有来源筛选与内置/收藏徽标（「内置默认」这个词现在人设页也在用，所以这条只查表情页那一段 markup），表情页不进 1s 轮询；消息流整页下线（`js/messages.js` 删除、侧栏 10 项、util/nav/poll/refresh/events/sessions 里不再残留 `refreshMessages` 与 `#msg-` 接线），`/api/messages` 保留给仪表盘「最近消息」
+[PASS] web_nav           # 侧栏分组的结构契约（`temp/test_web_nav.py`，解析 index.html，不需要浏览器）：四组十项、组名与归属固定（现场=dash/logs、对话=sessions/schedule、知识=memory/emojis/persona、配置=settings/permissions/tools）、可见组名 == `aria-label` 且每组带 `role=group`、`data-page` 与 `#page-*` 与 `PAGE_META` 与 `PAGE_RENDER` 是同一批十个且顺序一致、默认只有 dash 高亮并带 `aria-current="page"`（nav.js 切换时同步增删）、收起态（`.app.rail`）藏文字靠 `clip-path` + `position:absolute` 的 sr-only 写法而不是 `display:none`（否则按钮的可访问名一起没了），组名才用 `display:none` 藏、主题按钮在侧栏之外
+[PASS] web_page          # 按页面的读模型（`temp/test_web_page.py`，TestClient + 临时库）：侧栏十页 == 后端 `PAGES` == 前端 `PAGE_RENDER`；每页快照的键正好是该页渲染函数从 `d` 上取的键（不多给也不少给，少给就是白屏）；`/api/page/<name>` 未登录 401、未知页 404；`/api/shell` 一次往返里 `presence.status()` 只算一次并带 `runtime`/`env`；按资源开的旧 GET（status/stats/sessions/messages/logs/memories/memories-search/reminders/tools/config/emojis/actors/system-prompt）逐个断言已不存在；`PAGE_LIVE` 只留 dash/schedule/logs 三页，其余页面进出才拉；`PAGE_PARAMS` 里日志/记忆/日程各自读自己的控件，`PAGE_HOLD.persona` 挡住未保存时的自动重载
+[PASS] web_theme         # 双主题的令牌契约（`temp/test_web_theme.py`，离线）：颜色字面量只准出现在 `base.css`（`mask-image` 的 `#000` 是遮罩形状，放行）；每个 `var(--x)` 都在 `:root` 声明过，没有拼错名也没漏浅色覆盖；暗色定义的颜色令牌浅色必须覆盖——只由 `rgba(var(--*-ch), a)` 派生的豁免（通道一变淡底自己跟着变）；浅色七条信号通道全部比暗色更暗；`--live` 当字色落在 `--bg`/`--panel-2` 上 ≥4.5:1、白字压主按钮实底 ≥4.5:1，浅色墨色阶梯（faint/muted/ink-*）每档 ≥4.5:1；**淡底（.10 alpha，覆盖小牌 .09~.1、标签 .08、危险按钮 .07 那批）与日志暗格上的小字逐个反解**——两主题最差 4.55:1（暗色 `--ink-off` 压在 `--idle-ch` 淡底 / panel-2），这就是「通道只当底、字走 `--ink-*`」那条规则的量化版本；主题脚本的位置钉死：`theme.js` 在 `</head>` 内、样式表之后、body 之前，body 里不许再出现一次，`theme.js` 里不许抄颜色，`<meta name="color-scheme" content="dark light">` 必须在 head
 [PASS] web_persona       # 人设页（`temp/test_web_persona.py`）：老 config 没有 `llm.system_prompt` 时加载即补空串（`set_by_path` 才写得进去）；留空/全空白 = 用代码里的内置默认，写进去后常驻的 PresenceManager 下一轮就换新人设（无需重启），`cfg.save()` 落盘重开仍在；`GET/POST /api/system-prompt` 未登录 401、回执含 `custom/default/effective/is_custom/max_chars`、清空保存回到内置默认、超过 20000 字 400；`llm.system_prompt` 不在设置白名单里，走 `POST /api/config` 会被记 `rejected`（人设只有一条写入路径）；前端接线：导航项 / `page-persona` / `persona.js` 引用 / `PAGE_META` / 三个按钮都在，编辑框不带 `data-path`（通用设置保存碰不到它），`poll.js` 与 `refreshAll` 都不碰它（正在打字不会被 1s 轮询冲掉），有未保存改动时切页回来仍是原样；浏览器实测（1440×900 与 390×844，无 JS 报错、无横向溢出）：进页面显示内置默认那 1551 字 + 徽标「内置默认」→ 改成一句话保存 → 徽标变「自定义」、toast「人设已保存，下一轮生效」、重载后编辑框仍是新内容 → 清空保存回到「内置默认」；「填入内置默认」把 1551 字灌回编辑框；粘 20001 字页脚变红并报「系统提示词最长 20000 字，现在 20001 字」，服务端旧值不动，绕过前端直接 POST 也拿到同一句 400
 [PASS] temp_video_policy # 视频附件不下载 + temp 过期文件清理
 [PASS] deploy_scripts    # 部署脚本离线回归（`temp/test_deploy_scripts.py`，只用 bash 与临时目录，不碰服务器）：`deploy/*.sh` 与两个 unix 启动脚本 `bash -n` 通过且都是 LF；`render_unit` 把模板里写死的 `/root/GGBot` 换成传入的/当前项目根（`WorkingDirectory`/`ExecStart` 两处都换、不留旧路径、`LimitNOFILE` 不动），`apply_unit` 对同一目标第二次判定「已是最新」且不再 `daemon-reload`；`web_probe` 五种配置（缺失/关面板/自定义端口/无 web 段/坏 JSON）都按代码默认口径给出 `on|off 端口`；`bot_pids` 对认不出的项目根返回空且退出 0；`deploy/rsync-exclude.txt` 逐条盯住 14 个排除项（含 `*.db.bak-*`，`--reset-db` 的库备份不能被 `--delete` 顺手清了）、是纯模式不含 `#`/`;` 注释行、不碰 `config.example.json`，workflow 改成 `--exclude-from` 引用这份、不再有内联 heredoc、没有 `--delete-excluded`；三个启动脚本的探测模块名一致、与 `requirements.txt` 一一对应，并覆盖代码里所有直接 import 的第三方（`pydantic` 由 fastapi 带装，是唯一例外）；unit 的 `ExecStart` 不带 `--log-level`；`deploy_server.sh` systemd 分支的现场是 `journalctl` 而 `stdout.log` 只在 nohup 分支 tail
