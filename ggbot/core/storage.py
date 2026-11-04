@@ -918,6 +918,16 @@ class Storage:
             rows = c.execute("SELECT * FROM memories").fetchall()
         return [dict(r) for r in rows]
 
+    def capacity_rows(self) -> list[dict]:
+        """算容量用的轻量行：只取「该删谁」需要的几列，不搬 embedding。
+
+        面板每次进记忆页都要读一次，全表带向量动辄几 MB，没必要。"""
+        with self._lock, self._conn() as c:
+            rows = c.execute(
+                "SELECT id, type, subject, importance, ts, hit_count, last_hit_at, expires_at"
+                " FROM memories").fetchall()
+        return [dict(r) for r in rows]
+
     def update_memory(
         self,
         memory_id: str,

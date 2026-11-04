@@ -3,22 +3,45 @@
 /* ================= 记忆 ================= */
 const KIND_LABEL = { profile: "档案", event: "事件" };
 
-async function refreshMemories() {
-  const sid = qs("#mem-session").value;
+/* 记忆页一次拿到 {items,total,limits,usage,searched}。
+   searched 是后端说的「这批按相关度检索」，前端据此换分组方式，不再自己猜；
+   检索时 kind 只能在这批命中里再筛——向量检索本身不认类别。 */
+function renderMemories(d) {
   const kind = qs("#mem-kind").value;
-  if (state.memoryUseSearch && state.memoryQuery) {
-    const params = new URLSearchParams({ q: state.memoryQuery, k: "50" });
-    if (sid) params.set("session_id", sid);
-    const items = await api(`/api/memories/search?${params}`);
-    renderMemories(kind ? items.filter((m) => m.kind === kind) : items, null, true);
-  } else {
-    const params = new URLSearchParams({ limit: "200", offset: "0" });
-    if (sid) params.set("session_id", sid);
-    if (kind) params.set("kind", kind);
-    const d = await api(`/api/memories?${params}`);
-    state.memLimits = d.limits || {};
-    renderMemories(d.items || [], d.total, false);
+  state.memLimits = d.limits || {};
+  state.memUsage = d.usage || null;
+  const items = d.items || [];
+  paintMemories(kind && d.searched ? items.filter((m) => m.kind === kind) : items, d.total, d.searched);
+}
+
+/* 临界提示只在记忆页出现：整库和「某个人」两条上限都会先撞。
+   读数用的是遗忘扫描的口径（countable 已经扣掉到期与淡出），
+   所以这里说的「快到顶」就是扫描之前真的快到顶，不会是个假警报。 */
+function memCap() {
+  const el = qs("#mem-cap");
+  const u = state.memUsage;
+  const hide = () => { el.className = "mem-cap hidden"; el.innerHTML = ""; };
+  if (!u || !u.max_memories) return hide();
+  const used = Number(u.countable || 0);
+  const cap = Number(u.max_memories || 0);
+  const topCount = Number(u.top_count || 0);
+  const topCap = Number(u.max_per_subject || 0);
+  const rate = cap ? used / cap : 0;
+  const subjOver = !!(u.top_subject && topCount > topCap);
+  const over = rate >= 1 || subjOver;
+  if (!over && rate < 0.8) return hide();
+  const parts = [`上限用量 <strong>${used} / ${cap}</strong>（${Math.round(rate * 100)}%）`];
+  const resting = Number(u.expired || 0) + Number(u.faded || 0);
+  if (resting) parts.push(`另有 ${resting} 条到期或淡出，扫描时先腾掉`);
+  if (u.top_subject) {
+    parts.push(subjOver
+      ? `关于「${esc(u.top_subject)}」的档案 <strong>${topCount} / ${topCap}</strong>，已超每人上限`
+      : `最满的是「${esc(u.top_subject)}」${topCount} / ${topCap}`);
   }
+  if (over) parts.push("再写就要按保留分腾最弱的那批");
+  el.className = "mem-cap " + (over ? "over" : "warn");
+  el.innerHTML = `<span>${(over ? "记忆已到上限 · " : "记忆接近上限 · ") + parts.join(" · ")}</span>
+    <button class="btn ghost small" data-action="memory-sweep">立即遗忘扫描</button>`;
 }
 
 function memHead(total, isSearch) {
@@ -66,9 +89,10 @@ function groupFoot(label, count, subject, kind) {
   </tr>`;
 }
 
-function renderMemories(items, total, isSearch) {
+function paintMemories(items, total, isSearch) {
   state.memItems = items || [];
   memHead(total, isSearch);
+  memCap();
   const body = qs("#mem-body");
   if (!state.memItems.length) {
     body.innerHTML = '<tr><td colspan="6" class="empty">暂无记忆</td></tr>';
@@ -123,16 +147,15 @@ async function addMemory() {
         ? "已有同样的记忆，未重复写入"
         : "已写入";
     toast(`记忆${note}`, "success");
-    refreshMemories();
-    refreshStats();
+    reloadPage();
+    refreshShell();
   } catch (err) { toast(err.message, "error"); }
 }
 
 async function searchMemories() {
   state.memoryQuery = qs("#mem-q").value.trim();
   state.memoryUseSearch = !!state.memoryQuery;
-  if (!state.memoryQuery) { refreshMemories(); return; }
-  await guarded("memories", refreshMemories);
+  await reloadPage("memory");
 }
 
 function openMemoryEdit(id) {
@@ -175,7 +198,7 @@ async function saveMemory(id) {
     });
     closeModal();
     toast("记忆已更新", "success");
-    refreshMemories();
+    reloadPage();
   } catch (err) { toast(err.message, "error"); }
 }
 
@@ -185,8 +208,8 @@ async function deleteMemory(id) {
   try {
     await api(`/api/memories/${encodeURIComponent(id)}`, { method: "DELETE" });
     toast("记忆已删除", "success");
-    refreshMemories();
-    refreshStats();
+    reloadPage();
+    refreshShell();
   } catch (err) { toast(err.message, "error"); }
 }
 
@@ -202,8 +225,8 @@ async function purgeMemory(subject, kind, session) {
   try {
     const r = await api(`/api/memories?${params}`, { method: "DELETE" });
     toast(`已删除 ${r.removed || 0} 条`, "success");
-    refreshMemories();
-    refreshStats();
+    reloadPage();
+    refreshShell();
   } catch (err) { toast(err.message, "error"); }
 }
 
@@ -215,7 +238,7 @@ async function sweepMemory() {
   try {
     const r = await api("/api/memories/sweep", { method: "POST" });
     toast(`到期 ${r.expired || 0} · 淡出 ${r.faded || 0} · 超限 ${r.over_cap || 0} · 合并 ${r.merged || 0}（剩 ${r.total || 0} 条）`, "success");
-    refreshMemories();
-    refreshStats();
+    reloadPage();
+    refreshShell();
   } catch (err) { toast(err.message, "error"); }
 }

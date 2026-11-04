@@ -559,6 +559,35 @@ class MemoryStore:
         return {"expired": len(expired), "faded": len(faded), "over_cap": len(over),
                 "merged": len(merged), "total": len(rows) - len(removed)}
 
+    def usage(self) -> dict:
+        """记忆页的容量读数：口径与 `_to_delete` 同一条，只是不动数据。
+
+        `countable` 才是真正占整库上限的条数——到期和淡出的条目已经注定要腾走，
+        把它们算进「离上限还有多远」会让提示在扫描前一秒变成假警报。"""
+        cfg = self.m
+        now = datetime.now()
+        rows = self.storage.capacity_rows()
+        expired, faded, over = self._to_delete(rows, cfg, now)
+        doomed = set(expired) | set(faded) | set(over)
+        groups: dict[str, int] = {}
+        for r in rows:
+            if r["id"] in doomed:
+                continue
+            if (r.get("type") or "profile") == "profile" and r.get("subject"):
+                groups[r["subject"]] = groups.get(r["subject"], 0) + 1
+        top_subject, top_count = max(groups.items(), key=lambda kv: (kv[1], kv[0]), default=("", 0))
+        return {
+            "stored": len(rows),
+            "expired": len(expired),
+            "faded": len(faded),
+            "countable": len(rows) - len(expired) - len(faded),
+            "over_cap": len(over),
+            "max_memories": cfg["max_memories"],
+            "top_subject": top_subject,
+            "top_count": top_count,
+            "max_per_subject": cfg["max_per_subject"],
+        }
+
     def panel_rows(self, rows: list[dict] | None = None) -> list[dict]:
         """面板与 CLI 用的带分数版本：每条补保留分与剩余天数。"""
         cfg = self.m
