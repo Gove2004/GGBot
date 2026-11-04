@@ -34,6 +34,10 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 - **只有建连参数需要重启**：`vision.timeout_sec`（以及 `api_key`/`base_url`、LLM 连接参数）。面板对需重启的字段挂「需重启」徽标，
   列表来自后端 `RESTART_SETTINGS`；`POST /api/config` 会把改不动的路径放进 `rejected` 回给前端，绝不静默丢弃。
 - **识图可以在运行中打开**：启动时 `enabled=false` 不建连接，面板打开后第一次调用补建（失败就记一条 warning 并跳过）。
+- **识图的 thinking 不跟随对话，未填固定 `disabled`**：对话开思考（面板 2026-11-03 把 `llm.request.thinking` 存成 `enabled`）曾把识图一起拖坏——
+  flash 把 `max_tokens`（识图默认只有 200）全花在推理上、正文返空，`describe` 拿到空串就当失败，标记原样留着，于是「机器人看不见图」。
+  线上 144 次识图：输出顶满 200 的 49 次里 44 次是空的，输出没顶满的 95 次全部有描述；同一张图 `enabled` 返空、`disabled` 返 42 字。
+  规则改成：同厂商且未显式填写就固定 `disabled`，显式写 `enabled` 仍照发，别家识图服务商依然不发这个扩展字段。
 
 ## 消息流（拆模块与状态模型）
 
@@ -516,7 +520,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 [PASS] tool_choice       # 真实 LLM 触发率（新提示词 + 全量下发，只观察不执行）：自我介绍→memory_save、回忆→memory_fetch 照旧命中；去掉工具提示词注入后，「哈哈哈哈哈」不再顺手调 send_emoji、「好难受」不再调 send_voice_clone——本轮只发正文，靠 description 里的触发场景兜
 [PASS] agent_fallback    # 回合只有一条说话通道：只有正文→运行时走正文通道发出；正文+工具同轮→两条都发且不重复（工具在前、正文在后）；模型自己调 send_text（注册表里根本没有）→ 按「未知工具 send_text」回一条、一次都不发；空正文/纯占位符→静默结束（占位符同回合纠正一次）；silence 调用后立即收轮，全程只有一次 LLM 请求；正文整条是沉默标志（`[SILENCE]`/`【沉默】`/`(silence)`/带标点/带短标识/连写两个）→ 同等按 silence 收轮，一次都不发、也不再追问；工具+沉默标志同轮→只发工具产物；真话里夹着沉默字样→那句人话照发
 [PASS] config_read       # 纯配置文件驱动（无环境变量）+ temp/db 路径
-[PASS] config_generic    # deepseek→llm 自动迁移、缺失配置按模板生成、embedding 可选（关键词降级）、LLM 厂商无关且缺项明确报错、39 个 Web 设置路径均存在且在白名单（白名单不含 api_key/base_url/token 类凭据路径）
+[PASS] config_generic    # deepseek→llm 自动迁移、缺失配置按模板生成、embedding 可选（关键词降级）、LLM 厂商无关且缺项明确报错、识图 thinking 不跟随对话（同厂商未填固定 disabled，对话改成 enabled 也不变，显式 enabled 照发，别家服务商不发）、39 个 Web 设置路径均存在且在白名单（白名单不含 api_key/base_url/token 类凭据路径）
 [PASS] config_hotapply   # 面板改配置免重启：同一个 PresenceManager 实例现读作息/回复/积压/上下文（作息与积压上限读在 `pm.inbound`、上下文读在 `pm.context`、归档读在 `pm.archiver`；archive_batch 现读夹 256、archive_overflow 现读先夹 4096 再夹到「窗口减一批」，无记忆或可消化量为 0 时归档恒关；落盘存的是面板填的原值，钳位只在读取时生效）与识图参数（含启动关着、面板打开后补建连接），set_by_path+save 落盘后重开一致；POST /api/config 回执 updated/rejected（凭据路径、类型不符、config.json 缺键各算一条拒绝），GET 带 restart 列表；旧键 summary_threshold_tokens 已从白名单去掉
 [PASS] logging_system    # 多等级写文件 + tail 等级过滤 + set_level 热切换；根目录不产生 botpy.log
 [PASS] placeholder_guard # 占位符不进正文：词表覆盖 表情/表情包/语音/语音克隆/语音条/图片/视频/文件/邮件 与 emoji/sticker/voice/audio/image/photo/video/file/mail，以及沉默类（沉默/不说话/不接话/无话可说/silence/silent）（方括号、中文括号、圆括号都拦），同回合纠正重试；正文通道拦截纯占位符、剔除混排占位符（`[SILENCE]` 单独一条发不出去，`行吧[SILENCE]` 只剩「行吧」）；入站富媒体标记的整套形状（`[图片]（描述）` / `[语音 6ce72460]`，括号里 6–8 位短标识 + 紧跟的（…））照抄进正文也一起吞掉——历史里存的就是这个形状，模型学的就是它

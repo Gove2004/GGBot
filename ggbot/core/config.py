@@ -136,7 +136,10 @@ class Config:
 
     @property
     def vision(self) -> dict:
-        """识图配置：base_url / api_key / model 留空时沿用 llm 段（同一厂商直接可用）。"""
+        """识图配置：base_url / api_key / model 留空时沿用 llm 段（同一厂商直接可用）。
+
+        thinking 不参与沿用：与对话同厂商且未显式配置时固定 disabled。
+        """
         v = self.data.get("vision", {}) or {}
         llm = self.llm or {}
 
@@ -154,8 +157,10 @@ class Config:
         thinking = str(v.get("thinking") or "").strip()
         same_endpoint = base_url.rstrip("/") == str(llm.get("base_url") or "").rstrip("/")
         if not thinking and same_endpoint:
-            # 同一服务商时沿用对话的 thinking 设置；识图默认不能把 token 全耗在思考上
-            thinking = str((llm.get("request") or {}).get("thinking") or "").strip()
+            # 识图只要一句话，思考是纯亏：flash 这类推理模型会把 max_tokens 全花在思考上、
+            # 正文返空（线上实测）。所以同厂商时固定禁用，不跟随对话的 thinking——
+            # 对话开思考是对话的事，不该顺手把识图弄坏。显式写了 enabled 仍照办。
+            thinking = "disabled"
         return {
             "enabled": bool(v.get("enabled", True)) and bool(base_url and api_key and model),
             "base_url": base_url,
