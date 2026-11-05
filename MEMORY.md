@@ -585,6 +585,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 [PASS] llm_chat          # LLM 真实调用（实测 DeepSeek deepseek-flash，thinking=disabled 生效）
 [PASS] tools_schema      # 16 个 Tool 插件自动发现（8 个分类）+ schema 校验 + 启用状态过滤
 [PASS] tool_layout       # 根目录 tool/ 按分类包自动发现（core/remind/media/emoji/memory/web/email/admin）+ 嵌套数据目录（media/audio、media/generate、remind、web、email）+ config-less 工具 toggle 生效 + 正文通道不在 registry 里 + remind 三件套共享 tool/remind/config.json（附属工具不可单独启停）+ fs 分类已下线不残留目录
+[PASS] module_refs       # 静态守住「改了名没人跟」：扫全仓每一条 `tool.*` 导入（11 条）要求逐段落得到真实文件、且不含已下线的旧包名（`tool.schedule`/`tool.mail`/`tool.fs`/`tool.media.emoji`…），再查注册表 16 个工具的 category 都在八个分类内、声明了 data_name 的都有对应数据目录。加这条是因为 `main.py` 里那句日程导入没人测——本地 47 项全绿的同时线上崩循环，`import main` 不在任何测试路径里
 [PASS] gen_tools         # Agnes 生图：无 api_key 时不进下发列表（L4 心腹，填上 key 才下发，不按发送者等级裁剪）、参数与比例校验、参考图只允许 temp/ 与 emoji/ 素材（配置/密钥/越界路径拒绝）、纯文生图不带 image 字段与单张参考图写成字符串两种载荷、只给 URL 的形态补一次下载、503 退避重试、产物落 temp/tool/media/generate 并按 file_type=1 发出、`生图 2K/4:3 …（…s）` 日志形状
 [PASS] permissions       # 发送者等级解析（未登记→默认 2、空 id→0）、owners 引导不覆盖面板设置、全量下发（每个等级拿到同一份列表、6 级永久锁不进列表、没有工具提示词注入）、门槛覆盖、执行期拒绝/放行/未知工具/永久锁；正文通道不是工具（不在 registry 里）
 [PASS] media_paths       # 本地媒体只允许 temp/ 与 tool/emoji/ 里的图片，日志、其他工具目录、emoji 目录下的代码与配置/密钥拒绝发送
