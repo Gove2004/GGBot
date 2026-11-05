@@ -17,7 +17,8 @@ class SessionState:
     """一个会话的作息。
 
     离线：倒计时到点上线；首次上线在离线周期内随机错开，避免所有会话整点同时上线。
-    在线：倒计时结束下线；每成功回复一轮固定续期（默认 30s，封顶 renew_max_sec）。
+    在线：倒计时结束下线；每真发出去一条消息续期一次（默认 30s，本轮累计封顶
+    renew_max_sec）。向模型发请求只保命不续期，见 keep_alive()。
     """
 
     def __init__(self, sid: str, label: str, settings: Callable[[], dict]) -> None:
@@ -27,6 +28,7 @@ class SessionState:
         self.state = "offline"
         self.reason = "initial"
         self.activity = 0  # 本在线周期收到的消息数：决定上下线日志等级与下线小结
+        self.renew_used = 0.0  # 本轮已经续掉多少秒（renew_max_sec 封的是这个累计值）
         self.last_active = time.monotonic()
         self.online_deadline = 0.0
         self.next_online = self.last_active + self.offline_span() * random.uniform(0.4, 1.0)
@@ -84,17 +86,40 @@ class SessionState:
         return wait
 
     def renew(self) -> None:
-        """每成功回复一轮：在线时长固定续期（默认 30s，封顶 renew_max_sec）。"""
-        if not self.p.get("renew_on_reply", True):
+        """真发出去一条消息：在线时长续期，本轮累计不超 renew_max_sec。
+
+        续期挂在「发出去」这个动作上，不是挂在一轮结束：一轮里发三条就是三次火热，
+        而一轮只发一条也和过去一样。离线时什么都不做——倒计时读的是 next_online，
+        这时候加 online_deadline 只会把 reason 写成一个没发生的续期。
+        """
+        if not self.is_online or not self.p.get("renew_on_reply", True):
+            return
+        cap = max(0.0, float(self.p.get("renew_max_sec", 600)))
+        if cap and self.renew_used >= cap:
             return
         inc = jitter(float(self.p.get("renew_per_reply_sec", 30)),
                      float(self.p.get("renew_jitter", 0.3)), minimum=0.0)
-        cap = max(0.0, float(self.p.get("renew_max_sec", 600)))
         if cap:
-            inc = min(inc, cap)
+            inc = min(inc, cap - self.renew_used)
+        self.renew_used += inc
         self.online_deadline = max(self.online_deadline, time.monotonic()) + inc
         self.reason = "reply-renew"
         self.touch()
+
+    def keep_alive(self) -> None:
+        """又要问一次模型：本轮还在进行，别在等回复的这几秒把会话判成离线。
+
+        这不是续期——请求发出去不代表一会儿会说话（模型可以选择沉默），所以只把倒计时
+        抬到「至少还有一份在线时长」，不累加；本轮真发出去的话由 renew() 另外计时。
+        """
+        if not self.is_online:
+            return
+        self.online_deadline = max(self.online_deadline,
+                                   time.monotonic() + self.online_span())
+
+    def begin_round(self) -> None:
+        """开新一轮：本轮的累计续期从零算起。"""
+        self.renew_used = 0.0
 
     def hurry_online(self, within_sec: float) -> None:
         """把上线倒计时压到 within_sec 之内（替它主动说完话，接下来得尽快在场）。"""

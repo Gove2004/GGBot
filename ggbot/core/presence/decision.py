@@ -7,7 +7,9 @@
 
 三条都是 outbox.open_turn（有锚点走被动回复，没锚点才问过主动频控闸门）→
 上下文组装 + agent 循环（模型自己决定说还是调 silence）→ 把结果记回 messages 的
-reply_state → outbox.commit_turn 落锚点序号与频控计数 → 回成了才给会话续期。
+reply_state → outbox.commit_turn 落锚点序号与频控计数。
+作息的记账挂在出站 ctx 上，当场发生：真发出去一条就续一次期（本轮累计封顶），
+向模型发一次请求只保命不续期，见 _open_turn。
 """
 
 from __future__ import annotations
@@ -45,29 +47,30 @@ class TurnDecider:
         与本地 proactive_per_minute/proactive_per_day 约束，被闸门拦下则本轮不回复。
         """
         sid = msgs[-1].get("session_id") or ""
-        ctx, blocked = self._open_turn(sid, msgs)
+        ctx, blocked = self._open_turn(sid, msgs, st)
         if ctx is None:
             label = st.label if st else session_label(sid)
             logger.debug("在线普通消息批次跳过回复（%s）%d 条", blocked, len(msgs),
                          extra={"session": label})
             return False
-        return await self._run_turn(msgs, ctx, st)
+        return await self._run_turn(msgs, ctx)
 
     async def reply_now(self, inbound: dict, st: SessionState | None = None) -> bool:
         """唤醒即时回复：单条消息直接走一个回合。"""
         sid = inbound.get("session_id") or ""
-        ctx, _blocked = self._open_turn(sid, [inbound])
+        ctx, _blocked = self._open_turn(sid, [inbound], st)
         if ctx is None:
             return False
-        return await self._run_turn([inbound], ctx, st)
+        return await self._run_turn([inbound], ctx)
 
     async def speak(self, sid: str, text: str, st: SessionState | None = None) -> bool:
         """不经模型往会话里说一句话（提醒到点就走这条通道），发送路径和回合内一致。
 
         先找还能用的锚点走被动回复，没有才主动发送——主动被本地频控闸门拦下就返回 False，
-        由调用方下一轮重试。发出去后续期：替它说了话，接下来一段时间得在场。
+        由调用方下一轮重试。发出去那一下的续期由 ctx 上的钩子记（和回合内同一个口子），
+        这里不再补记一次。
         """
-        ctx, blocked = self._open_turn(sid, [])
+        ctx, blocked = self._open_turn(sid, [], st)
         if ctx is None:
             logger.debug("主动发言被拦（%s）: %s", blocked, clip(text, 40),
                          extra={"session": session_label(sid)})
@@ -83,15 +86,22 @@ class TurnDecider:
                            extra={"session": label})
             return False
         self.outbox.commit_turn(sid, ctx)
-        if st is not None:
-            st.renew()
         return True
 
     # ---------- 出站与回合 ----------
 
-    def _open_turn(self, sid: str, msgs: list[dict]) -> tuple[dict | None, str | None]:
+    def _open_turn(self, sid: str, msgs: list[dict],
+                   st: SessionState | None = None) -> tuple[dict | None, str | None]:
         target, scene = self._target_scene(sid, msgs)
-        return self.outbox.open_turn(sid, target=target, scene=scene, msgs=msgs)
+        ctx, blocked = self.outbox.open_turn(sid, target=target, scene=scene, msgs=msgs)
+        if ctx is not None and st is not None:
+            # 作息的两个记账点挂在 ctx 上，发送与请求那两侧各自只叫一声：
+            # on_sent = 真发出去一条（正式续期，本轮累计封顶），
+            # on_request = 又要问一次模型（只保命，免得一轮跑到一半被判离线）
+            st.begin_round()
+            ctx["on_sent"] = st.renew
+            ctx["on_request"] = st.keep_alive
+        return ctx, blocked
 
     def _target_scene(self, sid: str, msgs: list[dict]) -> tuple[str, str]:
         """这一轮往哪儿发：本轮消息自带就用它，只有会话（回合外发言）就从库里反查。"""
@@ -99,11 +109,12 @@ class TurnDecider:
         target, scene = self.outbox.target_for(sid)
         return m.get("target") or target, m.get("scene") or scene
 
-    async def _run_turn(self, msgs: list[dict], ctx: dict, st: SessionState | None) -> bool:
+    async def _run_turn(self, msgs: list[dict], ctx: dict) -> bool:
         """跑一个回合并把结果记账。任何失败只落状态，不向上抛（免得单条失效群打崩整轮积压）。
 
         结果只看两件事：回合里有没有真的发出去（ctx.sent_any，正文或媒体都算），
         以及有没有工具报错。没发出去也没报错 = 模型选择沉默/没话可说。
+        续期不在这里补记——发出去那一下由 ctx 上的钩子当场记。
         """
         sid = ctx["session_id"]
         label = session_label(sid)
@@ -117,8 +128,6 @@ class TurnDecider:
         if ctx.get("sent_any"):
             self.storage.finish_backlog(ids, REPLY_ANSWERED)
             self.outbox.commit_turn(sid, ctx)
-            if st is not None:
-                st.renew()
             return True
         if ctx.get("tool_error"):
             if ctx.get("passive"):

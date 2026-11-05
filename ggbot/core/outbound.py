@@ -10,6 +10,7 @@ import asyncio
 import logging
 import re
 
+from ggbot.core.outbox import note_sent
 from ggbot.util.logging_setup import clip
 from ggbot.util.session import session_label
 from ggbot.util.text import (
@@ -44,7 +45,7 @@ class Outbound:
             return {
                 "ok": False,
                 "error": "不要用 [表情]/[语音]/[图片] 占位符；发表情调 send_emoji，"
-                         "发语音调 send_voice_clone，发图/视频调 send_image/send_video",
+                         "发语音调 send_voice，要一张图就调 generate_image",
             }
         cleaned = PLACEHOLDER_INLINE_RE.sub("", content).strip()
         if cleaned != content:
@@ -67,7 +68,7 @@ class Outbound:
             wire = self._apply_mentions(seg, ctx) if is_group else seg
             await self._send_one(ctx, seg, wire, reference, extra)
             ctx["msg_seq"] = int(ctx.get("msg_seq") or 1) + 1
-            ctx["sent_any"] = True
+            note_sent(ctx)
             logger.info("发送: %s", clip(seg, 200), extra=extra)
             if sid:
                 self.storage.add_message(sid, "assistant", "bot", seg)
