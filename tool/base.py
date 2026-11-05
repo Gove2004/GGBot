@@ -148,7 +148,7 @@ class Tool:
     """一个 Tool = 一份 schema + 一个执行器；配置/数据目录由 runtime 提供。"""
 
     name: str = ""
-    category: str = ""  # 所属能力域（由注册表按所在子包填充：core/media/memory/web/mail/admin）
+    category: str = ""  # 所属能力域（由注册表按所在子包填充：core/memory/media/emoji/remind/web/email/admin）
     data_name: str = ""  # 数据/配置目录名，默认与工具名一致（send_email -> email 时可覆盖）
     description: str = ""
     parameters: dict = {"type": "object", "properties": {}}

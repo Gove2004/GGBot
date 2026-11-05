@@ -149,7 +149,7 @@ async def main(cfg: Config | None = None) -> None:
     # 开机扫一次遗忘：到期、淡出、超上限、近似重复一次清掉。放后台线程，不挡启动也不拖首轮回复
     forget_task = asyncio.create_task(asyncio.to_thread(memory.sweep))  # noqa: F841
 
-    from tool.schedule.remind import Reminders
+    from tool.remind.remind import Reminders
 
     # 提醒的真相在 reminders 表里，这里只是把巡检循环跑起来：重启后错过的按宽限处置
     reminders = Reminders(executor.rt, presence.speak)
