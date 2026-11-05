@@ -14,6 +14,7 @@ import time
 from datetime import datetime
 
 from ggbot.core.runtime_stats import runtime
+from ggbot.llm.memory import IMPORTANCE_MAX, IMPORTANCE_MIN, clamp_importance, kind_of
 
 logger = logging.getLogger("ggbot.llm")
 
@@ -300,7 +301,7 @@ class LLMClient:
             '- kind："profile" = 某个人的当前状态（叫法、身份、喜好、脾气、住处、最近在忙的事）；'
             '"event" = 发生过的一件事（约定、决定、已经发生的时刻）\n'
             "- subject：这条是关于谁的，写聊天记录里用的名字；说不清是谁就留空\n"
-            "- importance：1-5，对方明确说过重要、或关系到约定就给高\n"
+            f"- importance：{IMPORTANCE_MIN}-{IMPORTANCE_MAX}，对方明确说过重要、或关系到约定就给高\n"
             '- expires_in_days：自带截止日期的事（如"周五交稿""下周三考试"）给天数，其余留空\n'
             "不记寒暄、口头禅、玩笑和重复内容；不要猜测或编造。\n"
             f"只输出 JSON 数组，最多 {max_items} 条；没有值得记的就输出 []。\n\n" + text
@@ -323,15 +324,12 @@ class LLMClient:
                 days = int(item.get("expires_in_days"))
             except (TypeError, ValueError):
                 days = None
-            try:
-                importance = max(1, min(5, int(item.get("importance") or 1)))
-            except (TypeError, ValueError):
-                importance = 1
             out.append({
                 "content": content[:500],
-                "kind": "event" if str(item.get("kind") or "").strip().lower() == "event" else "profile",
+                # 类别与重要度的取值归记忆那一层管，这里只负责把模型的输出落到同一份口径上
+                "kind": kind_of(str(item.get("kind") or "").strip().lower()),
                 "subject": str(item.get("subject") or "").strip()[:40],
-                "importance": importance,
+                "importance": clamp_importance(item.get("importance")),
                 "expires_in_days": days if days and 1 <= days <= 3650 else None,
             })
             if len(out) >= max_items:

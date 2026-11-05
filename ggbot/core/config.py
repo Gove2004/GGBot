@@ -19,6 +19,100 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 EXAMPLE_NAME = "config.example.json"
 
+# 允许热更新的配置路径（其余只读，避免误改关键结构）。
+# 这份名单是「config.json 里哪些键可以被外部改写」的契约，跟配置本身同源，
+# 不放在面板层是因为 CLI 和测试也要问同一个问题，而面板只是使用者之一。
+ALLOWED_SETTINGS = [
+    "llm.request.temperature",
+    "llm.request.top_p",
+    "llm.request.max_tokens",
+    "llm.request.thinking",
+    "behavior.presence.start_online",
+    "behavior.presence.online_duration_sec",
+    "behavior.presence.offline_interval_sec",
+    "behavior.presence.online_duration_jitter",
+    "behavior.presence.offline_interval_jitter",
+    "behavior.presence.wake_on_at_message",
+    "behavior.presence.wake_on_c2c",
+    "behavior.presence.renew_on_reply",
+    "behavior.presence.renew_per_reply_sec",
+    "behavior.presence.renew_max_sec",
+    "behavior.presence.renew_jitter",
+    "behavior.reply.segment_gap_sec",
+    "behavior.reply.debounce_sec",
+    "behavior.reply.debounce_max_sec",
+    "behavior.backlog.max_scan_messages",
+    "behavior.backlog.online_max_messages",
+    "llm.context.max_history_messages",
+    "llm.context.token_budget",
+    "llm.context.archive_overflow_messages",
+    "llm.context.archive_batch_messages",
+    "llm.context.archive_enabled",
+    "vision.enabled",
+    "vision.model",
+    "vision.thinking",
+    "vision.prompt",
+    "vision.max_chars",
+    "vision.max_tokens",
+    "vision.timeout_sec",
+    "llm.pricing.currency",
+    "llm.pricing.input_per_mtok",
+    "llm.pricing.cached_input_per_mtok",
+    "llm.pricing.output_per_mtok",
+    "llm.pricing.peak_weekdays_only",
+    "llm.pricing.off_peak_multiplier",
+    "web.log_level",
+]
+
+# 白名单里仍需重启才生效的项：建连参数在进程启动时固定（面板据此打「需重启」标记）
+RESTART_SETTINGS = [
+    "vision.timeout_sec",
+]
+
+# 密钥字段：任何对外回执（面板、CLI）都要先按这些键名脱敏
+SECRET_KEYS = ("api_key", "secret", "appsecret", "token", "auth_code", "password")
+
+# 系统提示词（人设）的字数上限：内置默认约 2.6k 字，留出重写和加设定的余量
+SYSTEM_PROMPT_MAX_CHARS = 20000
+
+_INVALID = object()
+
+
+def _as_number(cast, value):
+    if isinstance(value, bool):
+        return _INVALID
+    try:
+        return cast(value)
+    except (TypeError, ValueError):
+        return _INVALID
+
+
+def coerce_setting(current, value):
+    """按当前配置的类型校验/转换；不合法返回 _INVALID。
+
+    数值一律不接受负值：白名单里全是时长、条数、概率与单价，负数没有对应语义，
+    而写进去的代价是运行期才炸（比如负的在线时长）。
+    """
+    if isinstance(current, bool):
+        if isinstance(value, bool):
+            out = value
+        elif isinstance(value, str) and value.lower() in ("true", "false"):
+            out = value.lower() == "true"
+        else:
+            out = _INVALID
+    elif isinstance(current, float):
+        out = _as_number(float, value)
+    elif isinstance(current, int):
+        out = _as_number(int, value)
+    elif isinstance(current, str):
+        out = str(value)
+    else:
+        out = value
+    if isinstance(out, (int, float)) and not isinstance(out, bool) and out < 0:
+        return _INVALID
+    return out
+
+
 
 class Config:
     """config.json 加载器。字段缺失时用默认值兜底，避免启动崩溃。"""
@@ -264,6 +358,20 @@ class Config:
             return False
         node[parts[-1]] = value
         return True
+
+    def apply_setting(self, dotted: str, value) -> bool:
+        """外部改写单个配置项的唯一入口：白名单 → 类型 → 落库，三道都过才算接受。
+
+        名单校验放在这里而不是调用方，是因为「哪些键能改」属于配置的契约，
+        少问一次就等于多开一个口子。llm.system_prompt 刻意不走来路：人设只有一条
+        独立的写入路径（见面板的人设页），不进批量保存。
+        """
+        if dotted not in ALLOWED_SETTINGS:
+            return False
+        coerced = coerce_setting(self.get_by_path(dotted), value)
+        if coerced is _INVALID:
+            return False
+        return self.set_by_path(dotted, coerced)
 
     def save(self) -> None:
         """写回 config.json（保留缩进与中文）。"""

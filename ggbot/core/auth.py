@@ -10,6 +10,7 @@ from __future__ import annotations
 LEVEL_NAMES = {0: "禁止", 1: "受限", 2: "普通", 3: "特权", 4: "心腹", 5: "归属"}
 LEVEL_MAX = 5
 LEVEL_LOCKED = 6
+LEVEL_LOCKED_NAME = "永久锁"  # 门槛到这一档的叫法：面板的下拉、日志、校验提示都说这个词
 DEFAULT_LEVEL = 2
 
 
@@ -19,14 +20,6 @@ def clamp_level(value, lo: int = 0, hi: int = LEVEL_MAX) -> int:
     except (TypeError, ValueError):
         return lo
     return max(lo, min(hi, n))
-
-
-def level_name(level) -> str:
-    try:
-        n = int(level)
-    except (TypeError, ValueError):
-        return "禁止"
-    return LEVEL_NAMES.get(n, f"L{n}")
 
 
 class Permissions:

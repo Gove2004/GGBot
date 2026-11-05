@@ -30,6 +30,11 @@ SUBJECT_POOL = 8          # 同一个人的档案最多带几张进判定
 FADE_KEEP_IMPORTANCE = 4  # 标到 ★4 以上的事件不淡出（人/模型明确说过重要的留住）
 HIT_LONGEN = 3.0          # 被命中过的事件，淡出门槛按这个倍数放宽
 
+# 记忆类别的取值与叫法：写入校验、面板的选项与徽章都以这一份为准，前端不再抄第二遍
+KIND_LABELS = {"profile": "人物档案", "event": "事件流水"}
+IMPORTANCE_MIN = 1
+IMPORTANCE_MAX = 5  # ★ 的个数上限
+
 TS_FMT = "%Y-%m-%d %H:%M:%S"
 
 # 合并（近似重复）阈值：记忆越多越宽松。条数一多，同一件事的不同说法很难再撞上 0.95，
@@ -41,6 +46,20 @@ TIDY_PER = 50  # 每多 50 条放宽 0.01
 
 def _tidy_threshold(count: int) -> float:
     return max(TIDY_MIN, TIDY_BASE - (count // TIDY_PER) * 0.01)
+
+
+def kind_of(value) -> str:
+    """类别只认 KIND_LABELS 里的取值，认不出的按 profile——写入侧唯一的兜底。"""
+    return value if value in KIND_LABELS else "profile"
+
+
+def clamp_importance(value) -> int:
+    """重要度落到 IMPORTANCE_MIN~IMPORTANCE_MAX：模型、面板、CLI 给的数都先过这一道。"""
+    try:
+        n = int(value or IMPORTANCE_MIN)
+    except (TypeError, ValueError):
+        return IMPORTANCE_MIN
+    return max(IMPORTANCE_MIN, min(IMPORTANCE_MAX, n))
 
 
 def bigrams(text: str) -> set[str]:
@@ -92,7 +111,7 @@ def retention(row: dict, half_life: float, now: datetime | None = None) -> float
 
     超上限淘汰与合并择优都按它排序，面板同一列显示——低分不代表"该删"，只是"要先腾的就是它"。
     """
-    imp = max(1, min(5, int(row.get("importance") or 1))) / 5.0
+    imp = clamp_importance(row.get("importance")) / float(IMPORTANCE_MAX)
     fresh = 0.5 ** (quiet_days(row, now) / max(1.0, float(half_life)))
     hits = min(1.0, math.log1p(int(row.get("hit_count") or 0)) / math.log1p(10))
     return round(0.4 * imp + 0.4 * fresh + 0.2 * hits, 4)
@@ -377,7 +396,7 @@ class MemoryStore:
             content = str(f.get("content") or "").strip()
             if not content:
                 continue
-            kind = f.get("kind") if f.get("kind") in ("profile", "event") else "profile"
+            kind = kind_of(f.get("kind"))
             expires = normalize_expires(f.get("expires_at"))
             if not expires and f.get("expires_in_days"):
                 expires = (datetime.now() + timedelta(days=int(f["expires_in_days"]))).strftime(TS_FMT)
@@ -385,7 +404,7 @@ class MemoryStore:
                 "content": content,
                 "kind": kind,
                 "subject": subject_key(f.get("subject")),
-                "importance": max(1, min(5, int(f.get("importance") or 1))),
+                "importance": clamp_importance(f.get("importance")),
                 "session_id": f.get("session_id") or session_id,
                 "expires_at": expires,
             })
