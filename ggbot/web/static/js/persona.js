@@ -14,7 +14,7 @@ function personaDirty() {
 
 function renderPersonaMeta() {
   const text = personaBox().value;
-  const max = state.personaMax || 20000;
+  const max = state.personaMax;
   const lines = text ? text.split("\n").length : 0;
   const bits = [`字数 ${text.length} / ${max}`, `行 ${lines}`];
   if (personaDirty()) bits.push("有未保存的修改");
@@ -28,7 +28,7 @@ function renderPersonaMeta() {
 function applyPersona(d) {
   personaDefault = d.default || "";
   personaBaseline = d.effective || "";
-  state.personaMax = d.max_chars || 20000;
+  state.personaMax = d.max_chars;
   personaBox().value = personaBaseline;
   const scope = qs("#persona-scope");
   scope.textContent = d.is_custom ? "自定义" : "内置默认";
@@ -39,7 +39,8 @@ function applyPersona(d) {
 
 async function savePersona() {
   const text = personaBox().value;
-  if (text.length > (state.personaMax || 20000)) {
+  // 字数上限由人设页的 max_chars 给（state.personaMax），前端不再自己写死一份
+  if (text.length > state.personaMax) {
     toast(`系统提示词最长 ${state.personaMax} 字，现在 ${text.length} 字`, "error");
     return;
   }

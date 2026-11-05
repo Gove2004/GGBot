@@ -35,7 +35,7 @@ function paintEmojiGrid() {
       <span class="emoji-thumb"><img loading="lazy" src="${esc(it.url)}" alt="${esc(it.desc || it.file)}"></span>
       <span class="emoji-desc">${esc(it.desc || "（无描述）")}</span>
       <span class="emoji-usage">${it.use_count ? `发过 ${it.use_count} 次` : "还没发过"}</span>
-    </button>`).join("") || '<div class="empty">' + (total ? "没有匹配的素材" : "把图片放进 tool/media/emoji 目录，或点上面的「上传图」") + "</div>";
+    </button>`).join("") || '<div class="empty">' + (total ? "没有匹配的素材" : "把图片放进 tool/emoji 目录，或点上面的「上传图」") + "</div>";
 }
 
 function emojiUrl(file) {
@@ -61,7 +61,7 @@ function openEmoji(file) {
      </div>
      <label class="field"><span>描述（模型靠这一句挑图）</span>
        <textarea id="emoji-desc" rows="3" maxlength="200">${esc(it.desc)}</textarea></label>
-     <p class="muted small">留空就退回文件名；改完立刻按新描述重算这一条的向量。「还没有向量」是刚丢进目录的图——发一次表情或下一次有人用 emoji_list 就补上。</p>`,
+     <p class="muted small">留空就退回文件名；改完立刻按新描述重算这一条的向量。「还没有向量」是刚丢进目录的图——发一次表情或下一次有人用 list_emoji 就补上。</p>`,
     `<button class="btn danger" data-action="emoji-delete" data-file="${esc(it.file)}">删除图片</button>
      <button class="btn ghost" data-action="modal-close">关闭</button>
      <button class="btn primary" data-action="emoji-save-desc" data-file="${esc(it.file)}">保存描述</button>`

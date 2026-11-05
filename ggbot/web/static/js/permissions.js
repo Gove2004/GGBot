@@ -1,12 +1,19 @@
 "use strict";
 
 /* ================= 权限 ================= */
-const LEVEL_FALLBACK_NAMES = { 0: "禁止", 1: "受限", 2: "普通", 3: "特权", 4: "心腹", 5: "归属" };
+/* 级别名字表与上下限只有一份来源：后端 _level_contract。权限页和工具页都带这份契约，
+   谁先打开谁把它落到 state 上——前端不留兜底名字，也不留兜底数字。 */
+function applyLevelContract(env) {
+  if (!env) return;
+  state.levelNames = env.level_names || {};
+  state.maxLevel = env.max_level;
+  state.lockedLevel = env.locked_level;
+  state.lockedName = env.locked_name || "";
+}
 function levelLabel(n) {
   const num = Number(n);
-  if (num >= state.lockedLevel) return "永久锁";
-  const name = (state.levelNames && state.levelNames[num]) || LEVEL_FALLBACK_NAMES[num] || "";
-  return `L${num} ${name}`.trim();
+  if (num >= state.lockedLevel) return state.lockedName;
+  return `L${num} ${state.levelNames[num] || ""}`.trim();
 }
 function levelOptions(selected, lo, hi) {
   const out = [];
@@ -15,13 +22,11 @@ function levelOptions(selected, lo, hi) {
   }
   return out.join("");
 }
-/* 权限页一次拿到两份数据：成员等级表 + 共用的工具清单（门槛就在这张表里改）。 */
-function renderPermissions(perms, tools) {
+/* 权限页一次拿到三份读数：成员等级表 + 共用的工具清单（门槛就在这张表里改）+ 等级契约。 */
+function renderPermissions(perms, tools, levels) {
   state.actors = perms.members || [];
-  state.levelNames = perms.level_names || {};
-  state.defaultLevel = perms.default_level != null ? perms.default_level : 2;
-  state.maxLevel = perms.max_level != null ? perms.max_level : 5;
-  state.lockedLevel = perms.locked_level != null ? perms.locked_level : 6;
+  applyLevelContract(levels);
+  state.defaultLevel = perms.default_level;
   const sub = qs("#perm-sub");
   if (sub) {
     sub.textContent = `发送者等级决定它能触发哪些工具 · 未登记成员默认 ${levelLabel(state.defaultLevel)}`;

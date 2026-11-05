@@ -11,7 +11,7 @@
                                   Outbox（被动锚点 / 主动频控 / 发送回执）
 
 这里只留生命周期与聚合展示：2 秒一次的 tick 翻作息，start/stop 收线程，
-status() 是给 Web 面板与 WebSocket 的那份快照。
+status() 是 Web 面板要的那份快照（每秒一次的 GET /api/shell）。
 """
 
 from __future__ import annotations

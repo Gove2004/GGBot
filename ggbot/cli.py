@@ -48,7 +48,8 @@ except (AttributeError, OSError):
 
 from ggbot.core.config import Config  # noqa: E402
 from ggbot.core.storage import Storage  # noqa: E402
-from ggbot.llm.memory import MemoryStore  # noqa: E402
+from ggbot.llm.memory import (IMPORTANCE_MAX, IMPORTANCE_MIN, KIND_LABELS,  # noqa: E402
+                              MemoryStore)
 from ggbot.util.session import session_label  # noqa: E402
 
 
@@ -216,8 +217,8 @@ def cmd_memory_edit(memory: MemoryStore, mid: str, content: str | None, importan
                     subject: str | None, kind: str | None, expires: str | None) -> None:
     if all(v is None for v in (content, importance, subject, kind, expires)):
         raise SystemExit("需要 --content / --importance / --subject / --kind / --expires")
-    if kind is not None and kind not in ("profile", "event"):
-        raise SystemExit("kind 只能是 profile 或 event")
+    if kind is not None and kind not in KIND_LABELS:
+        raise SystemExit(f"kind 只能是 {' 或 '.join(KIND_LABELS)}")
     try:
         ok = memory.update(mid, content, importance, subject, kind, expires)
     except ValueError as e:
@@ -258,16 +259,16 @@ def cmd_memory_sweep(memory: MemoryStore, threshold: float | None, yes: bool) ->
 
 
 def _schedule_for_cli(cfg: Config, storage: Storage):
-    """日程的操作面：配置读的是 tool/schedule/config.json，状态全在 reminders 表里。"""
+    """日程的操作面：配置读的是 tool/remind/config.json，状态全在 reminders 表里。"""
     from tool.base import ToolRuntime
-    from tool.schedule.remind import Reminders
+    from tool.remind.remind import Reminders
 
     return Reminders(ToolRuntime(cfg, storage, None, None))
 
 
 def cmd_schedule_list(storage: Storage, sid: str | None, status: str | None,
                       limit: int, q: str | None) -> None:
-    from tool.schedule._rule import fmt_due, rule_label, span_text
+    from tool.remind._rule import fmt_due, rule_label, span_text
 
     rows = storage.list_reminders(sid, status, limit, 0, q)
     if not rows:
@@ -289,7 +290,7 @@ def cmd_schedule_list(storage: Storage, sid: str | None, status: str | None,
 
 
 def cmd_schedule_show(storage: Storage, rid: int) -> None:
-    from tool.schedule._rule import fmt_due, rule_label
+    from tool.remind._rule import fmt_due, rule_label
 
     row = storage.get_reminder(rid)
     if not row:
@@ -312,7 +313,7 @@ def cmd_schedule_cancel(storage: Storage, rid: int, yes: bool) -> None:
         raise SystemExit(f"日程不存在: {rid}")
     if row["status"] != "pending":
         raise SystemExit(f"#{rid} 已经结束了（{row['status']}），取消不了")
-    from tool.schedule._rule import fmt_due, rule_label
+    from tool.remind._rule import fmt_due, rule_label
 
     tail = f"（整条{rule_label(row['rule'])}日程，已发 {int(row.get('fired_count') or 0)} 场）" if row["rule"] else ""
     if not yes and not _confirm(f"取消 #{rid} {fmt_due(row['due_ts'])} {row['text']}{tail}？"):
@@ -385,7 +386,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = msub.add_parser("list", help="列出记忆（含归属、命中、到期与保留分）")
     sp.add_argument("--session", default=None)
     sp.add_argument("--subject", default=None, help="只看某个人的档案")
-    sp.add_argument("--kind", default=None, choices=["profile", "event"])
+    sp.add_argument("--kind", default=None, choices=list(KIND_LABELS))
     sp.add_argument("--limit", type=int, default=50)
 
     sp = msub.add_parser("search", help="语义检索记忆")
@@ -395,10 +396,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = msub.add_parser("add", help="写入记忆（先和库里相关的旧条目比，判新增还是改写）")
     sp.add_argument("content")
-    sp.add_argument("--kind", default="profile", choices=["profile", "event"],
+    sp.add_argument("--kind", default="profile", choices=list(KIND_LABELS),
                     help="profile=某人的当前状态，event=发生过的一件事")
     sp.add_argument("--subject", default=None, help="这条是关于谁的")
-    sp.add_argument("--importance", type=int, default=1, choices=range(1, 6))
+    sp.add_argument("--importance", type=int, default=IMPORTANCE_MIN, choices=range(IMPORTANCE_MIN, IMPORTANCE_MAX + 1))
     sp.add_argument("--session", default=None)
     sp.add_argument("--expires-days", type=int, default=None, dest="expires_days",
                     help="多少天后过期（只给自带截止日的事）")
@@ -406,9 +407,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp = msub.add_parser("edit", help="编辑记忆（改内容会重新向量化）")
     sp.add_argument("memory_id")
     sp.add_argument("--content", default=None)
-    sp.add_argument("--importance", type=int, default=None, choices=range(1, 6))
+    sp.add_argument("--importance", type=int, default=None, choices=range(IMPORTANCE_MIN, IMPORTANCE_MAX + 1))
     sp.add_argument("--subject", default=None)
-    sp.add_argument("--kind", default=None, choices=["profile", "event"])
+    sp.add_argument("--kind", default=None, choices=list(KIND_LABELS))
     sp.add_argument("--expires", default=None, help="到期时间 YYYY-MM-DD；传空串取消到期")
 
     sp = msub.add_parser("delete", help="删除记忆")
@@ -417,7 +418,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = msub.add_parser("purge", help="整组删除（按人 / 按类别 / 按会话）")
     sp.add_argument("--subject", default=None)
-    sp.add_argument("--kind", default=None, choices=["profile", "event"])
+    sp.add_argument("--kind", default=None, choices=list(KIND_LABELS))
     sp.add_argument("--session", default=None)
     sp.add_argument("--yes", action="store_true")
 

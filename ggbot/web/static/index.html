@@ -295,11 +295,8 @@
                 <input id="mem-q" class="input grow search-input" placeholder="语义检索，例如：谁喜欢喝咖啡？">
                 <button class="btn" data-action="memory-search">检索</button>
                 <button class="btn ghost" data-action="memory-all">全部</button>
-                <select id="mem-kind" class="sel" title="按类别筛">
-                  <option value="">全部类别</option>
-                  <option value="profile">人物档案</option>
-                  <option value="event">事件流水</option>
-                </select>
+                <!-- 类别与 ★ 的选项由记忆页的 kinds / importance 契约生成，这里不写死 -->
+                <select id="mem-kind" class="sel" title="按类别筛"></select>
                 <select id="mem-session" class="sel"><option value="">全部作用域</option></select>
               </div>
             </div>
@@ -308,15 +305,9 @@
               <div class="tool-row">
                 <input id="mem-add" class="input grow" placeholder="写入一条记忆，例如：小明周五前要交稿">
                 <input id="mem-add-subject" class="input" placeholder="关于谁">
-                <select id="mem-add-kind" class="sel" title="类别">
-                  <option value="profile">人物档案</option>
-                  <option value="event">事件流水</option>
-                </select>
+                <select id="mem-add-kind" class="sel" title="类别"></select>
                 <input id="mem-add-expires" class="input" type="date" title="到期日（可留空）">
-                <select id="mem-importance" class="sel" title="重要度">
-                  <option value="1">★</option><option value="2">★★</option><option value="3">★★★</option>
-                  <option value="4">★★★★</option><option value="5">★★★★★</option>
-                </select>
+                <select id="mem-importance" class="sel" title="重要度"></select>
                 <button class="btn primary" data-action="memory-add">写入</button>
               </div>
             </div>
@@ -350,7 +341,7 @@
           <div class="emoji-wrap">
             <div id="emoji-body" class="emoji-grid"><div class="empty">加载中…</div></div>
           </div>
-          <p class="card-sub">素材是一个统一库：图片直接丢进 <span class="mono">tool/media/emoji</span>（旧的 stickers/、user/ 子目录里的图也算同一个库），点「上传图」是同一件事的另一种做法。模型发消息时按 <span class="mono">desc</span> 这一句做语义匹配——点一张图就能改描述或连图片文件一起删掉，删了就真没了。</p>
+          <p class="card-sub">素材是一个统一库：图片直接丢进 <span class="mono">tool/emoji</span>（旧的 stickers/、user/ 子目录里的图也算同一个库），点「上传图」是同一件事的另一种做法。模型发消息时按 <span class="mono">desc</span> 这一句做语义匹配——点一张图就能改描述或连图片文件一起删掉，删了就真没了。</p>
         </div>
       </section>
 
@@ -495,7 +486,7 @@
 
         <div class="card">
           <div class="card-head">
-            <div><h2>工具门槛</h2><p class="card-sub">工具一律下发给模型，低于门槛的成员调用时直接失败；6 = 永久锁，不下发也无法触发</p></div>
+            <div><h2>工具门槛</h2><p class="card-sub">工具一律下发给模型，低于门槛的成员调用时直接失败；门槛放到最高一档的工具不下发、也无法被成员触发</p></div>
           </div>
           <div class="table-wrap">
             <table class="table">

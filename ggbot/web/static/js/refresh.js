@@ -11,10 +11,11 @@
    日志要跟得上滚动，仪表盘和日程的倒计时/逾期得走着看。 */
 const PAGE_LIVE = { dash: 5000, schedule: 5000, logs: 1000 };
 
-/* 每页的参数从它自己的控件读出来：轮询和手工刷新拉的是同一份口径，不会两套筛法 */
+/* 每页的参数从它自己的控件读出来：轮询和手工刷新拉的是同一份口径，不会两套筛法。
+   日志一次多少行不由前端报数——后端 LOG_LINES_DEFAULT 说了算，前端要筛就只筛级别和会话。 */
 const PAGE_PARAMS = {
   logs: () => {
-    const p = { lines: "400", level: qs("#log-level").value };
+    const p = { level: qs("#log-level").value };
     const sess = qs("#log-session").value.trim();
     const q = qs("#log-q").value.trim();
     if (sess) p.session = sess;
@@ -28,7 +29,6 @@ const PAGE_PARAMS = {
     if (sid) p.session_id = sid;
     if (state.memoryUseSearch && state.memoryQuery) p.q = state.memoryQuery;
     else if (kind) p.kind = kind;
-    p.limit = "200";
     return p;
   },
   schedule: () => {
@@ -61,8 +61,9 @@ const PAGE_RENDER = {
   emojis: (d) => renderEmojis(d.emojis),
   persona: (d) => applyPersona(d.system_prompt),
   settings: (d) => renderSettings(d.settings),
-  permissions: (d) => renderPermissions(d.permissions, d.tools),
-  tools: (d) => renderToolsPage(d.tools),
+  permissions: (d) => renderPermissions(d.permissions, d.tools, d.levels),
+  // 工具页可能比权限页先打开，门槛要显示成「L4 心腹」就得自己带上等级契约
+  tools: (d) => { applyLevelContract(d.levels); renderToolsPage(d.tools); },
 };
 
 async function loadPage(name, params) {

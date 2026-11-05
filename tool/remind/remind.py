@@ -28,7 +28,7 @@ from ._rule import (REPEAT_HELP, WHEN_HELP, advance, fmt_due, parse_rule, parse_
 
 logger = logging.getLogger("ggbot.tools.remind")
 
-DATA_KEY = "schedule"
+DATA_KEY = "remind"
 
 DEFAULT_CONFIG = {
     "enabled": True,
@@ -125,7 +125,7 @@ class Reminders:
         pending = await asyncio.to_thread(self.rt.storage.count_reminders, sid)
         max_pending = max(1, int(cfg.get("max_pending", 20) or 20))
         if pending >= max_pending:
-            return {"ok": False, "error": f"这个会话已挂着 {pending} 条提醒，先用 remind_cancel 取消一些"}
+            return {"ok": False, "error": f"这个会话已挂着 {pending} 条提醒，先用 remind_del 取消一些"}
 
         rid = await asyncio.to_thread(
             self.rt.storage.add_reminder, sid, owner, actor.get("name") or "",
@@ -173,7 +173,7 @@ class Reminders:
                 "fires": f"{fired}/{times}" if r.get("rule") and times > 0 else (str(fired) if r.get("rule") else ""),
             })
         return {"ok": True, "total": len(items), "items": items,
-                "note": "编号用来 remind_cancel（周期项一取消就是整条停下）；只列本会话"}
+                "note": "编号用来 remind_del（周期项一取消就是整条停下）；只列本会话"}
 
     async def cancel(self, args: dict, ctx: dict) -> dict:
         ref = str(args.get("id") or "").strip()
@@ -384,12 +384,12 @@ class RemindList(_RemindTool):
         return await self.rem.list_rows(args, ctx)
 
 
-class RemindCancel(_RemindTool):
-    name = "remind_cancel"
+class RemindDel(_RemindTool):
+    name = "remind_del"
     config_owner = False
     toggleable = False
     description = (
-        "取消一条还没结束的提醒。id 填 remind_list 里的编号；"
+        "取消一条还没结束的提醒（置为已取消，记录仍保留）。id 填 remind_list 里的编号；"
         "内容只对上唯一一条时也可以直接给那句关键词。"
         "取消周期项等于取消整条日程（后面不再发，已发过的场次还在）。"
         "只能取消自己设的、或提醒自己的那条；已经发出去的一次性提醒取消不了"
@@ -408,4 +408,4 @@ class RemindCancel(_RemindTool):
 
 def get_tools(rt):
     rem = Reminders(rt)
-    return [RemindAdd(rt, rem), RemindList(rt, rem), RemindCancel(rt, rem)]
+    return [RemindAdd(rt, rem), RemindList(rt, rem), RemindDel(rt, rem)]

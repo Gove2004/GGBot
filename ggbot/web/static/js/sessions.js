@@ -94,7 +94,7 @@ async function openSessionDetail(sid) {
   if (!pane) return;
   pane.innerHTML = '<div class="empty detail-loading">加载中…</div>';
   try {
-    const d = await api(`/api/sessions/${encodeURIComponent(sid)}/messages?limit=100`);
+    const d = await api(`/api/sessions/${encodeURIComponent(sid)}/messages`);
     if (state.selectedSession !== sid) return;
     const s = d.session || {};
     const chats = (d.messages || []).map((m) => {

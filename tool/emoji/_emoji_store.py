@@ -22,10 +22,13 @@ from pathlib import Path
 
 import numpy as np
 
+from ggbot.util.media import EMOJI_IMAGE_EXTS
+
 logger = logging.getLogger("ggbot.tools.emoji")
 
-IMAGE_EXTS = {".gif", ".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-DATA_KEY = "media/emoji"
+# 表情素材的扩展名只有一份口径（ggbot.util.media），本地媒体白名单与这里同进同退
+IMAGE_EXTS = EMOJI_IMAGE_EXTS
+DATA_KEY = "emoji"
 DESC_MAX = 200           # 一句话描述的长度上限（面板也按这个数拦）
 MAX_IMAGE_BYTES = 8 * 1024 * 1024   # 单张素材封顶：QQ 本地直传也吃不下更大的
 SCAN_TTL_SEC = 3.0       # 扫目录结果的复用窗口：一次回合里 send/list 不该各扫一遍
@@ -261,7 +264,7 @@ class EmojiStore:
         """目录 + 索引 + 向量 + 使用统计拼出的当前视图：只读，不落盘、不嵌入。
 
         目录里多出来的图照样出现在这里（描述用文件名兜底），只是还没进索引——
-        下一次聊天（`emoji_list` / `send_emoji`）或面板上改一次描述才把它补进去。
+        下一次聊天（`list_emoji` / `send_emoji`）或面板上改一次描述才把它补进去。
         """
         indexed = self.index()
         vecs = self.vectors()

@@ -4,11 +4,11 @@
 - `_emoji_store.py`：素材目录与 index.json / vectors.json / usage.json 的读写，检索不参与
 - `_emoji_match.py`：query 与素材描述怎么比、同档里怎么选
 
-素材都在 `tool/media/emoji/`（整目录复制即可迁移）：图片直接放这个目录，旧机器上的
+素材都在 `tool/emoji/`（整目录复制即可迁移，代码和素材同目录）：图片直接放这个目录，旧机器上的
 `stickers/`、`user/` 子目录里的图也照样算同一个库，目录就是唯一真相。
 
 挑图不靠情绪词表：把「笑死」归一成「开心」这类判断本来就该模型自己做，固定词表只会在
-模型没想到的说法上失灵。每条素材只有一句人写的描述 `desc`（`emoji_save` 与面板导入由识图自动写，
+模型没想到的说法上失灵。每条素材只有一句人写的描述 `desc`（`save_emoji` 与面板导入由识图自动写，
 手动放进目录的先用文件名兜底，面板上可以直接改），检索时 query 和 desc 都 embedding 比余弦；
 没配 embedding 或向量缺失时降级成字面二元组匹配。发出去一次记一笔使用统计，同档候选里
 优先换着发用得少的，而不是纯随机。
@@ -47,7 +47,7 @@ CANDIDATE_POOL = 8     # 一次挑图最多看几张候选（同档随机就在�
 class EmojiLibrary:
     """表情库本体：把 store（文件）和 matcher（挑图）串成工具与面板要的那几个动作。
 
-    send_emoji / emoji_list / emoji_save 共用这一份状态（限流计数器必须共享，
+    send_emoji / save_emoji / list_emoji 共用这一份状态（限流计数器必须共享，
     否则三个工具各自的计数互相看不见）。
     """
 
@@ -108,8 +108,8 @@ class EmojiLibrary:
 
         rows = await self.items()
         if not rows:
-            return {"ok": False, "error": "表情库为空（图片放 tool/media/emoji/，"
-                                          "或用 emoji_save 收藏用户投喂的图）"}
+            return {"ok": False, "error": "表情库为空（图片放 tool/emoji/，"
+                                          "或用 save_emoji 收藏用户投喂的图）"}
         hits, near = await self.matcher.rank(query, rows, CANDIDATE_POOL)
         recent = self._recent.setdefault(sid, deque(maxlen=RECENT_KEEP))
         picked = self.matcher.choose(hits, recent)
@@ -183,7 +183,7 @@ class EmojiLibrary:
         self.store.flush()
 
     async def save(self, args: dict, ctx: dict) -> dict:
-        """emoji_save：只收 temp 目录下的图（聊天里落地下来的附件就在那里）。"""
+        """save_emoji：只收 temp 目录下的图（聊天里落地下来的附件就在那里）。"""
         raw = str(args.get("source") or "").strip()
         if not raw:
             return {"ok": False, "error": "source 不能为空（temp 目录下的图片路径）"}
@@ -210,7 +210,7 @@ class EmojiLibrary:
     # ---------- 面板动作 ----------
 
     async def import_image(self, name: str, data: bytes, desc: str) -> dict:
-        """面板上传：只认图片扩展名与大小上限，其余和 emoji_save 走同一条入库路。"""
+        """面板上传：只认图片扩展名与大小上限，其余和 save_emoji 走同一条入库路。"""
         suffix = Path(name or "").suffix.lower()
         if suffix not in IMAGE_EXTS:
             return {"ok": False, "error": f"只支持 {'/'.join(sorted(IMAGE_EXTS))}"}
@@ -292,8 +292,8 @@ class SendEmoji(_EmojiTool):
         return await self.lib.send(args, ctx)
 
 
-class EmojiList(_EmojiTool):
-    name = "emoji_list"
+class ListEmoji(_EmojiTool):
+    name = "list_emoji"
     config_owner = False
     toggleable = False
     description = (
@@ -312,8 +312,8 @@ class EmojiList(_EmojiTool):
         return await self.lib.list_items(args)
 
 
-class EmojiSave(_EmojiTool):
-    name = "emoji_save"
+class SaveEmoji(_EmojiTool):
+    name = "save_emoji"
     min_level = 2
     config_owner = False
     toggleable = False
@@ -337,4 +337,4 @@ class EmojiSave(_EmojiTool):
 
 def get_tools(rt):
     lib = EmojiLibrary(rt)
-    return [SendEmoji(rt, lib), EmojiList(rt, lib), EmojiSave(rt, lib)]
+    return [SendEmoji(rt, lib), SaveEmoji(rt, lib), ListEmoji(rt, lib)]

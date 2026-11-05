@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from ggbot.util.media import public_media_url
+from ggbot.util.media import EMOJI_IMAGE_EXTS, public_media_url
 
 # 平台被动回复窗口（2026-10 官方文档口径）：群里一条消息 5 分钟内最多回 5 次，单聊 60 分钟最多 4 次。
 # 次数用满或过了窗口就只能改主动发送，所以这两个数是「这条锚点还能不能用」的判断依据。
@@ -44,6 +44,28 @@ def derive_target(session_id: str) -> tuple[str, str]:
 def _ts(offset_sec: float) -> str:
     """相对现在偏移若干秒的时间戳（负数=过去，正数=将来），口径与 messages.ts 一致。"""
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() + offset_sec))
+
+
+def note_sent(ctx: dict) -> None:
+    """这一轮真发出去一条消息：置「说过话」标记，并叫作息续一次期。
+
+    正文（core/outbound）与媒体（tool/base）两条发送路径都走这里——发出去一条就算一条，
+    续期的口径只有一份，不用在一轮结束时再补记。
+    """
+    ctx["sent_any"] = True
+    hook = ctx.get("on_sent")
+    if hook is not None:
+        hook()
+
+
+def note_request(ctx: dict) -> None:
+    """又要问一次模型：本轮还在进行，让作息别在等回复这几秒里把会话判成离线。
+
+    只报「还在」，不算续期：请求发出去不代表一会儿会说话。
+    """
+    hook = ctx.get("on_request")
+    if hook is not None:
+        hook()
 
 
 class AnchorLedger:
@@ -184,7 +206,8 @@ class Outbox:
 def resolve_media_source(cfg, source: str) -> tuple[Path | None, str | None, str, str | None]:
     """判定富媒体来源，返回 (本地文件, 公网 URL, 展示名, 错误)。
 
-    本地文件只允许 temp/ 与 tool/media/emoji/：否则低等级发送者可以用 send_image 读任意本机文件。
+    本地文件只允许 temp/ 与 tool/emoji/ 里的图片：表情分类目录同时放着代码，所以除目录之外
+    还认扩展名，否则低等级发送者可以借媒体发送读任意本机文件。
     本地一般直接以 base64 file_data 上传（QQ 官方接口支持，无需公网地址），
     只有超过 MAX_INLINE_UPLOAD 的文件才退回签名链接，避免请求体过大。
     """
@@ -203,15 +226,13 @@ def resolve_media_source(cfg, source: str) -> tuple[Path | None, str | None, str
             inside = root
             break
     if inside is None:
-        return None, None, "", "本地媒体只允许 temp/ 与 tool/media/emoji/ 素材"
+        return None, None, "", "本地媒体只允许 temp/ 与 tool/emoji/ 素材"
     rel = p.relative_to(inside)
     if inside == temp_root and rel.parts[:1] == ("logs",):
         return None, None, "", "本地媒体不能发送日志文件"
     if inside == tool_root:
-        if rel.parts[:2] != ("media", "emoji"):
-            return None, None, "", "本地媒体只允许 temp/ 与 tool/media/emoji/ 素材"
-        if p.name == "config.json" or p.suffix.lower() in {".key", ".pem"}:
-            return None, None, "", "本地媒体不能发送配置/密钥文件"
+        if rel.parts[:1] != ("emoji",) or p.suffix.lower() not in EMOJI_IMAGE_EXTS:
+            return None, None, "", "本地媒体只允许 temp/ 与 tool/emoji/ 素材"
     if not p.is_file():
         return None, None, p.name, f"本地文件不存在: {p.name}"
     if p.stat().st_size > MAX_INLINE_UPLOAD:

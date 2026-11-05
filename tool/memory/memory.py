@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 
 from ..base import Tool
+from ggbot.llm.memory import (IMPORTANCE_MAX, IMPORTANCE_MIN, KIND_LABELS,
+                              clamp_importance, kind_of)
 from ggbot.util.text import to_str
 
 
-class MemoryFetch(Tool):
-    name = "memory_fetch"
+class MemorySearch(Tool):
+    name = "memory_search"
     description = (
         "在长期记忆中检索，返回与 query 相关的记忆条目（默认语义检索，未配置向量服务时按关键词匹配）。"
         "每条带 kind：profile 是这个人的当前状态、event 是发生过的事；同一个人的状态以最新那条为准。"
@@ -36,8 +38,8 @@ class MemoryFetch(Tool):
         return {"ok": True, "results": results}
 
 
-class MemorySave(Tool):
-    name = "memory_save"
+class MemoryAdd(Tool):
+    name = "memory_add"
     min_level = 2
     description = (
         "把值得长期记住的信息写入记忆库。kind=profile 记某个人的当前状态（叫法、喜好、脾气、住处、"
@@ -50,10 +52,11 @@ class MemorySave(Tool):
         "type": "object",
         "properties": {
             "content": {"type": "string", "description": "要记住的内容，一句话完整表述（带上是谁）"},
-            "kind": {"type": "string", "enum": ["profile", "event"],
+            "kind": {"type": "string", "enum": list(KIND_LABELS),
                      "description": "profile=某人的当前状态（默认），event=发生过的一件事"},
             "subject": {"type": "string", "description": "这条是关于谁的，写对方常用的叫法；说不清就留空"},
-            "importance": {"type": "integer", "description": "重要度 1-5，默认 1"},
+            "importance": {"type": "integer",
+                           "description": f"重要度 {IMPORTANCE_MIN}-{IMPORTANCE_MAX}，默认 {IMPORTANCE_MIN}"},
             "expires_in_days": {"type": "integer",
                                 "description": "多少天后过期，只给自带截止日期的事填（如约定、备考）"},
         },
@@ -64,7 +67,7 @@ class MemorySave(Tool):
         content = to_str(args.get("content", "")).strip()
         if not content:
             return {"ok": False, "error": "content 为空"}
-        kind = "event" if str(args.get("kind") or "").strip().lower() == "event" else "profile"
+        kind = kind_of(str(args.get("kind") or "").strip().lower())
         try:
             days = int(args.get("expires_in_days") or 0)
         except (TypeError, ValueError):
@@ -73,7 +76,7 @@ class MemorySave(Tool):
             "content": content,
             "kind": kind,
             "subject": to_str(args.get("subject", "")).strip(),
-            "importance": max(1, min(5, int(args.get("importance", 1) or 1))),
+            "importance": clamp_importance(args.get("importance", IMPORTANCE_MIN)),
             "expires_in_days": days if 0 < days <= 3650 else None,
             "session_id": ctx.get("session_id"),
         }
@@ -86,4 +89,4 @@ class MemorySave(Tool):
 
 
 def get_tools(rt):
-    return [MemoryFetch(rt), MemorySave(rt)]
+    return [MemorySearch(rt), MemoryAdd(rt)]

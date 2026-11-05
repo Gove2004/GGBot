@@ -39,7 +39,7 @@ def _to_silk(path: Path) -> Path:
 
 
 class VoiceClone(Tool):
-    name = "send_voice_clone"
+    name = "send_voice"
     min_level = 2
     data_name = "media/audio"
     description = (

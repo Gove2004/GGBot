@@ -58,7 +58,7 @@ def fmt_user_messages(msgs: list[dict]) -> str:
         for a in attachments:
             ct = (a.get("content_type") or "").lower()
             url = a.get("url") or ""
-            # 已落地的本地副本可直接作为 send_image/send_voice 的 source 转发
+            # 已落地的本地副本可作为 save_emoji / generate_image 的 source 转发
             local = a.get("local_path") or ""
             ref = f" url={url}" if url else ""
             if local:

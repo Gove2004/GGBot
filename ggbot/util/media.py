@@ -28,6 +28,9 @@ MEDIA_KINDS = (
     (("image", "emoji", "face", "gif", "png", "jpeg", "jpg", "webp"), "图片"),
 )
 
+# 表情素材允许的扩展名（tool/emoji/ 里同时放着代码，只放行图片）
+EMOJI_IMAGE_EXTS = {".gif", ".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+
 
 def media_kind_label(content_type: str) -> str:
     """附件类型的中文标签（图片/语音/视频/文件）。"""
@@ -92,8 +95,8 @@ def _encode(cfg, p: Path) -> str | None:
         return "t/" + rel.as_posix()
     if p.is_relative_to(tools):
         rel = p.relative_to(tools)
-        if rel.parts[:2] != ("media", "emoji"):
-            return None  # 只放行表情素材，避免把工具配置/参考音频暴露到公网
+        if rel.parts[:1] != ("emoji",):
+            return None  # 只放行表情素材目录，避免把别的工具配置/参考音频暴露到公网
         return "d/" + rel.as_posix()
     return None
 
@@ -111,7 +114,7 @@ def resolve_local(cfg, rel: str) -> Path | None:
         return None
     if tag == "t" and Path(rest).parts and Path(rest).parts[0] == "logs":
         return None
-    if tag == "d" and Path(rest).parts[:2] != ("media", "emoji"):
+    if tag == "d" and Path(rest).parts[:1] != ("emoji",):
         return None
     try:
         p = (root / rest).resolve()

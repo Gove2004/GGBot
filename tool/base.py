@@ -4,7 +4,7 @@
 - ToolRuntime：给 Tool 提供配置、持久化目录、富媒体发送等公共依赖（正文通道不在这里，见 ggbot/core/outbound.py）
 - ToolRegistry：自动发现 tool/<分类>/ 下的插件，按配置开关动态挂载 schema
 
-分类即能力域：core（回合控制）/ schedule（定时）/ media（富媒体）/ memory（记忆）/ web（联网）/ mail（邮件）/ admin（管理）。
+分类即能力域：core（回合控制）/ admin（管理）/ memory（记忆）/ media（富媒体）/ emoji（表情）/ remind（定时）/ web（联网）/ email（邮件）。
 新增分类 = 新建一个含插件模块的子包。
 
 每个 Tool 声明 min_level（调用门槛，0-5 为发送者等级，6 为永久锁）。全部启用的工具都会下发给模型，
@@ -25,7 +25,8 @@ import pkgutil
 import threading
 from pathlib import Path
 
-from ggbot.core.outbox import Outbox
+from ggbot.core.auth import LEVEL_LOCKED, clamp_level
+from ggbot.core.outbox import Outbox, note_sent
 from ggbot.util.session import session_label
 
 logger = logging.getLogger("ggbot.tools")
@@ -136,7 +137,7 @@ class ToolRuntime:
             logger.warning("发送%s失败: %s", label, detail, extra=extra)
             return {"ok": False, "error": detail}
         ctx["msg_seq"] = seq + 1
-        ctx["sent_any"] = True
+        note_sent(ctx)
         if sid:
             self.storage.add_message(sid, "assistant", "bot", f"[{label}]")
         logger.info("发送%s: %s", label, detail, extra=extra)
@@ -148,7 +149,7 @@ class Tool:
 
     name: str = ""
     category: str = ""  # 所属能力域（由注册表按所在子包填充：core/media/memory/web/mail/admin）
-    data_name: str = ""  # 数据/配置目录名，默认与工具名一致（send_email -> mail 时可覆盖）
+    data_name: str = ""  # 数据/配置目录名，默认与工具名一致（send_email -> email 时可覆盖）
     description: str = ""
     parameters: dict = {"type": "object", "properties": {}}
     default_config: dict = {}
@@ -172,7 +173,7 @@ class Tool:
         return bool(self.config.get("enabled", self.enabled_by_default))
 
     def required_level(self) -> int:
-        """实际门槛：config.levels.<tool> 覆盖 > 类默认；范围 0-6。"""
+        """实际门槛：config.levels.<tool> 覆盖 > 类默认；范围 0~LEVEL_LOCKED。"""
         data = self.config or {}
         levels = data.get("levels")
         raw = levels.get(self.name) if isinstance(levels, dict) else None
@@ -182,7 +183,7 @@ class Tool:
             raw = int(raw)
         except (TypeError, ValueError):
             raw = self.min_level
-        return max(0, min(6, raw))
+        return clamp_level(raw, hi=LEVEL_LOCKED)
 
     def schema(self) -> dict:
         return {
@@ -221,7 +222,7 @@ class ToolRegistry:
                 if mod.name.startswith("_"):
                     continue
                 if mod.ispkg and not (Path(pkg.__path__[0]) / mod.name / "__init__.py").is_file():
-                    continue  # 素材/数据目录不是插件包（如 media/emoji、media/audio）
+                    continue  # 素材/数据目录不是插件包（如 media/audio、media/generate）
                 self._load_module(f"tool.{info.name}.{mod.name}", info.name)
 
     def _load_module(self, dotted: str, category: str) -> None:
@@ -256,7 +257,7 @@ class ToolRegistry:
         排序固定让所有会话拿到同一份列表：这份列表和静态人设一起构成请求前缀，
         厂商的上下文缓存才命中得了。6 级（永久锁）永远不出现在任何人的列表里。
         """
-        rows = [t for t in self.tools.values() if t.is_enabled() and t.required_level() <= 5]
+        rows = [t for t in self.tools.values() if t.is_enabled() and t.required_level() < LEVEL_LOCKED]
         rows.sort(key=lambda t: (t.required_level(), t.category, t.name))
         return rows
 

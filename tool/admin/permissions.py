@@ -10,50 +10,60 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from ggbot.core.auth import (DEFAULT_LEVEL, LEVEL_LOCKED, LEVEL_LOCKED_NAME, LEVEL_MAX,
+                             LEVEL_NAMES, clamp_level)
 from ggbot.util.session import session_label
 
 from ..base import Tool
 
 logger = logging.getLogger("ggbot.tool.admin")
 
-LEVEL_NAMES = {0: "禁止", 1: "受限", 2: "普通", 3: "特权", 4: "心腹", 5: "归属"}
-
+# 正式名字表只有一份（core.auth.LEVEL_NAMES），这里补的是口语说法：管理员说的是「拉黑、主人」这类词
 LEVEL_ALIASES = {
-    "禁止": 0, "拉黑": 0, "封禁": 0, "禁用": 0, "黑名单": 0, "踢出": 0,
-    "受限": 1, "限制": 1, "只聊天": 1,
-    "普通": 2, "标准": 2, "正常": 2,
-    "特权": 3, "高级": 3,
-    "心腹": 4, "管理": 4, "管理员": 4,
-    "归属": 5, "主人": 5, "群主": 5, "拥有者": 5,
+    "拉黑": 0, "封禁": 0, "禁用": 0, "黑名单": 0, "踢出": 0,
+    "限制": 1, "只聊天": 1,
+    "标准": 2, "正常": 2,
+    "高级": 3,
+    "管理": 4, "管理员": 4,
+    "主人": 5, "群主": 5, "拥有者": 5,
 }
+LEVEL_ALIASES.update({name: level for level, name in LEVEL_NAMES.items()})
 
 LEVEL_ABILITIES = {
     0: "消息直接丢弃，不回复、不入库",
-    1: "只能聊天、发表情、查记忆",
-    2: "加上联网搜索、发图/视频、写记忆、语音克隆",
+    1: "只能聊天、发表情、查记忆、看和撤本会话的提醒",
+    2: "加上联网搜索与抓网页、发语音、写记忆、排提醒、收藏表情",
     3: "加上发邮件",
-    4: "加上清空会话上下文、生图",
+    4: "加上生图",
     5: "拥有 4 的全部能力，并可调整他人权限",
 }
 
 
+LEVEL_HINT = f"0-{LEVEL_MAX} 或 {'/'.join(LEVEL_NAMES.values())}"
+OWNER_LABEL = f"L{LEVEL_MAX} {LEVEL_NAMES[LEVEL_MAX]}"
+# 发给模型的那份等级说明也从名字表与能力表现拼，改档位或改能力归属不用回来改文案
+LEVEL_ROSTER = " / ".join(
+    f"{lv} {LEVEL_NAMES[lv]}（{LEVEL_ABILITIES[lv]}）" for lv in range(LEVEL_MAX + 1))
+
+
 def parse_level(value) -> int:
     if isinstance(value, bool):
-        raise ValueError("等级必须是 0-5 或等级名称")
+        raise ValueError(f"等级必须是 {LEVEL_HINT}")
     if isinstance(value, int):
         level = value
     else:
         text = str(value or "").strip()
         if not text:
-            raise ValueError("缺少等级：0-5 或 禁止/受限/普通/特权/心腹/归属")
+            raise ValueError(f"缺少等级：{LEVEL_HINT}")
         if text.isdigit():
             level = int(text)
         elif text in LEVEL_ALIASES:
             level = LEVEL_ALIASES[text]
         else:
-            raise ValueError(f"无法识别的等级: {text}（可用 0-5 或等级名称）")
-    if not 0 <= level <= 5:
-        raise ValueError("等级范围是 0-5（6 为永久锁，只能在 Web 工具页设置）")
+            raise ValueError(f"无法识别的等级: {text}（可用 {LEVEL_HINT}）")
+    if not 0 <= level <= LEVEL_MAX:
+        raise ValueError(
+            f"等级范围是 0-{LEVEL_MAX}（{LEVEL_LOCKED} 为{LEVEL_LOCKED_NAME}，只能在 Web 工具页设置）")
     return level
 
 
@@ -61,20 +71,18 @@ def _oid8(openid: str) -> str:
     return (openid or "")[:8].upper()
 
 
-class ManagePermission(Tool):
-    name = "manage_permission"
-    min_level = 5
+class AdminManage(Tool):
+    name = "admin_manage"
+    min_level = LEVEL_MAX
     data_name = "admin"
     description = (
-        "调整成员在本机的权限等级（只有归属者可用）。"
-        "action=grant 授予/升降级，action=revoke 收回（设为 0 禁止），"
+        f"调整成员在本机的权限等级（只有 {OWNER_LABEL} 可用）。"
+        f"action=grant 授予/升降级，action=revoke 收回（设为 0 {LEVEL_NAMES[0]}），"
         "action=list 查看成员与等级，action=help 查看等级含义和说法示例。"
         "target 可以填昵称、8 位 id 或完整 openid；昵称重名时会返回候选，不要猜。"
-        "等级：0 禁止（消息被丢弃）/ 1 受限（只能聊天）/ 2 普通（联网、记忆、发图、语音）/ "
-        "3 特权（发邮件）/ 4 心腹（清空上下文、生图）/ 5 归属（管理权限）。"
-        "对方只描述能力时按此换算，比如“让他能发邮件”→3，“让他能画图”“让他能清空上下文”→4，"
-        "“取消权限/拉黑”→0；说不清要哪一级就先问一句，或调 help 列出六级让对方选，"
-        "对方问“权限怎么分”就照 help 的内容回答。"
+        f"等级：{LEVEL_ROSTER}。"
+        "对方只描述能力时按这份对照换算成级别；说不清要哪一级就先问一句，或调 help "
+        "把档位列全让对方选，对方问“权限怎么分”就照 help 的内容回答。"
     )
     parameters = {
         "type": "object",
@@ -90,7 +98,7 @@ class ManagePermission(Tool):
             },
             "level": {
                 "type": "string",
-                "description": "grant 用：0-5，或 禁止/受限/普通/特权/心腹/归属",
+                "description": f"grant 用：{LEVEL_HINT}",
             },
             "note": {"type": "string", "description": "可选备注"},
         },
@@ -100,8 +108,8 @@ class ManagePermission(Tool):
     async def run(self, args: dict, ctx: dict) -> dict:
         actor = ctx.get("actor") or {}
         caller = int(actor.get("level") or 0)
-        if caller < 5:
-            return {"ok": False, "error": "权限管理仅限归属者（L5）"}
+        if caller < LEVEL_MAX:
+            return {"ok": False, "error": f"权限管理仅限 {OWNER_LABEL}"}
         action = str(args.get("action") or "").strip().lower()
         if action == "help":
             return self._help()
@@ -174,7 +182,7 @@ class ManagePermission(Tool):
             "level_name": LEVEL_NAMES[level],
             "note": data.get("note") or "",
         }
-        if is_self and level < 5:
+        if is_self and level < LEVEL_MAX:
             result["warning"] = "你已降低自己的等级；需要恢复请在 Web 权限页修改"
         return result
 
@@ -185,16 +193,15 @@ class ManagePermission(Tool):
             "ok": True,
             "levels": [
                 {"level": lv, "name": LEVEL_NAMES[lv], "ability": LEVEL_ABILITIES[lv]}
-                for lv in range(6)
+                for lv in range(LEVEL_MAX + 1)
             ],
             "examples": [
-                "“把小明设成特权” → grant target=小明 level=3",
-                "“让他能发邮件” → grant target=... level=3",
-                "“让阿泽能画图” → grant target=阿泽 level=4",
-                "“让他只能聊天” → grant target=... level=1",
+                f"“把小明设成{LEVEL_NAMES[3]}” → grant target=小明 level=3",
+                "“把小明设成 3” → grant target=小明 level=3",
                 "“取消小林的权限 / 拉黑他” → revoke target=小林",
             ],
-            "note": "成员重名时先用 list 看 8 位 id，再用 id 指定；6 为永久锁，只能在 Web 工具页设置。",
+            "note": (f"能力对应哪一级看 levels，别自己猜；成员重名时先用 list 看 8 位 id，再用 id 指定；"
+                     f"{LEVEL_LOCKED} 为{LEVEL_LOCKED_NAME}，只能在 Web 工具页设置。"),
         }
 
     def _list(self) -> dict:
@@ -219,12 +226,10 @@ class ManagePermission(Tool):
         }
 
     def _default_level(self) -> int:
+        """未登记成员的默认级别：与 Permissions 读的是同一条口径（clamp 后落 0~LEVEL_MAX）。"""
         data = getattr(self.rt.cfg, "data", None) or {}
         p = data.get("permissions") if isinstance(data, dict) else None
-        try:
-            return max(0, min(5, int((p or {}).get("default_level", 2))))
-        except (TypeError, ValueError):
-            return 2
+        return clamp_level((p or {}).get("default_level", DEFAULT_LEVEL))
 
     # ---------- 成员匹配 ----------
 
@@ -292,4 +297,4 @@ class ManagePermission(Tool):
 
 
 def get_tools(rt):
-    return [ManagePermission(rt)]
+    return [AdminManage(rt)]

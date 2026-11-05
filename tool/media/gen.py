@@ -3,7 +3,7 @@
 配置/数据：tool/media/generate/config.json（与代码同分类目录）
 运行产物：temp/tool/media/generate/*.png（随 temp TTL 清理）
 
-参考图只收本地路径（temp/ 与 tool/media/emoji/ 素材），转成 base64 data URL 发出去：
+参考图只收本地路径（temp/ 与 tool/emoji/ 素材），转成 base64 data URL 发出去：
 群友发的图本来就已落地在 temp/，不必再让工具去外抓 URL，少一份 SSRF 面。
 生图是同步接口（一次 POST 拿结果），等待发生在 asyncio.to_thread 里，不阻塞其他会话。
 """
@@ -20,7 +20,7 @@ import urllib.request
 from pathlib import Path
 
 from ..base import Tool
-from ggbot.util.media import human_size
+from ggbot.util.media import EMOJI_IMAGE_EXTS, human_size
 from ggbot.util.session import session_label
 
 logger = logging.getLogger("ggbot.tools.gen")
@@ -99,10 +99,14 @@ def _ref_data_url(rt, raw) -> tuple[str, str]:
         p = Path(rt.cfg.temp_dir) / p
     p = p.resolve()
     temp_root = Path(rt.cfg.temp_dir).resolve()
-    emoji_root = (Path(rt.tool_root) / "media" / "emoji").resolve()
+    emoji_root = (Path(rt.tool_root) / "emoji").resolve()
     under_temp = p.is_relative_to(temp_root) and p.relative_to(temp_root).parts[:1] != ("logs",)
-    if not (under_temp or p.is_relative_to(emoji_root)):
-        return "", f"参考图只允许 temp/ 与 tool/media/emoji/ 下的文件（{p.name} 不在其中）"
+    under_emoji = p.is_relative_to(emoji_root)
+    # 表情目录现在代码和素材同级，所以只认图片扩展名，别让人借参考图读走 .py 与配置
+    if under_emoji and p.suffix.lower() not in EMOJI_IMAGE_EXTS:
+        under_emoji = False
+    if not (under_temp or under_emoji):
+        return "", f"参考图只允许 temp/ 与 tool/emoji/ 下的图片（{p.name} 不在其中）"
     if p.name == "config.json" or p.suffix.lower() in {".key", ".pem"}:
         return "", "参考图不能是配置/密钥文件"
     if not p.is_file():
@@ -135,7 +139,7 @@ class GenerateImage(Tool):
             "refs": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "参考图的本地路径（temp/ 或 tool/media/emoji/ 下），用于改图或保持风格；纯文生图不填",
+                "description": "参考图的本地路径（temp/ 或 tool/emoji/ 下），用于改图或保持风格；纯文生图不填",
             },
             "ratio": {
                 "type": "string",

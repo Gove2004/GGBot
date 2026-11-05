@@ -1,10 +1,10 @@
 """Tool 执行器与 agent 循环。
 
-一切能力都是 Tool：插件按能力域放在项目根 tool/{core,schedule,media,memory,web,mail,admin}/，
+一切能力都是 Tool：插件按能力域放在项目根 tool/{core,admin,memory,media,emoji,remind,web,email}/，
 启动时自动发现并按配置挂载 schema。每个 toolset 目录自包含代码、config.json 与持久化数据。
 每个 Tool 带 min_level 门槛：全部启用的工具都下发给模型（不按等级裁剪），执行器按实际发送者校验，权限不足直接失败。
 回合语义：模型只有一条说话通道——回复正文，由 ggbot.core.outbound 逐行拆成消息发出（正文不是工具，模型无从调用）；
-媒体、沉默等才走工具（send_emoji / send_voice_clone / silence …），silence 主动不接话。
+媒体、沉默等才走工具（send_emoji / send_voice / silence …），silence 主动不接话。
 """
 
 from __future__ import annotations
@@ -14,7 +14,9 @@ import json
 import logging
 import re
 
+from ggbot.core.auth import LEVEL_LOCKED, LEVEL_LOCKED_NAME
 from ggbot.core.outbound import Outbound
+from ggbot.core.outbox import note_request
 from ggbot.core.runtime_stats import runtime
 from ggbot.util.logging_setup import clip
 from ggbot.util.session import oid8, session_label
@@ -27,7 +29,7 @@ NO_REPLY = "__NO_REPLY__"
 
 PLACEHOLDER_HINT = (
     "正文里写媒体占位词是无效的：方括号也好、圆括号也好，写出来只是文字，不会变成图片/语音/表情。"
-    "要发媒体就直接调用对应工具（send_emoji / send_voice_clone / send_image / send_video），"
+    "要发媒体就直接调用对应工具（send_emoji / send_voice / generate_image），"
     "只说一句人话即可。"
 )
 
@@ -106,8 +108,8 @@ class ToolExecutor:
         actor = ctx.get("actor") or {}
         level = int(actor.get("level") or 0)
         need = tool.required_level()
-        if need > 5 or level < need:
-            need_label = "永久锁" if need > 5 else f"L{need}"
+        if need >= LEVEL_LOCKED or level < need:
+            need_label = LEVEL_LOCKED_NAME if need >= LEVEL_LOCKED else f"L{need}"
             logger.warning("工具 %s 拒绝: 需要 %s，当前 %s(L%d)", name, need_label,
                            _actor_label(actor), level, extra={"session": sid})
             return {"ok": False, "error": f"权限不足：{name} 需要 {need_label}，当前 L{level}"}
@@ -153,6 +155,7 @@ async def agent_loop(llm, executor, messages: list, ctx: dict, max_rounds: int =
     base_len = (len(history) - 1) if base_len is None else max(0, min(int(base_len), len(history)))
     retried_placeholder = False
     for round_no in range(max_rounds):
+        note_request(ctx)  # 又要问一次模型：本轮还没结束，别让作息在等回复时判离线
         resp = await asyncio.to_thread(
             llm.chat, history, tools, base_len=base_len, session=sid
         )

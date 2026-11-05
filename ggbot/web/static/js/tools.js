@@ -1,8 +1,8 @@
 "use strict";
 
 /* ================= 工具 ================= */
-const TOOL_CATS = { core: "控制", schedule: "定时", media: "富媒体", memory: "记忆", web: "联网", mail: "邮件", admin: "管理" };
-const TOOL_CAT_ORDER = ["core", "schedule", "media", "memory", "web", "mail", "admin"];
+const TOOL_CATS = { core: "控制", memory: "记忆", media: "富媒体", emoji: "表情", remind: "定时", web: "联网", email: "邮件", admin: "管理" };
+const TOOL_CAT_ORDER = ["core", "memory", "media", "emoji", "remind", "web", "email", "admin"];
 function toolCat(cat) { return TOOL_CATS[cat] || cat || "其他"; }
 function toolOrder(cat) {
   const i = TOOL_CAT_ORDER.indexOf(cat);

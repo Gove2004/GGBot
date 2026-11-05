@@ -1,15 +1,55 @@
 "use strict";
 
 /* ================= 记忆 ================= */
-const KIND_LABEL = { profile: "档案", event: "事件" };
+/* 类别的取值与叫法、重要度的 ★ 区间都来自后端这份契约（页面数据的 kinds / importance_min|max），
+   选项、徽章、编辑框由它生成——面板不留第二份手写的数。 */
+function kindLabel(k) {
+  return (state.memKinds && state.memKinds[k]) || k || "";
+}
+/* 契约里的第一类是「档案」：按人分组、徽章不灰；其余类别各成一组、徽章走灰。
+   类别本身（有几个、叫什么）由后端 kinds 决定，这里不写死名字。 */
+function mainKind() {
+  return Object.keys(state.memKinds || {})[0];
+}
+function kindOptions(selected, withAll) {
+  const bits = withAll ? ['<option value="">全部类别</option>'] : [];
+  Object.keys(state.memKinds || {}).forEach((value) => {
+    bits.push(`<option value="${esc(value)}"${value === selected ? " selected" : ""}>${esc(kindLabel(value))}</option>`);
+  });
+  return bits.join("");
+}
+function importanceOptions(selected) {
+  const out = [];
+  for (let i = state.memImpMin; i <= state.memImpMax; i++) {
+    out.push(`<option value="${i}"${i === Number(selected) ? " selected" : ""}>${"★".repeat(i)}</option>`);
+  }
+  return out.join("");
+}
+/* 只在选项集合真变了的时候重建：一次页面刷新不该把用户刚挑好的类别与 ★ 数打回默认 */
+function syncOptions(sel, html, want) {
+  if (!sel || sel.options.length === want) return;
+  sel.innerHTML = html;
+}
+function clampImportance(value) {
+  const n = Number(value) || state.memImpMin;
+  return Math.max(state.memImpMin, Math.min(state.memImpMax, n));
+}
 
-/* 记忆页一次拿到 {items,total,limits,usage,searched}。
+/* 记忆页一次拿到 {items,total,limits,kinds,importance_min/max,usage,searched}。
    searched 是后端说的「这批按相关度检索」，前端据此换分组方式，不再自己猜；
    检索时 kind 只能在这批命中里再筛——向量检索本身不认类别。 */
 function renderMemories(d) {
   const kind = qs("#mem-kind").value;
   state.memLimits = d.limits || {};
   state.memUsage = d.usage || null;
+  state.memKinds = d.kinds || {};
+  state.memImpMin = d.importance_min;
+  state.memImpMax = d.importance_max;
+  const values = Object.keys(state.memKinds);
+  syncOptions(qs("#mem-kind"), kindOptions(kind, true), values.length + 1);
+  syncOptions(qs("#mem-add-kind"), kindOptions(values[0], false), values.length);
+  syncOptions(qs("#mem-importance"), importanceOptions(state.memImpMin),
+              state.memImpMax - state.memImpMin + 1);
   const items = d.items || [];
   paintMemories(kind && d.searched ? items.filter((m) => m.kind === kind) : items, d.total, d.searched);
 }
@@ -56,8 +96,8 @@ function memHead(total, isSearch) {
 }
 
 function memRow(m) {
-  const imp = Math.max(1, Math.min(5, Number(m.importance) || 1));
-  const kind = m.kind === "event" ? "event" : "profile";
+  const imp = clampImportance(m.importance);
+  const kind = m.kind;
   const ret = Number(m.retention || 0).toFixed(2);
   const rel = m.score != null ? `<div class="score">相关 ${Number(m.score).toFixed(3)}</div>` : "";
   const scope = m.session_id ? sessChip(m.session_id, "tiny") : '<span class="badge gray">全局</span>';
@@ -67,7 +107,7 @@ function memRow(m) {
   return `<tr>
     <td><span class="stars">${"★".repeat(imp)}</span><div class="score">${ret}</div>${rel}</td>
     <td>${esc(m.content)}</td>
-    <td class="col-sm-hide"><span class="badge${kind === "event" ? " gray" : ""}">${KIND_LABEL[kind]}</span> ${m.subject ? esc(m.subject) : '<span class="muted small">未归属</span>'} ${scope}</td>
+    <td class="col-sm-hide"><span class="badge${kind === mainKind() ? "" : " gray"}">${esc(kindLabel(kind))}</span> ${m.subject ? esc(m.subject) : '<span class="muted small">未归属</span>'} ${scope}</td>
     <td class="muted small col-sm-hide">${Number(m.hit_count) || 0} 次 · 安静 ${Number(m.quiet_days) || 0} 天</td>
     <td class="muted small col-sm-hide">${expire}</td>
     <td class="col-actions"><div class="row-actions">
@@ -98,15 +138,16 @@ function paintMemories(items, total, isSearch) {
     body.innerHTML = '<tr><td colspan="6" class="empty">暂无记忆</td></tr>';
     return;
   }
-  const profiles = state.memItems.filter((m) => (m.kind || "profile") === "profile");
-  const events = state.memItems.filter((m) => m.kind === "event");
+  const main = mainKind();
+  const rowsOf = (k) => state.memItems.filter((m) => (m.kind || main) === k);
+  const extraKinds = Object.keys(state.memKinds).slice(1);
   const html = [];
   if (isSearch) {
     // 检索结果是按相关度排的，按人分组会把分数顺序打乱
-    html.push(profiles.map(memRow).join(""), events.map(memRow).join(""));
+    Object.keys(state.memKinds).forEach((k) => html.push(rowsOf(k).map(memRow).join("")));
   } else {
     const bySubject = new Map();
-    for (const m of profiles) {
+    for (const m of rowsOf(main)) {
       const key = m.subject || "";
       if (!bySubject.has(key)) bySubject.set(key, []);
       bySubject.get(key).push(m);
@@ -114,11 +155,17 @@ function paintMemories(items, total, isSearch) {
     const named = [...bySubject.keys()].filter(Boolean).sort((a, b) => a.localeCompare(b, "zh-CN"));
     for (const subject of named) {
       const rows = bySubject.get(subject);
-      html.push(rows.map(memRow).join(""), groupFoot(`关于 ${subject}`, rows.length, subject, "profile"));
+      html.push(rows.map(memRow).join(""), groupFoot(`关于 ${subject}`, rows.length, subject, main));
     }
     const loose = bySubject.get("") || [];
-    if (loose.length) html.push(loose.map(memRow).join(""), groupFoot("未归属的档案", loose.length, "", "profile"));
-    if (events.length) html.push(events.map(memRow).join(""), groupFoot("事件流水", events.length, "", "event"));
+    if (loose.length) {
+      html.push(loose.map(memRow).join(""),
+                groupFoot(`未归属的${kindLabel(main)}`, loose.length, "", main));
+    }
+    extraKinds.forEach((k) => {
+      const rows = rowsOf(k);
+      if (rows.length) html.push(rows.map(memRow).join(""), groupFoot(kindLabel(k), rows.length, "", k));
+    });
   }
   body.innerHTML = html.join("");
 }
@@ -161,25 +208,19 @@ async function searchMemories() {
 function openMemoryEdit(id) {
   const item = state.memItems.find((x) => x.id === id);
   if (!item) return;
-  const kind = item.kind === "event" ? "event" : "profile";
+  /* 条目上的类别不在契约里（后端改过叫法）就落到契约的第一类，
+     选项与 ★ 数全部由 kinds / importance 区间生成，选中的那一项在生成时就标好。 */
+  const kind = state.memKinds[item.kind] ? item.kind : mainKind();
   openModal(
     "编辑记忆",
     `<label class="field"><span>内容</span><textarea id="mem-edit-content">${esc(item.content)}</textarea></label>
-     <label class="field"><span>类别</span><select id="mem-edit-kind" class="sel">
-       <option value="profile">人物档案（关于一个人的长期事实，会互相取代）</option>
-       <option value="event">事件流水（发生过的事，很久不用会淡出）</option>
-     </select></label>
+     <label class="field"><span>类别</span><select id="mem-edit-kind" class="sel">${kindOptions(kind, false)}</select></label>
      <label class="field"><span>关于谁</span><input id="mem-edit-subject" class="input" value="${esc(item.subject || "")}" placeholder="留空表示不归属具体的人"></label>
-     <label class="field"><span>重要度</span><select id="mem-edit-importance" class="sel">
-       <option value="1">★</option><option value="2">★★</option><option value="3">★★★</option>
-       <option value="4">★★★★</option><option value="5">★★★★★</option>
-     </select></label>
+     <label class="field"><span>重要度</span><select id="mem-edit-importance" class="sel">${importanceOptions(clampImportance(item.importance))}</select></label>
      <label class="field"><span>到期日</span><input id="mem-edit-expires" class="input" type="date" value="${esc((item.expires_at || "").slice(0, 10))}"><span class="muted small">留空表示不过期</span></label>`,
     `<button class="btn ghost" data-action="modal-close">取消</button>
      <button class="btn primary" data-action="memory-save" data-id="${esc(id)}">保存</button>`
   );
-  qs("#mem-edit-kind").value = kind;
-  qs("#mem-edit-importance").value = String(Math.max(1, Math.min(5, Number(item.importance) || 1)));
 }
 
 async function saveMemory(id) {
@@ -214,7 +255,7 @@ async function deleteMemory(id) {
 }
 
 async function purgeMemory(subject, kind, session) {
-  const who = subject ? `关于「${subject}」的档案` : (KIND_LABEL[kind] || "这一类");
+  const who = subject ? `关于「${subject}」的档案` : kindLabel(kind) || "这一类";
   const params = new URLSearchParams();
   if (subject) params.set("subject", subject);
   if (kind) params.set("kind", kind);

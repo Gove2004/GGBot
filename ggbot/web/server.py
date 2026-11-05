@@ -1,4 +1,4 @@
-"""Web 控制面板：FastAPI + WebSocket + 静态前端（ggbot/web/static）。
+"""Web 控制面板：FastAPI + 静态前端（ggbot/web/static）。
 
 前端与后端分离：ggbot/web/static/{index.html,css/*.css,js/*.js}，经 /static 托管，可独立修改热加载。
 功能：在线状态、会话与上下文、记忆（检索/写入/编辑/整理）、表情包浏览、提醒、配置热更新、日志查看。
@@ -6,7 +6,7 @@
 鉴权（安全）：
 - 登录：POST /api/login 校验 config.web.token，成功后写入 HttpOnly + SameSite=Strict Cookie，
   浏览器不再把令牌放进 URL 或 localStorage；
-- API：Cookie 或 X-Token 头（CLI/脚本），常量时间比较；/ws 同样校验 Cookie；
+- API：Cookie 或 X-Token 头（CLI/脚本），常量时间比较；
 - 限流：每个 IP 的 API 请求滑动窗口（240 次 / 10s），登录失败 8 次 / 60s 后返回 429；
   反代部署时设 web.trust_proxy=true，按 X-Forwarded-For 首个地址限流；
 - 跨站 Origin 拦截、CSP 等安全响应头；令牌为空时仅建议本机使用。
@@ -24,31 +24,40 @@ import time
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, WebSocket
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ggbot import __version__
-from ggbot.core.auth import LEVEL_LOCKED, LEVEL_NAMES, LEVEL_MAX, clamp_level
-from ggbot.core.config import BASE_DIR
+from ggbot.core.auth import (LEVEL_LOCKED, LEVEL_LOCKED_NAME, LEVEL_MAX, LEVEL_NAMES,
+                             clamp_level)
+from ggbot.core.config import (
+    ALLOWED_SETTINGS,
+    BASE_DIR,
+    RESTART_SETTINGS,
+    SECRET_KEYS,
+    SYSTEM_PROMPT_MAX_CHARS,
+)
 from ggbot.core.runtime_stats import runtime
+from ggbot.llm.memory import (
+    IMPORTANCE_MAX,
+    IMPORTANCE_MIN,
+    KIND_LABELS,
+    clamp_importance,
+    kind_of,
+)
 from ggbot.util.session import SYSTEM_LABEL, session_label
 
 logger = logging.getLogger("ggbot.web")
 
 WEB_DIR = Path(__file__).resolve().parent / "static"
 
-# 四列日志：时间 | 等级 | 会话 | 内容（等级/会话按宽度右填充空格）
+# 四列日志：时间 | 等级 | 会话 | 内容（等级/会话按宽度右填充空格）。
+# 只认这一份格式：日志是追加写的，但对不上的行（堆栈续行）本来就走原样保留的兜底，
+# 旧的三列/五列格式不需要再对冲——那几版只活了几小时就被换掉，线上日志里没有它们。
 LOG_LINE_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) \| (\w+)\s*\| ((?:群聊|私聊|系统)[0-9A-Za-z]{8})\s*\| (.*)$"
-)
-# 旧版五列（时间 | 等级 | 位置 | 会话 | 内容）与三列（时间 | 等级 | 位置 | 内容）兜底解析
-OLD5_LOG_RE = re.compile(
-    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) \| (\w+)\s*\| ([\w.]+)\s*\| (.*?)\s*\| (.*)$"
-)
-OLD3_LOG_RE = re.compile(
-    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) \| (\w+)\s*\| ([\w.]+)\s*\| (.*)$"
 )
 
 COOKIE_NAME = "ggbot_panel"
@@ -58,9 +67,13 @@ LOGIN_WINDOW_SEC = 60
 API_RATE_LIMIT = 240
 API_RATE_WINDOW_SEC = 10
 RATE_MAP_MAX = 2048
-# 页面读数的两份「不跟筛选走」的固定量：会话清单一次给全、仪表盘最近消息 8 条
+# 页面读数的固定量：会话清单一次给全、仪表盘最近消息 8 条、会话详情最近 100 条、
+# 日志页一次取最近 400 行（前端不再自己报数，面板要的窗口大小只在这一定义）
 SESSIONS_LIMIT = 500
 RECENT_LIMIT = 8
+SESSION_DETAIL_LIMIT = 100
+LOG_LINES_DEFAULT = 400
+LOG_LINES_MAX = 2000
 
 # 安全响应头（无内联脚本/样式，前端全部走 /static）
 CSP = (
@@ -138,60 +151,6 @@ def _day_start_ts(now_ts: int) -> int:
     return int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)))
 
 
-# 允许通过 Web 热更新的配置路径（其余只读，避免误改关键结构）
-ALLOWED_SETTINGS = [
-    "llm.request.temperature",
-    "llm.request.top_p",
-    "llm.request.max_tokens",
-    "llm.request.thinking",
-    "behavior.presence.start_online",
-    "behavior.presence.online_duration_sec",
-    "behavior.presence.offline_interval_sec",
-    "behavior.presence.online_duration_jitter",
-    "behavior.presence.offline_interval_jitter",
-    "behavior.presence.wake_on_at_message",
-    "behavior.presence.wake_on_c2c",
-    "behavior.presence.renew_on_reply",
-    "behavior.presence.renew_per_reply_sec",
-    "behavior.presence.renew_max_sec",
-    "behavior.presence.renew_jitter",
-    "behavior.reply.segment_gap_sec",
-    "behavior.reply.debounce_sec",
-    "behavior.reply.debounce_max_sec",
-    "behavior.backlog.max_scan_messages",
-    "behavior.backlog.online_max_messages",
-    "llm.context.max_history_messages",
-    "llm.context.token_budget",
-    "llm.context.archive_overflow_messages",
-    "llm.context.archive_batch_messages",
-    "llm.context.archive_enabled",
-    "vision.enabled",
-    "vision.model",
-    "vision.thinking",
-    "vision.prompt",
-    "vision.max_chars",
-    "vision.max_tokens",
-    "vision.timeout_sec",
-    "llm.pricing.currency",
-    "llm.pricing.input_per_mtok",
-    "llm.pricing.cached_input_per_mtok",
-    "llm.pricing.output_per_mtok",
-    "llm.pricing.peak_weekdays_only",
-    "llm.pricing.off_peak_multiplier",
-    "web.log_level",
-]
-
-# 白名单里仍需重启才生效的项：建连参数在进程启动时固定（面板据此打「需重启」标记）
-RESTART_SETTINGS = [
-    "vision.timeout_sec",
-]
-
-SECRET_KEYS = ("api_key", "secret", "appsecret", "token", "auth_code", "password")
-
-# 系统提示词（人设）的字数上限：内置默认约 2.6k 字，留出重写和加设定的余量
-SYSTEM_PROMPT_MAX_CHARS = 20000
-
-
 def mask_secrets(node):
     """递归脱敏：密钥字段显示为 ***。"""
     if isinstance(node, dict):
@@ -228,6 +187,13 @@ def _env_info(cfg) -> dict:
     }
 
 
+def _level_contract() -> dict:
+    """等级这本契约：级别名字表与上下限。面板要显示「L几 什么」都从这里取，前端不留第二份。"""
+    return {"level_names": {str(k): v for k, v in LEVEL_NAMES.items()},
+            "max_level": LEVEL_MAX, "locked_level": LEVEL_LOCKED,
+            "locked_name": LEVEL_LOCKED_NAME}
+
+
 def _session_value(token: str) -> str:
     """Cookie 值：令牌的 HMAC，浏览器端不持有原始令牌。"""
     return hmac.new(token.encode("utf-8"), b"ggbot-panel-v1", hashlib.sha256).hexdigest()
@@ -240,36 +206,6 @@ def _same_origin(origin: str | None, host: str | None) -> bool:
         return urlparse(origin).netloc == (host or "")
     except ValueError:
         return False
-
-
-def _coerce_setting(current, value):
-    """按当前配置类型校验/转换；不合法返回 _INVALID。"""
-    if isinstance(current, bool):
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str) and value.lower() in ("true", "false"):
-            return value.lower() == "true"
-        return _INVALID
-    if isinstance(current, int):
-        if isinstance(value, bool):
-            return _INVALID
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return _INVALID
-    if isinstance(current, float):
-        if isinstance(value, bool):
-            return _INVALID
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return _INVALID
-    if isinstance(current, str):
-        return str(value)
-    return value
-
-
-_INVALID = object()
 
 
 def create_app(cfg, storage, memory, presence) -> FastAPI:
@@ -448,7 +384,6 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
     async def session_messages(
         sid: str,
         request: Request,
-        limit: int = 100,
         x_token: str | None = Header(default=None),
     ):
         _auth(request, x_token)
@@ -458,7 +393,7 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         row["label"] = session_label(sid)
         return {
             "session": row,
-            "messages": storage.get_recent_messages(sid, min(max(limit, 1), 500)),
+            "messages": storage.get_recent_messages(sid, SESSION_DETAIL_LIMIT),
             # 出站回执：被动回复有没有被平台拒、什么时候降成了主动，看这一份就够，不用翻日志
             "sends": storage.recent_sends(sid, 10),
         }
@@ -555,11 +490,11 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
     # 刻意不给新建：面板排日程要的是另一套时间输入，而 when/repeat 的解析只该有一份实现。
 
     def _schedule_or_none():
-        """日程的操作面；工具没挂载就返回 None（配置读的是 tool/schedule/config.json）。"""
+        """日程的操作面；工具没挂载就返回 None（配置是 tool/remind/config.json）。"""
         rt = getattr(getattr(presence, "executor", None), "rt", None)
         if rt is None:
             return None
-        from tool.schedule.remind import Reminders
+        from tool.remind.remind import Reminders
 
         return Reminders(rt)
 
@@ -675,9 +610,9 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
             raise HTTPException(status_code=400, detail="content 不能为空")
         out = await asyncio.to_thread(memory.commit, [{
             "content": content,
-            "kind": body.kind if body.kind in ("profile", "event") else "profile",
+            "kind": kind_of(body.kind),
             "subject": body.subject or "",
-            "importance": max(1, min(5, body.importance)),
+            "importance": clamp_importance(body.importance),
             "session_id": body.session_id or None,
             "expires_at": body.expires_at or None,
         }])
@@ -695,14 +630,14 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         if not any(v is not None for v in (body.content, body.importance,
                                            body.kind, body.subject, body.expires_at)):
             raise HTTPException(status_code=400, detail="没有需要修改的字段")
-        if body.kind is not None and body.kind not in ("profile", "event"):
-            raise HTTPException(status_code=400, detail="kind 只能是 profile 或 event")
+        if body.kind is not None and body.kind not in KIND_LABELS:
+            raise HTTPException(status_code=400, detail=f"kind 只能是 {' 或 '.join(KIND_LABELS)}")
         try:
             ok = await asyncio.to_thread(
                 memory.update,
                 memory_id,
                 body.content,
-                None if body.importance is None else max(1, min(5, body.importance)),
+                None if body.importance is None else clamp_importance(body.importance),
                 body.subject,
                 body.kind,
                 body.expires_at,
@@ -730,8 +665,8 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         _auth(request, x_token)
         if not any((subject, kind, session_id)):
             raise HTTPException(status_code=400, detail="需要 subject / kind / session_id 至少一个条件")
-        if kind is not None and kind not in ("profile", "event"):
-            raise HTTPException(status_code=400, detail="kind 只能是 profile 或 event")
+        if kind is not None and kind not in KIND_LABELS:
+            raise HTTPException(status_code=400, detail=f"kind 只能是 {' 或 '.join(KIND_LABELS)}")
         removed = storage.delete_memories_by(session_id or None, subject or None, kind or None)
         return {"ok": True, "removed": removed}
 
@@ -802,14 +737,17 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
     ):
         _auth(request, x_token)
         if not 1 <= int(body.level) <= LEVEL_LOCKED:
-            raise HTTPException(status_code=400, detail="工具门槛需在 1-6 之间（6 = 永久锁）")
+            raise HTTPException(
+                status_code=400,
+                detail=f"工具门槛需在 1-{LEVEL_LOCKED} 之间（{LEVEL_LOCKED} = {LEVEL_LOCKED_NAME}）")
         ex = getattr(presence, "executor", None)
         tool = ex.registry.tools.get(name) if ex is not None else None
         if tool is None:
             raise HTTPException(status_code=404, detail="tool not found")
         data = ex.set_level(name, body.level)
         level = tool.required_level()
-        logger.info("Web 工具门槛 %s = L%d%s", name, level, "（永久锁）" if level >= LEVEL_LOCKED else "")
+        logger.info("Web 工具门槛 %s = L%d%s", name, level,
+                    f"（{LEVEL_LOCKED_NAME}）" if level >= LEVEL_LOCKED else "")
         return {"ok": True, "level": level, "config": mask_secrets(data)}
 
     # ---------- 配置（Web 热更新） ----------
@@ -824,20 +762,10 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         updated: list[str] = []
         rejected: list[str] = []
         for item in body:
-            if item.path not in ALLOWED_SETTINGS:
-                rejected.append(item.path)
-                continue
-            value = _coerce_setting(cfg.get_by_path(item.path), item.value)
-            if value is _INVALID:
-                rejected.append(item.path)
-                continue
-            if isinstance(value, (int, float)) and not isinstance(value, bool) and value < 0:
-                rejected.append(item.path)
-                continue
-            if cfg.set_by_path(item.path, value):
-                updated.append(item.path)
-            else:
-                rejected.append(item.path)
+            # 白名单、类型、负值三道校验都收在 Config.apply_setting 里：
+            # 「哪些键能改、改成什么样算合法」是配置的契约，面板只负责记账
+            bucket = updated if cfg.apply_setting(item.path, item.value) else rejected
+            bucket.append(item.path)
         if "web.log_level" in updated:
             from ggbot.util.logging_setup import set_level
 
@@ -935,7 +863,7 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
 
         level = q.text("level") or "DEBUG"
         session, needle = q.text("session"), q.text("q")
-        n = q.num("lines", 200, 1, 2000)
+        n = q.num("lines", LOG_LINES_DEFAULT, 1, LOG_LINES_MAX)
         # 会话/内容筛选要先筛后截：先取最近 n 行再筛，等于只能在这么宽的窗口里搜，
         # 窗口外的日志永远筛不出来（等级门槛在 tail_log 里已经先筛过）
         raw = tail_log(cfg.log_file, None if (session or needle) else n, level)
@@ -946,16 +874,9 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
             if m:
                 ts, lv, sess, content = m.groups()
             else:
-                m = OLD5_LOG_RE.match(line)
-                if m:
-                    ts, lv, _mod, sess, content = m.groups()
-                else:
-                    m = OLD3_LOG_RE.match(line)
-                    if not m:
-                        ts, lv, sess, content = "", "-", SYSTEM_LABEL, line
-                    else:
-                        ts, lv, _mod, content = m.groups()
-                        sess = SYSTEM_LABEL
+                # 认不出的行 = 异常堆栈的续行（四列格式是现在唯一的写法）。原样归到
+                # 「系统」保留，别因为解析失败就丢整行，否则报错只剩第一句
+                ts, lv, sess, content = "", "-", SYSTEM_LABEL, line
             if ses and ses not in sess.lower():
                 continue
             if want and want not in content.lower():
@@ -969,7 +890,7 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         return {"logs": {"level": level, "file": log_name, "logs": logs[-n:], "total": total}}
 
     async def _ds_reminders(q: _Q) -> dict:
-        from tool.schedule._rule import rule_label as _rule_label
+        from tool.remind._rule import rule_label as _rule_label
 
         st = q.text("status") or "pending"
         st = None if st == "all" else st
@@ -998,6 +919,11 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
             "limits": {"max_memories": mcfg["max_memories"],
                        "max_per_subject": mcfg["max_per_subject"],
                        "forget_after_days": mcfg["forget_after_days"]},
+            # 类别的取值与叫法、重要度的区间是记忆这一层的契约：
+            # 面板的选项、徽章和 ★ 数都从这份生成，前端不留第二份手写数
+            "kinds": KIND_LABELS,
+            "importance_min": IMPORTANCE_MIN,
+            "importance_max": IMPORTANCE_MAX,
             # 整库容量读数与筛选无关，而且已经按遗忘扫描的口径扣掉到期/淡出
             "usage": await asyncio.to_thread(memory.usage),
             "searched": bool(needle),
@@ -1042,13 +968,13 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
 
     async def _ds_tools(q: _Q) -> dict:
         ex = getattr(presence, "executor", None)
-        if ex is None:
-            return {"tools": []}
-        rows = ex.list_tools()
+        rows = [] if ex is None else ex.list_tools()
         for row in rows:
             # 密钥只在这里脱敏：工具配置既给「工具」页也给「权限」页，两份都得是脱敏后的
             row["config"] = mask_secrets(row.get("config") or {})
-        return {"tools": rows}
+        # 门槛要显示成「L4 心腹」，级别名字表得跟着这一页来——工具页可能先于权限页打开，
+        # 权限页也共用这份读数，两处不必各写一遍
+        return {"tools": rows, "levels": _level_contract()}
 
     async def _ds_system_prompt(q: _Q) -> dict:
         return {"system_prompt": _system_prompt_payload()}
@@ -1059,13 +985,7 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
 
     async def _ds_permissions(q: _Q) -> dict:
         p = _perms()
-        return {"permissions": {
-            "members": p.members(),
-            "default_level": p.default_level,
-            "level_names": {str(k): v for k, v in LEVEL_NAMES.items()},
-            "max_level": LEVEL_MAX,
-            "locked_level": LEVEL_LOCKED,
-        }}
+        return {"permissions": {"members": p.members(), "default_level": p.default_level}}
 
     # 一页要读哪几份数据，全在这张表里；前端 PAGE_META 有同名条目才拉得到数据
     PAGES: dict[str, list] = {
@@ -1092,32 +1012,6 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         for load in loaders:
             out.update(await load(q))
         return out
-
-    # ---------- WebSocket ----------
-
-    @app.websocket("/ws")
-    async def ws(websocket: WebSocket):
-        if token:
-            got = websocket.cookies.get(COOKIE_NAME, "")
-            header = websocket.headers.get("x-token")
-            ok = got and secrets.compare_digest(
-                got.encode("utf-8"), _session_value(token).encode("utf-8")
-            )
-            if not ok and not (
-                header and secrets.compare_digest(header.encode("utf-8"), token.encode("utf-8"))
-            ):
-                await websocket.close(code=1008)
-                return
-        if not _same_origin(websocket.headers.get("origin"), websocket.headers.get("host")):
-            await websocket.close(code=1008)
-            return
-        await websocket.accept()
-        try:
-            while True:
-                await websocket.send_json(presence.status())
-                await asyncio.sleep(2)
-        except Exception:  # noqa: BLE001
-            pass
 
     return app
 
