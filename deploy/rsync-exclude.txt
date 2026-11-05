@@ -10,9 +10,9 @@ config.json
 *.db.bak-*
 .bot.lock
 temp/
-tool/emoji/**
 !tool/emoji/*.py
 !tool/emoji/config.example.json
+tool/emoji/**
 tool/media/emoji/
 tool/media/audio/
 tool/web/search_usage.json

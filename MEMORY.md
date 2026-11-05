@@ -189,6 +189,9 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   （`.gitignore` 整目录忽略 `tool/emoji/**`，再用六条 `!` 只放回 `__init__.py`、`emoji.py`、`_emoji_store.py`、`_emoji_match.py`、
   `index.json` 与 `config.example.json`）。部署侧更狠，直接整目录排除（`deploy/rsync-exclude.txt` 里的 `tool/emoji/**`，
   同样只放回代码与配置模板）——素材是服务器本地状态，仓库里那份空索引对它没有意义，而 `--delete` 清掉服务器上的图就是清掉用户素材。
+  **两份清单的 `!` 位置相反**：`.gitignore` 是最后匹配生效，放行行写在排除行之后；rsync 是首个匹配生效，放行两行必须排在
+  `tool/emoji/**` 之前。写反了 rsync 依然会进目录逐个比对，但每张 `.py` 先撞上排除规则就定案了——线上表现为 `tool/emoji/`
+  同步成空壳、三个表情工具消失（`工具就绪` 少 3 个），本地测试全绿也照样炸，因为回归读的是本地目录。
 
 ## 生成媒体（media/generate）
 
@@ -417,7 +420,8 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
     这次补上 `*.db.bak-*`——`--reset-db` 生成的库备份就躺在 `db/` 下，之前每次部署都会被 `--delete` 清掉。
     rsync 会忽略 exclude 文件里的空行和 `#` / `;` 开头的行（清单里写注释是安全的），但我们这份保持纯模式、
     条目的理由写在 README 与 workflow 注释里；`.gitattributes` 单独给它定了 `eol=lf`——这份是给服务器上的 rsync 读的，
-    不该跟着本机 `core.autocrlf` 变。
+    不该跟着本机 `core.autocrlf` 变。改这份清单时记住**顺序有意义**：唯一一组 `!` 放行行排在 `tool/emoji/**` 之前
+    （rsync 首个匹配生效，与 `.gitignore` 的最后匹配相反；写反了 `tool/emoji/` 在服务器上就是个空壳，见「表情库」一节）。
 - **部署成功的判定看配置，不看固定端口**：`web.enable=false` 是用户故意关面板，以前一律探端口，
   这种机器的每次部署都被判成失败（CI 红叉但服务其实好好的）。现在面板开着才 `curl` 首页，关着就只看服务进程活着。
   失败时的现场也跟着改：systemd 下控制台输出在 journal 里，`temp/logs/stdout.log` 是 nohup 时代留下的旧文件，
