@@ -33,6 +33,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   改动时注意：新增配置项想热生效，就在读取处现读，别加 `refresh()`/缓存/监听这类机制。
 - **只有建连参数需要重启**：`vision.timeout_sec`（以及 `api_key`/`base_url`、LLM 连接参数）。面板对需重启的字段挂「需重启」徽标，
   列表来自后端 `RESTART_SETTINGS`；`POST /api/config` 会把改不动的路径放进 `rejected` 回给前端，绝不静默丢弃。
+  → 「哪些键能改 + 类型怎么校验」是配置的契约，不是面板的规则：名单与 `Config.apply_setting`（白名单 → 类型 → 落库三道）都住在 `ggbot/core/config.py`，CLI 与测试问的是同一份，面板只是使用者之一。→ 以前白名单抄在 `web/server.py` 里，等于第二个地方定义「config.json 谁能改」。
 - **识图可以在运行中打开**：启动时 `enabled=false` 不建连接，面板打开后第一次调用补建（失败就记一条 warning 并跳过）。
 - **识图的 thinking 不跟随对话，未填固定 `disabled`**：对话开思考（面板 2026-11-03 把 `llm.request.thinking` 存成 `enabled`）曾把识图一起拖坏——
   flash 把 `max_tokens`（识图默认只有 200）全花在推理上、正文返空，`describe` 拿到空串就当失败，标记原样留着，于是「机器人看不见图」。
@@ -96,9 +97,11 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   面板侧栏「人设」页是一整块编辑器，读在 `GET /api/page/persona`、写走独立的 `POST /api/system-prompt`，刻意不进 `POST /api/config` 的白名单。
   → 为什么能改：调语气是日常动作，以前每改一句都要动代码重启。为什么单独一条路由：这段是缓存前缀，存一次就失效一次，
   不该被设置页那套批量保存顺带碰到；一个键只留一条写入路径。
-  → v3 的内置默认在最前面加了【你的底子】：GGBot 由 Gove 研发、当前 v3、开发测试阶段、成本由 鹿LwL 赞助、扮演一位女生。
-    这几句写成"给你自己看的来历，不是台词"，人设里明确要求不主动交代——它是模型的自我口径，不是自我介绍的稿子；
-    被追问是不是机器人时用玩笑岔开，不去编身世、也不论证自己多像人。说话方式/断句/语气/防注入那几段原样保留。
+  → 2026-11-05 内置默认只写「你是个真人」这一层：v3 早期那段【你的底子】（叫 GGBot、由 Gove 研发、当前版本、成本由谁赞助、
+    扮演一位女生）整段删掉，换成「群里就是一个普通女生，来历不用交代」。→ 那几句是给模型看的自我标签，实际效果是它一有机会就
+    往"我是一个还在开发的机器人"上靠，语气、断句、不肯认自己不知道的事这些真人特征反而被这套设定压过；用户要的就是扮演真人。
+    被追问是不是机器人仍然打个哈哈岔开、不编身世——这条不改，它是防"顺着设定往下编"的闸门，不是身份声明。
+    说话方式/断句/语气/防注入那几段原样保留。面板标题与日志仍叫 GGBot：那是给操作者看的标识，不进模型上下文。
   → 改动时注意：`pm.context.system_prompt` 每轮现读，保存即生效不用重启；老配置没这个键要靠 `Config._migrate` 补空串
   （`set_by_path` 拒绝创建新键，不补就永远存不进去）；20000 字上限前端和后端各挡一道；这页不进 `PAGE_LIVE`，
   编辑器有未保存改动时切页回来也不被后端值覆盖（要丢弃得点「重载」），别把它接进 `PAGE_LIVE`。
@@ -127,7 +130,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   上限淘汰、合并择优、面板「保留」列与 CLI 那一列读的都是它。→ 一条记忆该不该留是三件事叠出来的，
   单看年龄会把"天天被想起"的常识删掉，单看重要度会把标了 ★5 再没提过的事永久留着。
   改动时注意：低分不是"该删"，是"超出上限时先腾谁"；别为它另建一套分数或加缓存。
-- **命中只由聊天侧记**：上下文注入的 top-3 与 `memory_fetch` 传 `touch=True`；面板的浏览和语义检索都不传。
+- **命中只由聊天侧记**：上下文注入的 top-3 与 `memory_search` 传 `touch=True`；面板的浏览和语义检索都不传。
   → "看一眼"不等于"想起来过"，否则运维把记忆页点一圈，那些条目就永远淡不掉了，遗忘等于没生效。
   改动时注意：新增任何读取路径先想清楚它算不算一次回忆，默认不记。
 - **记忆合并阈值随条数放宽**：0.95 起，每多 50 条降 0.01，最低 0.86（`ggbot/llm/memory.py`）。
@@ -141,7 +144,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   没有昵称时只剩这 8 位，不会写成 `id#id`。
   → QQ 昵称既会改又会撞车：只写昵称时，同一个人换了昵称被当成两个人、两个人撞了昵称被当成一个人，
   模型分不清这句话在回谁（「分不清人」）。这 8 位是唯一不会变的。
-  → 入库的展示名**先认 `actors` 表**（面板/`manage_permission` 给这个人定的叫法），没登记过才退回这次事件带过来的昵称。
+  → 入库的展示名**先认 `actors` 表**（面板/`admin_manage` 给这个人定的叫法），没登记过才退回这次事件带过来的昵称。
   改动时注意：归档提炼那一路必须用裸昵称（`sender_label_plain`）——那一侧产出的是记忆的 `subject`（"这条是关于谁的"），
   带上 `#id` 会把分组和检索弄脏；`@` 的解析仍走不带 `#` 的 `@昵称`，人设里也点明了这标记只给模型看、别照抄进正文；
   取名只在入站那一次查 `actors`，别在上下文拼装的热路径上加查库。
@@ -176,15 +179,16 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   改动时注意：任何写入都要把扫描缓存作废，否则"传完图列表里看不见"。
 - **同档里先躲开刚发过的、再挑用得最少的**；整库没一张够像时把邻近几张（带分数）如实回给模型（`near`），由它决定退一步发还是改口说话。
   → 每次都给同一张最配的，群友看着像坏掉的点唱机；硬凑一个"最接近"发出去，等于替模型做了一个它本来能做的判断。
-- **入库只有一条路**（`emoji_save` 与面板上传共用同一个函数）：按内容摘要（sha1 前 12 位）命名并去重——同一张图换扩展名再传也算重复；单张上限 8MB。
-- **表情库是一个统一目录，不分「内置/收藏」**：图片放 `tool/media/emoji/` 就算入库，索引 v4 的条目只有 `{file, desc, added_at}`。
+- **入库只有一条路**（`save_emoji` 与面板上传共用同一个函数）：按内容摘要（sha1 前 12 位）命名并去重——同一张图换扩展名再传也算重复；单张上限 8MB。
+- **表情库是一个统一目录，不分「内置/收藏」**：图片放 `tool/emoji/` 就算入库，索引 v4 的条目只有 `{file, desc, added_at}`。
   → 旧 `source` 字段只是文件所在子目录的前缀（`stickers/`→builtin、`user/`→user），而内置表情早在清空素材那次就没了，
-    「内置」变成一个永远为真的假类别；`emoji_save` 收的图和人手工放的图对模型是同一件事——都是"库里有这张"。
+    「内置」变成一个永远为真的假类别；`save_emoji` 收的图和人手工放的图对模型是同一件事——都是"库里有这张"。
     两边的 `desc` 也都是同一套（识图写或文件名兜底），按来源筛选没有任何信息量。
   改动时注意：`_scan()` 是**整个素材目录递归**，老机器上 `stickers/`、`user/` 里的图会被一并收进库，不用搬文件；
-  上限按整库算（`max_stickers`，默认 200）；素材图不进版本库（`.gitignore` 用 `tool/media/emoji/**` + 两条 `!` 白名单，
-  只放行 `index.json` 与 `config.example.json`），部署侧更要整目录排除（`deploy/rsync-exclude.txt` 里的 `tool/media/emoji/`）——
-  这个目录整个是服务器本地状态，仓库里那份空索引对它没有意义，而 `--delete` 清掉服务器上的图就是清掉用户素材。
+  上限按整库算（`max_stickers`，默认 200）；这个目录现在代码和素材同住一层，所以素材图不进版本库要靠白名单挑出来
+  （`.gitignore` 整目录忽略 `tool/emoji/**`，再用六条 `!` 只放回 `__init__.py`、`emoji.py`、`_emoji_store.py`、`_emoji_match.py`、
+  `index.json` 与 `config.example.json`）。部署侧更狠，直接整目录排除（`deploy/rsync-exclude.txt` 里的 `tool/emoji/**`，
+  同样只放回代码与配置模板）——素材是服务器本地状态，仓库里那份空索引对它没有意义，而 `--delete` 清掉服务器上的图就是清掉用户素材。
 
 ## 生成媒体（media/generate）
 
@@ -193,15 +197,16 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   → 生成与普通转发对模型是同一件事"这里出现了一张图"；再加一套标记就要动词表、日志和测试三处。
 - **参数只留 prompt / refs / ratio**：`image_size` 放配置里由部署方定，
   模型不该在一次聊天里挑分辨率。→ 少一个参数就少一种失败与一段 token；生图已经慢，别把回合浪费在调参上。
-- **生图 L4（心腹）**：一次要等几十秒，也是真花钱——"替群里做一件有成本的事"该跟 `clear_context`
-  同档，而不是跟发一张现成图（`send_image`，L2）同档。`config.levels` 可按群放开。
+- **生图 L4（心腹）**：一次要等几十秒，也是真花钱——"替群里做一件有成本的事"该单独一档，
+  而不是跟发语音、写记忆这类 L2 的"说一句话"同档。`config.levels` 可按群放开。
 - **生视频（`generate_video`）在 v3 下线**：异步任务、轮询到 `completed` 再下载，一段几十秒到一分多钟，
   失败面（队列满、超时、递归找 `.mp4` 地址）比生图宽一倍，群里几乎没人真等得起。
-  → 代码、配置键、README/MEMORY 同批删；`send_video`（发一份现成视频）留着，那是另一件事。
-- **参考图（`refs`）只收 `temp/` 与 `tool/media/emoji/` 下的本地路径，工具自己不抓外部 URL**
+  → 代码、配置键、README/MEMORY 同批删；转发现成视频的工具也一并删了（见「工具与权限」），群里没人用它。
+- **参考图（`refs`）只收 `temp/` 与 `tool/emoji/` 下的本地路径，工具自己不抓外部 URL**
   → 群友发的图本来就落地在 temp/，接口对两种输入都收（公网 URL 或 base64），去拉网图等于白加一处 SSRF 面。
-  改动时注意：白名单口径与 `send_image` 本地媒体一致（temp 排除 logs、拒 `config.json`/`.key`/`.pem`），两处要同进同退。
-- **凭据与固定素材缺失 = 未启用**（`api_key` 为空、或语音克隆缺 `audio/voice_ref.wav`，配置里 `enabled=true` 也不进下发列表）
+  改动时注意：`tool/emoji/` 现在代码和素材同级，所以这条白名单必须再按图片扩展名过滤——和出站本地媒体
+  （`ggbot/core/outbox.py`）共用 `ggbot/util/media.py` 的 `EMOJI_IMAGE_EXTS`，另外两边都排除 temp 里的 logs、拒 `config.json`/`.key`/`.pem`，两处要同进同退。
+- **凭据与固定素材缺失 = 未启用**（`api_key` 为空、或 `send_voice` 缺 `tool/media/audio/voice_ref.wav`，配置里 `enabled=true` 也不进下发列表）
   → 这些都是部署时就定好、运行中基本不变的东西，判定一次就够，没凭据/没素材就别让模型调，省一轮必然失败的往返。
   **会随聊天长大的素材不套这条口径**：表情库为空时 `send_emoji` 照样下发，调用时才如实失败（详见「工具与权限」的空表情库那条）。
 - **接口的字段口径以当期文档为准，别照旧脚本抄**：Agnes 视频 7 月那版吃 `width`/`height`/`num_frames`/`frame_rate`，
@@ -230,13 +235,20 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 
 ## 工具与权限
 
-- **一切皆 Tool**，按能力域放在根目录 `tool/{core,schedule,media,memory,web,mail,admin}/`，每个目录自包含代码 + `config.json` + 数据；
-  拷走文件夹就能迁移。`silence`/`time` 属于回合控制所以进 `core`，`schedule` 单独成类（"排一件事等会儿做"跟回合控制不是一回事，还要配巡检间隔与宽限），
-  富媒体（表情/图/视频/语音/生成）合在 `media`，记忆与上下文合在 `memory`，联网单独成类，`mail` 保持独立不并进别的分类。
+- **一切皆 Tool**，按能力域放在根目录 `tool/{core,memory,media,emoji,remind,web,email,admin}/`，每个目录自包含代码 + `config.json` + 数据；
+  拷走文件夹就能迁移。`silence` 单独成 `core`（回合控制），`schedule`→`remind`、`mail`→`email` 按能力域直命名，
+  富媒体（语音克隆 / 生图）合在 `media`，表情从 `media` 底下升到顶层 `emoji`（它有自己的目录契约与素材目录，不该寄在"媒体"下），
+  记忆与上下文合在 `memory`，联网（搜索 / 抓取 / 当前时间）单独成类，`admin` 只有权限管理一个工具。
+- **`send_image` / `send_video`（转发现成的图或视频）与 `clear_context`（清空本会话上下文）已整体删除**：
+  → 前两个是"把群里已有的东西原样再发一遍"，QQ 侧本来就允许用户自己转发，工具位与等级面白占着；要一张**新**图靠 `generate_image`。
+  `clear_context` 是模型能自己动手抹掉一段对话历史的能力，这类"改机器状态"的动作只留在面板「会话」页与 `ggbot.cli clear`——
+  跟当初删掉 `tool/fs` 是同一条判断：机器人只做"在群里说话 + 联网查 + 发媒体"，Agent 方向不做。
+  改动时注意：删工具要连 schema、`config.example.json`、等级表、面板分类映射（`static/js/tools.js` 的 `TOOL_CATS`/`TOOL_CAT_ORDER`）、
+  README 与本地测试一起删净；`temp/test_tool_layout.py` 断言注册表里不再出现这三个名字，也不留旧目录壳。
 - **文件读写分类（`tool/fs`）已整体删除**：机器人只做"在群里说话 + 联网查 + 发媒体"，不再替人操作服务器上的文件，Agent 方向暂时不做。
   → 留着就等于一份带密钥读取面、一套沙箱拒绝清单和两个特权工具位（L3/L4），而这些代码长期没人用；删的时候连 `fs` 的
   schema、`config.example.json`、等级说明与本地测试一起删净，`temp/test_tool_layout.py` 断言仓库里不再残留 `tool/fs` 目录。
-  改动时注意：面板分类映射（`static/js/tools.js` 的 `TOOL_CATS`/`TOOL_CAT_ORDER`）、`manage_permission` 的六级能力文案、
+  改动时注意：面板分类映射（`static/js/tools.js` 的 `TOOL_CATS`/`TOOL_CAT_ORDER`）、`admin_manage` 的六级能力文案、
   README 的等级表都要跟着分类表走；线上那台 `tool/fs/config.json` 被 rsync 的 `config.json` 排除项护着，`--delete` 清不掉，
   目录壳要手动删（没有 `__init__.py` 就不会被注册表发现，只是留个空壳）。
 - **目录名、数据目录名、工具名是三套外部契约**：分类目录决定 `category`（面板分组与排序），`data_name` 决定配置与素材落点
@@ -244,11 +256,19 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   → 本轮 `chat/knowledge` 拆成 `core/media/memory/web`，数据目录 `chat/gen`→`media/generate`、`knowledge/web`→`web`，
   `memory_write`/`memory_search` 改名 `memory_save`/`memory_fetch`，表情三件套跟着所在数据目录改名
   `send_sticker`/`sticker_list`/`sticker_save` → `send_emoji`/`emoji_list`/`emoji_save`（模块 `tool/media/sticker.py`→`emoji.py`）。
+  2026-11-05 又收了一次：分类目录 `schedule`→`remind`、`mail`→`email`，表情从 `media/emoji` 升到顶层 `emoji`（代码和素材同级），
+  `time` 从 `core` 挪进 `web`（它是"现在几点"这类联网问事实的入口，跟搜索/抓网页一条能力域），
+  工具名去掉重复的分类前缀：`memory_save`→`memory_add`、`memory_fetch`→`memory_search`、`web_search`→`search`、`web_fetch`→`fetch`、
+  `send_voice_clone`→`send_voice`、`remind_cancel`→`remind_del`（语义没变，只是名字里那个"取消"和别的工具不一致）、
+  `manage_permission`→`admin_manage`、`emoji_list`→`list_emoji`、`emoji_save`→`save_emoji`。
+  → 名字前缀在分类已经存在时是纯噪声（`web.web_search`），面板与日志里读到的应该是能力，不是路径复述。
   改动时注意：换目录要在**每台机器各搬一次**已有数据（素材、参考音频、含密钥的 `config.json`），搬漏一次等于工具"未启用"；
-  换工具名会让 `config.levels` 里的旧键静默失效（回到代码默认门槛），迁移脚本 `deploy/migrate_tool_dirs.sh` 一起做这两件事。
-  只换工具名时数据契约别顺手改：`data_name` 与素材目录留着——它们对应磁盘上真实存在的东西和服务器上已写好的配置，
-  改名等于要搬文件；`emoji.py` 与数据目录 `emoji/` 同名是安全的
-  （同包内模块文件优先于无 `__init__.py` 的目录，实测 `import tool.media.emoji` 拿到的是 `.py`）。
+  换工具名会让 `config.levels` 里的旧键静默失效（回到代码默认门槛），迁移脚本 `deploy/migrate_tool_dirs.sh` 一起做这两件事——
+  它按文件搬、目标已存在只跳过不覆盖，可以重复跑，本地和服务器各跑一次。
+  只换工具名时数据契约别顺手改：`data_name` 与素材目录留着——它们对应磁盘上真实存在的东西和服务器上已写好的配置，改名等于要搬文件。
+  **表情目录现在代码和素材同级**（`tool/emoji/` 里同时有 `emoji.py`、`config.json` 和图片），所以凡是"只准读这个目录"的地方
+  都必须再按图片扩展名过滤——出站 `ggbot/core/outbox.py` 的本地媒体白名单与生图的 `refs` 都这么做，扩展名清单只有
+  `ggbot/util/media.py` 的 `EMOJI_IMAGE_EXTS` 一份。以前它嵌在 `tool/media/emoji/` 时整目录都是素材，不用这层判断。
   真要改契约时走"读时兼容、不搬文件"这条路：表情库并成一个统一目录后，扫描改成递归整目录，
   老机器上的 `stickers/`、`user/` 里的图照样进库、只是不再当分类；配置键 `max_user_stickers`→`max_stickers`
   不用迁移，`load_config` 按 defaults 补齐新键并回写，老键留在文件里变成死字段。
@@ -258,13 +278,18 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   → 以前按等级裁剪，等于把缓存前缀按人群切成几份，等级不同的会话互相挤不掉前缀；而"低等级看不到"也没真挡住什么——
   模型照样能凭记忆编出工具名，最后仍要靠执行期那一次校验。6 级是唯一的列表例外：谁都不下发，面板也当它是锁。
   改动时注意：`config.levels` 覆盖的是门槛值而不是可见性，别把它当开关用（`enabled=false` 才是不进列表的理由）。
-- **管理动作要能被口语调用**：`manage_permission` 支持昵称/8 位 id/openid、等级词、重名给候选、越级与同级保护，
+- **管理动作要能被口语调用**：`admin_manage` 支持昵称/8 位 id/openid、等级词、重名给候选、越级与同级保护，
   并有 `list`/`help`——不要让管理员猜参数。
-- **空表情库照样下发 `send_emoji`**：调用时才如实返回「表情库为空（图片放 `tool/media/emoji/`…）」，模型改用说话就行。
+- **空表情库照样下发 `send_emoji`**：调用时才如实返回「表情库为空（图片放 `tool/emoji/`…）」，模型改用说话就行。
   → 早期是"没素材就不给看 schema"，但那要每次请求扫一遍目录才能让列表稳定；素材会长会删，把它当下发条件等于每轮重算列表、
     正好劈开缓存前缀。凭据（Agnes/MiMo key）不一样，它只在部署时变，所以仍按 `enabled` 决定进不进列表。
 
-## 日程（schedule：一次性 + 周期）
+## 日程（remind：一次性 + 周期）
+
+- **分类目录叫 `remind`，面板页与 CLI 子命令仍叫 `schedule`**：对话侧三个工具是 `remind_add`/`remind_list`/`remind_del`，
+  网页那一页的 `data-page="schedule"`、`python -m ggbot.cli schedule list|…` 不变。
+  → 工具名要跟着"群里怎么说这件事"走（"提醒我"），面板与 CLI 是运维入口，那一页管的是整张日程表（含历史与清理），
+    两个语境用同一个词反而别扭。改名要同时动 `PAGE_META`/`PAGE_RENDER`/nav 与 CLI parser，收益只有好看，代价是一整批测试与文档。
 
 - **真相在 `reminders` 表，进程里只有一个巡检循环**：`main.py` 起 `Reminders.run()`，每 `scan_interval_sec`（默认 15s）扫一次到期行；启动时另跑一次历史清理。
   → 排好的日程必须活过重启，所以不能放内存堆；工具实例与巡检实例各持一个 `Reminders`，状态全在表里，两边看到的是同一张表。
@@ -286,14 +311,14 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 - **清理只碰终态行**（`fired`/`cancelled`/`expired`）：`delete_terminal_before`、`delete_oldest_terminal`、`purge_reminders` 的 SQL 里都写死 `status<>'pending'`，
   `purge_reminders` 还拒绝"没有任何筛选条件"的删除（面板/CLI 同理）；`max_rows` 比的是**整表行数**不是待触发的条数。
   → 还在排的日程被一条 `DELETE` 悄悄删掉等于吞掉一次约定，比事故更糟的是没人知道发生过；上限若只看 pending，巡检一删历史就会让"是否超限"跟着抖动，删多删少说不清。
-- **`when` 与 `repeat` 的解析全项目只有 `tool/schedule/_rule.py` 一份**：`when` 只认固定写法（`+30m` / `+2h` / `+1d` / `18:30` / `10-30 18:30` / `2026-10-30 18:30`），
+- **`when` 与 `repeat` 的解析全项目只有 `tool/remind/_rule.py` 一份**：`when` 只认固定写法（`+30m` / `+2h` / `+1d` / `18:30` / `10-30 18:30` / `2026-10-30 18:30`），
   中文自然语言由模型先调 `time` 换算；`repeat` 只认 `daily`/`weekdays`/`weekly`/`monthly`（含中文说法）。报错文案都带上合法写法（`WHEN_HELP` / `REPEAT_HELP`），模型看一次就能改对。
   → 自己养一套中文时间解析（"下周三下午"、"傍晚"）是无限期的边界修补，而模型本来就会查日期；面板要是再写一套 `when`，两边对"明天 8 点"的理解迟早分叉——所以面板改时间送的是日期选择器算出的**绝对 unix 秒**。
 - **面板「日程」只改不建**：分组视图 + 统计 + 筛选 + 逐行改时间/正文、取消、删除、批量清理历史与按保留期清理；**没有新建入口**，也没有第 4 个对话工具。
   → 改日程在对话里靠「取消 + 重排」两步说清楚，再开一个 `remind_update` 只得多养一套校验和一套措辞；面板能改字段但不能替用户理解 `repeat`，那就别让它在网页上排周期。
   改动时注意：「改」只把用户**真动过的那一格**发给后端（逾期项预填的就是已经过去的时间，改个错别字不该被「必须是将来」挡回来）。
-- **三件套共享 `tool/schedule/config.json`**：`remind_list`/`remind_cancel` 标 `config_owner=false, toggleable=false`（表情三件套同口径），
-  门槛 `remind_add` = **L2**——约定一句话不花钱、不越权，跟 `send_image` 同档就够；取消只能撤自己设的或提醒自己的那条（L5 例外），取消周期项等于整条停下。
+- **三件套共享 `tool/remind/config.json`**：`remind_list`/`remind_del` 标 `config_owner=false, toggleable=false`（表情三件套同口径），
+  门槛 `remind_add` = **L2**——约定一句话不花钱、不越权，跟发语音、写记忆同档就够；取消只能撤自己设的或提醒自己的那条（L5 例外），取消周期项等于整条停下。
 - **提醒第三人**：`who` 走 `storage.find_sender_openid`（本会话发言者 → 别处的同名发言者 → `actors`），查不到就如实报错不猜人；
   群里提醒第三人时 `_compose` 自动在正文前补 `@昵称`，由正文通道换成真 @，私聊不补。
 
@@ -320,7 +345,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   这本序号账现在**在库里**（理由见上面「出站两本账落库」），别退回进程内的 dict；也不要把它当"已回复"计数往外暴露。
 - **@ 只在 markdown 消息生效**：wire 走 markdown，被平台拒就退回纯文本原文；库里始终存 `@昵称`。
 - **发送目标反查**：`sessions.key` 里才是完整 openid，内部主键 `session_id` 不等于它。
-- **在线状态机是拟人的**：上线时长/离线间隔带抖动，每轮续期固定秒数（不随轮数递增，有封顶）；
+- **在线状态机是拟人的**：上线时长/离线间隔带抖动，续期挂在「真发出去一条」上（一轮发三条就是三次，本轮累计有封顶），只向模型发请求不算续期、只保命；
   上线积压只读不回（`waiting → none`、置已读），自然上线时把最后一条积压投进窗口。
 - **入站去重两级：内存 `_seen` + 查库兜底**（`_route` 里 `_seen` 未命中再 `storage.message_exists(msg_id)`）。
   → 内存那层拦得住@事件与群全量事件的重复推送，但扛不过重启——每次发版都会重启一次进程，`_seen` 清空，
@@ -361,7 +386,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 
 - `db/config.json` 与 `tool/**/config.json` 有密钥（AppSecret、LLM/Embedding/MiMo/SMTP/搜索 key、`web.token`），
   `.gitignore` 已忽略；日志、面板、提示词都不出现明文密钥（`page/settings` 与 `page/tools` 里的配置都过 `mask_secrets`）。
-- 发送本地媒体只允许 `temp/` 与 `tool/media/emoji/`；邮件收件人白名单、附件只走 temp 运行时文件。
+- 发送本地媒体只允许 `temp/` 与 `tool/emoji/` 里的图片（按扩展名过滤，见「生成媒体」的 `refs` 那条）；邮件收件人白名单、附件只走 temp 运行时文件。
 - 面板：Cookie 登录（HttpOnly+SameSite）、每 IP 限流、CSP 无内联脚本、WS 鉴权、`trust_proxy` 默认关（防伪造 XFF 绕过限流）。
   `web.host=0.0.0.0` 时面板对整个公网可见，上云要么配 `web.token`，要么只绑 127.0.0.1 走反代。
 - **部署走 GitHub Actions：push master → rsync → 远端 `deploy/deploy_server.sh` 重启 + 健康检查**（细节见 README「部署到云服务器」）。
@@ -374,11 +399,12 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   → v3 的数据模型（`messages.read_state/reply_state`、`reply_anchors`、`sends`）只由 `SCHEMA` 新建，代码里没有任何 v2 迁移，
   旧库顶上新代码只会缺列报错，所以线上 v2 的库必须删掉重起。
   顺序：`systemctl stop` 再动库（SQLite 边写边打包得到一份坏快照）→ 整目录 tar 到**项目目录之外**（`--delete` 与 temp 的 TTL 都碰不到它，
-  `chmod 600`：里面有密钥）→ 删 `db/*.db*`、`db/config.json`、`temp/`、素材目录与被删工具集的 `config.json` →
+  `chmod 600`：里面有密钥）→ 删 `db/*.db*`、`db/config.json`、`temp/`、表情素材与被删工具集的 `config.json`（素材现在和代码同住
+  `tool/emoji/`，只删里面的图片与 `index.json`/`vectors.json`/`usage.json`，整目录删掉等于把工具代码一起删了；索引下次扫描会自己重建）→
   只把初始化配置推回去（`db/config.json` + 各 `tool/*/config.json`；表情素材、记忆、日志这些运行产物不推）→
   `systemctl enable` 恢复开机自启 → push 走 CI。核对起版看 `GGBot v3.0 启动`、`工具就绪` 的分类计数、空表的新库，
   再把面板「工具」页扫一遍：**有"未启用"就等于素材漏推**——工具的启用判定看的不只是 `config.json`，
-  `send_voice_clone` 还要求 `tool/media/audio/voice_ref.wav` 真的在磁盘上（参考音色属于初始化素材，
+  `send_voice` 还要求 `tool/media/audio/voice_ref.wav` 真的在磁盘上（参考音色属于初始化素材，
   跟着 `config.json` 一起推，不是运行产物），这次从零部署就漏了它一次，补上文件立刻恢复，不用重启（启用判定每次请求现算）。
 - **部署脚本按"一件事只有一份"重排过**：unit 渲染、面板探活口径、"哪个进程才是本项目的机器人"三件事以前在
   `install_service.sh` 与 `deploy_server.sh` 里各写一遍，改一处就漏一处，现在集中在 `deploy/service.sh`（被两边 source，不单独执行）。
@@ -445,6 +471,9 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   带 params 的调用（刷新按钮、写完回读、人设页的「重载」）是明确要拉的，绕过这条限制；④ 写操作照旧按资源走，改完调 `reloadPage()`，
   不要在模块里自己拼「该刷哪几块」；⑤ **新增一页要同时动六处**（`index.html` 的 section、`index.html` 里挂进某一组的 nav 按钮、
   `util.js` 的 `PAGE_META`、`server.py` 的 `_ds_*` 装载函数、`server.py` 的 `PAGES`、`refresh.js` 的 `PAGE_RENDER`），少一处就是点了没反应或画成空白页；要自动刷新再补 `PAGE_LIVE`，页面上有筛选控件再补 `PAGE_PARAMS`。
+- **面板不留第二份手写数：这些契约量只在 Python 一处，页面从回包里渲染。** 类别有哪几种、叫什么（`kinds`）与重要度几星到几星（`importance_min/max`）归 `ggbot/llm/memory.py`（`KIND_LABELS` / `IMPORTANCE_MIN` / `IMPORTANCE_MAX`，脏值由 `kind_of` / `clamp_importance` 收进区间，库里那一列仍叫 `type`）；等级每档叫什么、上限到哪档、最高档叫什么归 `ggbot/core/auth.py`（`LEVEL_NAMES` / `LEVEL_MAX` / `LEVEL_LOCKED` / `LEVEL_LOCKED_NAME` / `DEFAULT_LEVEL`，`_level_contract()` 是唯一出口，挂在 `page/tools` 与 `page/permissions` 的 `levels` 上，两页必须逐字节相等——工具页可能先于权限页打开，所以谁都得自己带）；人设最长多少字与设置白名单归 `ggbot/core/config.py`（`SYSTEM_PROMPT_MAX_CHARS` / `ALLOWED_SETTINGS` / `Config.apply_setting`）；`tool/admin/permissions.py` 的 `_default_level` 因为拿不到 `Permissions` 实例，自己读了同一条 `permissions.default_level`，但兜底数字只有 `DEFAULT_LEVEL` 一份；一页一次读多少行归 `ggbot/web/server.py`（`LOG_LINES_DEFAULT` 等，前端不再传 `lines`，记忆页不再传 `limit`）。
+  → 前端原来抄了第二遍（`personaMax = 20000`、`L0..L5` 的名字、六个 `<option value="n">★</option>`、类别的中文叫法、`lines: "400"`）：后端改白名单或等级口径时面板不会报错，只会安静地显示一份过期的数——这类 bug 看不见；改成"从契约生成"之后退化成一屏空白，看得见才不会漏。`admin_manage` 的口语表与它发给模型的等级说明、`help` 的档位数与「6 为永久锁」那句、CLI 的 `--kind/--importance` choices、`memory_add` 的 schema enum、400 提示语也一起从同一份常量拼，不再各写一遍。
+  改动时注意：① 加一类记忆或改档位只动那一处所有者，面板与 CLI 自然跟上；② `index.html` 的类别/★/等级下拉必须是空的 `<select>`，选项由那一页的渲染函数生成（`kindOptions` / `importanceOptions` / `levelOptions`）；③ 契约缺席时前端显示空而不是兜底值——`state.levelNames` 不留兜底名字，`levelLabel()` 拿不到名字就只画 `L几`；④ 新增手写的中文档位名会被 `temp/test_single_source.py` 的静态扫描挡下（扫的是 `index.html` + `js/*.js` + `tool/admin/permissions.py`；注释里举例可以写，扫描先去注释）。
 - **记忆的临界提示只在记忆页出现，且用遗忘扫描的口径。** `usage()` 回的是 `countable`（已经扣掉到期与淡出的条数）＋最满的那个主体的档案条数：
   到 80% 起挂提示、到顶转危险色，行尾直接给「立即遗忘扫描」。
   → 两条上限都会先撞（整库与每人档案），只看整库等于提示永远不响；把到期/淡出算进「离上限还有多远」会让提示在扫描前一秒变成假警报。
@@ -506,13 +535,13 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   随这一页的快照一次给回（键名 `recent`），不再单独占一条 GET
   → 删页面却留接口，接口就成了没人认领的第二真相；`renderDashRecent()` 因此从 `js/messages.js` 搬进 `js/dash.js`，
   由 `PAGE_RENDER.dash` 调用；仪表盘那张「查看全部」按钮也改成跳「会话与上下文」，别留一个指向不存在页面的 `data-page`。
-- **表情包页能浏览也能管素材，图片路由刻意不在 `/api` 下。** 列表复用 `emoji_list` 那份 `EmojiLibrary.rows()`（目录仍是唯一真相），
+- **表情包页能浏览也能管素材，图片路由刻意不在 `/api` 下。** 列表复用 `list_emoji` 那份 `EmojiLibrary.rows()`（目录仍是唯一真相），
   缩略图走 `GET /emoji/<rel>`，越界判定放在 `EmojiLibrary.image_path()` 里（限定素材根目录 + 只认图片扩展名），
   鉴权复用 `_auth`——Cookie 也能过，所以 `<img src>` 不需要带令牌。
   → 不放 `/api` 是因为中间件按 IP 限 240 次/10s，一屏几十张图会被自己的限流打回。
 - **网页上的增删改只复用工具层那三个函数**（改描述 / 删除 / 上传），面板不另写一套落盘逻辑。
-  → 以前定过"网页只浏览"，理由是写入只有"往目录放文件"和 `emoji_save` 两条路；实际管素材时改一句描述要跑终端，
-    那条老规矩把便捷性换成了"少一个真相源"的执念。现在真相源仍然是目录，网页只是 `emoji_save` 之外的第二个入口，
+  → 以前定过"网页只浏览"，理由是写入只有"往目录放文件"和 `save_emoji` 两条路；实际管素材时改一句描述要跑终端，
+    那条老规矩把便捷性换成了"少一个真相源"的执念。现在真相源仍然是目录，网页只是 `save_emoji` 之外的第二个入口，
     走的是同一个入库函数（摘要命名 + 去重 + 上限）。
   改动时注意：这页不进 `PAGE_LIVE`（进出才拉一次，其余靠手动刷新），删/传之后要把扫目录缓存打掉，否则列表还留着刚删掉的那张；
   前端对 `/static/*` 用 `no-cache`（带 ETag 回源，没改照样 304），因为这套前端是"改了刷新一下就生效"的设计，
@@ -530,7 +559,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   `TurnDecider._agent_loop` 就是为这个接缝留的（拼上下文 + 归档触发都在这儿，不经模型也能单测）。
   → 这次拆分的收益就在这儿：内部实现改名不该让测试报废，而测试一旦开始伸进别的私有步骤，说明那段职责又混回去了。
 - 每次改动同步 README；**文档不写代码里没有的行为**。
-- **用例清单**：README 只留「跑 `sh temp/run_all.sh`」那一句，这里记每一条锁住了什么行为。标签是当时从输出抓下来的，和今天的 46 个脚本不是一对一——有的已并进别的脚本（`messages_state` 就在 `temp/test_sender_quote.py` 第 5 节），有的是一次性的真实调用或浏览器实测（`llm_chat`、`voice_clone`、`email_tool`、`web_ui*`，脚本早删了，结论还值得留着）。改行为时按说明去找脚本，别按标签猜文件名。
+- **用例清单**：README 只留「跑 `sh temp/run_all.sh`」那一句，这里记每一条锁住了什么行为。标签是当时从输出抓下来的，和今天的 47 个脚本不是一对一——有的已并进别的脚本（`messages_state` 就在 `temp/test_sender_quote.py` 第 5 节），有的是一次性的真实调用或浏览器实测（`llm_chat`、`voice_clone`、`email_tool`、`web_ui*`，脚本早删了，结论还值得留着）。改行为时按说明去找脚本，别按标签猜文件名。
   → 面板改成一页一次 `GET /api/page/<name>` 之后，早先那几条 `web_*` 记录里写的「`GET /api/memories` / `/api/logs` / `/api/emojis` …」都应读成 `page/<对应页>`（口径没变，只是并入快照）；本轮重写的 `web_page` / `web_nav` / `web_theme` 三条才是当前的读模型与主题契约。
 
 ```
@@ -546,14 +575,14 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 [PASS] memory_commit     # 写入前的取代判定：没有 LLM / `reconcile=false` / 判定抛异常三种情况都退回直写、照样落库；一批多条只发一次判定请求；`update` 改写旧条目不新增、`drop` 一个字不写、`retire` 作废被推翻的旧条目；模型给乱编号（target 越界、retire 非数字）按「新增」处理不崩；同归属向量 ≥0.95 的重复在没走判定时并成一条；`expires_in_days` 落成 `expires_at` 且到期条目检索取不到；累计写入够 `sweep_every_writes` 顺手跑一次遗忘扫描
 [PASS] web_memories      # 记忆页接口：`GET /api/memories` 按 session/subject/kind 组合筛、回执带 `limits`（整库上限 / 每人档案 / 淡出天数）与每条的保留分、安静天数；`GET /api/memories/search` 看一眼不写命中；`POST /api/memories` 走 commit（假 LLM 判 update/retire 生效，回执 written/updated/dropped/retired）、空内容 400、只填日期 `2026-11-20` 补成当天 23:59:59；`PUT` 改 kind 非法 400、未知 id 404、空 body 400、`expires_at` 传空串取消到期；`POST /api/memories/sweep` 回四类计数并把该删的删干净；`DELETE /api/memories` 无条件 400、给条件时整组删到零；全部端点未登录 401
 [PASS] llm_chat          # LLM 真实调用（实测 DeepSeek deepseek-flash，thinking=disabled 生效）
-[PASS] tools_schema      # 20 个 Tool 插件自动发现 + schema 校验 + 启用状态过滤
-[PASS] tool_layout       # 根目录 tool/ 按分类包自动发现（core/schedule/media/memory/web/mail/admin）+ 嵌套数据目录（media/emoji、media/audio、media/generate、schedule、web、mail）+ config-less 工具 toggle 生效 + 正文通道不在 registry 里 + remind 三件套共享 schedule 配置（附属工具不可单独启停）+ fs 分类已下线不残留目录
+[PASS] tools_schema      # 16 个 Tool 插件自动发现（8 个分类）+ schema 校验 + 启用状态过滤
+[PASS] tool_layout       # 根目录 tool/ 按分类包自动发现（core/remind/media/emoji/memory/web/email/admin）+ 嵌套数据目录（media/audio、media/generate、remind、web、email）+ config-less 工具 toggle 生效 + 正文通道不在 registry 里 + remind 三件套共享 tool/remind/config.json（附属工具不可单独启停）+ fs 分类已下线不残留目录
 [PASS] gen_tools         # Agnes 生图：无 api_key 时不进下发列表（L4 心腹，填上 key 才下发，不按发送者等级裁剪）、参数与比例校验、参考图只允许 temp/ 与 emoji/ 素材（配置/密钥/越界路径拒绝）、纯文生图不带 image 字段与单张参考图写成字符串两种载荷、只给 URL 的形态补一次下载、503 退避重试、产物落 temp/tool/media/generate 并按 file_type=1 发出、`生图 2K/4:3 …（…s）` 日志形状
 [PASS] permissions       # 发送者等级解析（未登记→默认 2、空 id→0）、owners 引导不覆盖面板设置、全量下发（每个等级拿到同一份列表、6 级永久锁不进列表、没有工具提示词注入）、门槛覆盖、执行期拒绝/放行/未知工具/永久锁；正文通道不是工具（不在 registry 里）
-[PASS] media_paths       # 本地媒体只允许 temp/ 与 tool/media/emoji/，日志、其他工具目录与配置/密钥拒绝发送
+[PASS] media_paths       # 本地媒体只允许 temp/ 与 tool/emoji/ 里的图片，日志、其他工具目录、emoji 目录下的代码与配置/密钥拒绝发送
 [PASS] web_permissions   # /api/actors 与 /api/tools/{name}/level 鉴权、成员 6/-1/空值校验、工具门槛写回 config、6 级后不再下发、未知工具 404
 [PASS] assistant_persist # 发出去的话进得了历史：`Outbound` 每发一条落一行 assistant 消息（已读 + 不需要回复）加一行 `sends` 回执（被动/主动各记自己的 `via`）；回合结束把这批用户消息的 `reply_state` 记成已回，之后它只作为历史出现、不再算待办；本轮消息独立标注（防逐条重答旧消息）
-[PASS] tool_plugin       # 插件配置隔离（send_email→tool/mail）、共享配置同组不可单独启停、/api/tools 密钥脱敏
+[PASS] tool_plugin       # 插件配置隔离（send_email→tool/email）、共享配置同组不可单独启停、/api/tools 密钥脱敏
 [PASS] media_signed      # 签名媒体 URL：有效链接可读、篡改/过期/目录穿越/config.json 均拒绝
 [PASS] emoji_library     # 表情库（v4，一个统一目录）：向量挑图（含 min_score 拒发并把邻近三张的说法回给模型 / 同档内先躲刚发过的再挑用得最少的 / temp 投喂识图入库、换扩展名也按摘要去重）→ 未配 embedding 降级二元组关键词匹配 → v2 moods 自动迁移、v3 的 source 字段读时丢弃、手改 desc 后旧向量作废只重算那一条；浏览用的 rows() 不写盘不嵌向量、只有聊天动作才补索引；外加空库提示、max_per_turn 与 min_interval 限流、max_stickers 整库上限、usage.json 落盘后重启仍认、重启后复用 vectors 缓存不重复计费
 [PASS] voice_clone       # MiMo 真实合成（mimo-v2.5-tts-voiceclone）产出 wav
@@ -562,8 +591,8 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 [PASS] media_upload      # 本地媒体 base64 file_data 直传（群/私聊路由、file_name、msg_type=7）+ 公网 URL 上传
 [PASS] voice_silk        # MiMo wav 24kHz/单声道 → pysilk 编码出 #!SILK_V3 头（207KB→9.5KB）
 [PASS] qq_face_clean     # QQ 表情富文本还原为 [表情:文字] + @还原为 @昵称/8 位 id、自己的 @ 剔除
-[PASS] tool_loop         # function calling 端到端：AI 调用 memory_save 真实入库
-[PASS] tool_choice       # 真实 LLM 触发率（新提示词 + 全量下发，只观察不执行）：自我介绍→memory_save、回忆→memory_fetch 照旧命中；去掉工具提示词注入后，「哈哈哈哈哈」不再顺手调 send_emoji、「好难受」不再调 send_voice_clone——本轮只发正文，靠 description 里的触发场景兜
+[PASS] tool_loop         # function calling 端到端：AI 调用 memory_add 真实入库
+[PASS] tool_choice       # 真实 LLM 触发率（新提示词 + 全量下发，只观察不执行）：自我介绍→memory_add、回忆→memory_search 照旧命中；去掉工具提示词注入后，「哈哈哈哈哈」不再顺手调 send_emoji、「好难受」不再调 send_voice——本轮只发正文，靠 description 里的触发场景兜
 [PASS] agent_fallback    # 回合只有一条说话通道：只有正文→运行时走正文通道发出；正文+工具同轮→两条都发且不重复（工具在前、正文在后）；模型自己调 send_text（注册表里根本没有）→ 按「未知工具 send_text」回一条、一次都不发；空正文/纯占位符→静默结束（占位符同回合纠正一次）；silence 调用后立即收轮，全程只有一次 LLM 请求；正文整条是沉默标志（`[SILENCE]`/`【沉默】`/`(silence)`/带标点/带短标识/连写两个）→ 同等按 silence 收轮，一次都不发、也不再追问；工具+沉默标志同轮→只发工具产物；真话里夹着沉默字样→那句人话照发
 [PASS] config_read       # 纯配置文件驱动（无环境变量）+ temp/db 路径
 [PASS] config_generic    # deepseek→llm 自动迁移、缺失配置按模板生成、embedding 可选（关键词降级）、LLM 厂商无关且缺项明确报错、识图 thinking 不跟随对话（同厂商未填固定 disabled，对话改成 enabled 也不变，显式 enabled 照发，别家服务商不发）、39 个 Web 设置路径均存在且在白名单（白名单不含 api_key/base_url/token 类凭据路径）
@@ -572,8 +601,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 [PASS] placeholder_guard # 占位符不进正文：词表覆盖 表情/表情包/语音/语音克隆/语音条/图片/视频/文件/邮件 与 emoji/sticker/voice/audio/image/photo/video/file/mail，以及沉默类（沉默/不说话/不接话/无话可说/silence/silent）（方括号、中文括号、圆括号都拦），同回合纠正重试；正文通道拦截纯占位符、剔除混排占位符（`[SILENCE]` 单独一条发不出去，`行吧[SILENCE]` 只剩「行吧」）；入站富媒体标记的整套形状（`[图片]（描述）` / `[语音 6ce72460]`，括号里 6–8 位短标识 + 紧跟的（…））照抄进正文也一起吞掉——历史里存的就是这个形状，模型学的就是它
 [PASS] vision_runtime    # 识图配置继承/覆盖/停用、data URL 请求与描述清洗、失败重试回退、[图片]（描述）入库、启动统计累加、正文通道 @昵称与 [引用 关键词]
 [PASS] time_tool         # 当前日期/时间/星期/时区
-[PASS] clear_context     # 只清本会话（消息删净 + 归档游标归零、记忆与别的会话不动）、工具照常下发但 L3 调用被拒、门槛下调后工具内部仍按 L4 兜底、上调到 5 后 L4 被执行器拦下
-[PASS] admin_tool        # manage_permission：口语等级映射、昵称/8 位 id/openid 定位、重名候选、越级与同级保护、list/help、默认 L2 也拿得到这个 schema（L5 才调得动）、6 级锁
+[PASS] admin_tool        # admin_manage：口语等级映射、昵称/8 位 id/openid 定位、重名候选、越级与同级保护、list/help、默认 L2 也拿得到这个 schema（L5 才调得动）、6 级锁
 [PASS] presence_backlog  # 离线攒下的积压上线只读：`waiting → none`（置已读并结束回复需求）、零 LLM 调用/零发送；唤醒先读旧积压再回本条；读入上限 256、在线批次上限 16
 [PASS] context_limits    # 请求拼装顺序=缓存顺序：首段是逐字节静态人设（无占位符、无工具提示段、无摘要段）→ 历史按条数截到窗口 → 相关记忆作为独立一条放尾部（无命中就整段不注入，命中的 top-3 各记一次命中）→ 本轮消息；默认 1024 条 / 128k 预算 / 满窗消化 512 / 每批 64；历史只取归档游标之后的最近那么多条；`base_len` = 人设 + 历史；会话摘要与 `storage.get_summary/save_summary` 已不存在；积压读入 256、在线批次 16
 [PASS] llm_usage         # 请求行报 usage.prompt_tokens + 工具/历史/新增三段（缩放后三段之和=总数）、响应行报 completion_tokens + 缓存命中率/分时 pricing 费用（缺字段显示 -）；不再有「估算拆分」字样与第 N 次；服务商无 usage 时请求行整行标 ≈；会话列跟随调用方传入的标签
@@ -583,7 +611,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 [PASS] backlog_reply     # 自然上线带上积压（`temp/test_backlog_reply.py`）：到点上线时除最后一条全部置「已读 + 不需要回复」，最后一条（storage 行，字段够出站用）仍挂待处理并投进在线窗口；回复那段跑真链路（决策层 → 上下文组装 → Outbox/Outbound → 假网关），续期、`reply_state=answered`、助手消息入库、`sends` 回执一次验齐；非@ 且窗口里没有可回的消息就走主动发送；空积压不往窗口塞东西
 [PASS] memory_archive    # 满窗后消化的是窗口最旧的一段、窗口当场减半：默认 1024 满窗一次 8 批 × 64 条写完后窗口回到 512/1024（1024 条库实测）、128 窗口配 16 批 64 消化量走完整锯齿（满 128→剩 64→攒满→再消化，缩窗后留下的正是原先最新的一半，逐字节不动）、消化量钳在「窗口-一批」以内（128/16→112，一批就装满窗口时视为不归档）、游标远落后于窗口时先从最旧的补进记忆追上才算；每批提炼出的是结构化事实（kind=profile/event、subject、importance、expires_in_days），逐批走 `memory.commit`（取代判定），日志一行 `历史归档 64 条消息 → 记忆 新增 a · 改写 b · 作废 c`；写入失败停在首批不推进游标、下一轮同一批重试补完；开关关闭时不消化也不缩窗；清空上下文连游标一起归零；后台任务不阻塞回复
 [PASS] web_ui_memory     # 记忆页浏览器实测（本地预览服务 + 无头窗口截图核对，1440×960 与 390×844，控制台无 JS 报错、无横向溢出）：标题一行给出「共 N 条 · 整库上限 800 · 每人档案 12 · 事件 90 天不用就淡出」；档案按人分组（关于 小林 / 未归属的档案）后接事件流水，每组末尾「清掉这一组」二次确认后整组删到零并 toast 条数；写入一条带 subject/类别/到期日 → 当场落到对应分组；改类别为 event 后条目挪到事件段；到期日已过的那条挂「已过」徽标；检索态按分数平铺不分组（行首多一列相关度）；「立即遗忘扫描」返回「到期 a · 淡出 b · 超限 c · 合并 d（剩 N 条）」；手机端表头隐藏、类别/命中/到期列折进行内，操作按钮仍点得到
-[PASS] web_tools         # 元宝 SearchPro：`Response.Pages` 里每条 JSON 字符串 → 行（逐条再解一次；标题/摘录去 HTML 实体、`date` 归一成 `published`、没 `url` 的丢掉、`passage` 缺才退 `content`）、参数口径（`Cnt` 按 k 向上取 10/20/30/40/50 五档并封顶 50、`Mode`/`Site` 没配不传、`mode` 非 0/1/2 拒绝、`Query` 超 1500 字节按字节截且半个汉字丢掉、`Authorization: Bearer` 与端点地址）、错误码翻人话（key 无效/未开通/欠费/太频繁/参数不合法，含 `{Code}` 与 `{Response.Error.Code}` 两种错误体、HTTP 403 与连不上/非 JSON）、**HTTP 200 + `Response.Error` = 报错**（没有 Error 的空 Pages 才回 `[]`）、`api_key` 没填不下发且一个请求都不发、每日配额（3 次放行第 4 次拦住且拦住那次不占额度、跨天归零、坏文件当 0、写不回仍放行、填 0 不限也不写文件、`run()` 到顶时一个请求都不发且换了实例=重启仍认）；HTML 正文提取与编码识别、超时/体积/字符限制、SSRF 拒绝回环/内网/保留地址与 file://；published 归一函数各格式都认（ISO、中英文月名、`2026-09-29 00:00:00`，认不出回空）；关键词字面重合度 <0.3 判为不沾边→返回 note 且不去抓正文（`……` 这类拆不出词的不判、空结果不误标），相干结果不带 note；web_search read=true 并发抓前 3 条正文（单页失败只标 content_error）；web_fetch urls 批量最多 5 个并回 N/M 成功
+[PASS] web_tools         # 元宝 SearchPro：`Response.Pages` 里每条 JSON 字符串 → 行（逐条再解一次；标题/摘录去 HTML 实体、`date` 归一成 `published`、没 `url` 的丢掉、`passage` 缺才退 `content`）、参数口径（`Cnt` 按 k 向上取 10/20/30/40/50 五档并封顶 50、`Mode`/`Site` 没配不传、`mode` 非 0/1/2 拒绝、`Query` 超 1500 字节按字节截且半个汉字丢掉、`Authorization: Bearer` 与端点地址）、错误码翻人话（key 无效/未开通/欠费/太频繁/参数不合法，含 `{Code}` 与 `{Response.Error.Code}` 两种错误体、HTTP 403 与连不上/非 JSON）、**HTTP 200 + `Response.Error` = 报错**（没有 Error 的空 Pages 才回 `[]`）、`api_key` 没填不下发且一个请求都不发、每日配额（3 次放行第 4 次拦住且拦住那次不占额度、跨天归零、坏文件当 0、写不回仍放行、填 0 不限也不写文件、`run()` 到顶时一个请求都不发且换了实例=重启仍认）；HTML 正文提取与编码识别、超时/体积/字符限制、SSRF 拒绝回环/内网/保留地址与 file://；published 归一函数各格式都认（ISO、中英文月名、`2026-09-29 00:00:00`，认不出回空）；关键词字面重合度 <0.3 判为不沾边→返回 note 且不去抓正文（`……` 这类拆不出词的不判、空结果不误标），相干结果不带 note；search read=true 并发抓前 3 条正文（单页失败只标 content_error）；fetch urls 批量最多 5 个并回 N/M 成功
 [PASS] web_live          # 用本地 `tool/web/config.json` 里的元宝 key 真实调用两次（`王者荣耀 新英雄 2026` / `北京 天气 2026年11月4日`），各回 3 条且都对题；实测 `site` 是站点名、`date` 多为空、错误都在 `Response.Error`——解析口径与文档就是这么对不上，改这块前先看代码注释
 [PASS] system_prompt     # 默认提示词仅保留感觉与说话方式（无固定名字/经历），工具行动与主动记忆引导生效；整段全静态、不含任何运行时占位符，跨会话逐字节一致
 [PASS] presence_proactive # 发送通道一律先试可回：本轮批次有可回消息用它、没有就回看窗口内最近一条，同一个锚点的 msg_seq 接着上次排；锚点这本账落在 `reply_anchors` 表里，**进程重启也从上次接着排**、不会又从 1 开始撞上平台拒绝的重复 msg_id+msg_seq（`temp/test_proactive.py` 的跨重启场景直接查表核对）；锚点回满 5 次（群）/过期 → 无锚点，这一轮改主动发送（不带 msg_id/event_id）并受 `proactive_enabled` 与每分钟/每日闸门约束；每条发送的实际路径（被动/主动/降级）都落在 `sends` 里；回合外发言 `speak` 同样先找锚点、过同一个主动闸门，主动被拦时返回失败不硬发
@@ -591,7 +619,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 [PASS] schedule_remind   # 日程工具与巡检循环（`temp/test_schedule_remind.py`）：排与校验（空会话/空内容/超长/过去时间/超 `max_days`/超 `max_pending`、`repeat` 看不懂报错、`times` 只在填了 `repeat` 时生效且负数与超 `max_repeat_times` 被拒），周期字段落库（`rule`/`times`，`times=0`=一直排到被取消，回执 note 分别说「排 3 场」与「一直排到被取消」）、`who` 反查（查得到用别人、查不到报错、不填就是本人）、列表口径（待触发按到期时间从近到远、周期项带规则与「已发/总场数」，不限场数只显示已发几场，一次性不带场次）、取消（按编号或唯一关键词，多条命中给候选，别人的日程除 L5 外撤不掉，**取消周期项一次停整条**）、到期就发（群聊自动补 @昵称、私聊不带）、发完一场 `fired_count` +1 且状态仍 `pending`、排满 `times` 场才置 `fired`、超宽限的一次性置 `expired` 不发、周期项错过宽限只跳过没赶上的场次（`fired_count` 不变、继续挂着）、发送失败留 `pending` 下一轮重试、统计与筛选/分页口径
 [PASS] schedule_sweep    # 日程历史退场（`temp/test_schedule_sweep.py`，真库离线）：各状态与逾期/今天/周期的统计；过了 `keep_history_days` 的终态行退场；整表超 `max_rows` 从最旧的历史行删起、不够删也绝不碰 `pending`；单条删除与批量清理只认 `fired`/`cancelled`/`expired`，条件全空（怕一句 `DELETE` 清了全表）拒绝执行；列表与计数共用同一份过滤条件（翻页数对不上就是这里）
 [PASS] remind_send       # 日程端到端（`temp/test_remind_send.py`，真 Storage + 真正文通道 + 假 bot 记账）：触发第一条走被动（带锚点 msg_id、msg_seq=1）、同锚点第二条 seq 递增、锚点回满后转主动发送（msg_id 为空）、宽限外的 stale 一次性行只置 expired 一次都不发、提醒第三人时用窗口内最新锚点并在 wire 上带真 @；周期项到点同样只发一场然后把自己的到期推到下一格（从原定格子推，不从"现在"推）、排满最后一场记满场数再退场、错过宽限的周期项一场都不发只跳过
-[PASS] renew_flat        # 每轮续期固定 30s（带抖动）、不随轮数递增、renew_max_sec 封顶
+[PASS] renew_flat        # 续期时机（`temp/test_renew.py`）：**真发出去一条**才正式续期（`note_sent` → `st.renew()`，默认 30s 带抖动，本轮累计 ≤ `renew_max_sec`，每轮 `begin_round` 重新计）；只向模型发一次请求算"保命"（`note_request` → `keep_alive()`，把倒计时抬到至少还有一份在线时长，不累加）——请求发出去不代表一会儿会说话；离线时两种调用都不把截止点往前推（`reason` 不能写成一个没发生的续期）
 [PASS] presence_fail     # 发送失败隔离（失效会话把这批记成 `reply_state=failed`，不中断其余会话积压）
 [PASS] target_derive     # 发送目标反查（session_id 内部主键 ≠ openid，从 sessions.key 取完整 openid；c2c/group 双场景）
 [PASS] msg_seq           # 同一锚点的回复序号递增且不复用（下一格记在 `reply_anchors.next_seq` 里，回合内每发一段 +1），被动失败自动降级主动发送
@@ -609,11 +637,12 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 [PASS] web_emojis        # 表情包页（`temp/test_web_emojis.py`）：`GET /api/emojis` 列的就是目录里的图（库目录与旧 stickers//user/ 子目录并列、手动丢进去的当场出现、删掉的条目失效），回 file/desc/added_at/url/use_count/last_used_at/has_vec 与 mode/上限，既不给向量也没有来源字段；浏览只读——不写索引、不建向量与使用统计文件；`PUT /emoji/<rel>` 改描述（清空退回文件名、超长 400、不在库里 404）、`DELETE /emoji/<rel>` 连图片文件一起删、`POST /api/emojis/import?name=` 收原始字节上传并按摘要去重（非图片 / 空文件 400），三个写动作都要登录；`GET /emoji/<rel>` 出图且 `Cache-Control: private`，非图片 / 不存在 / `%2e%2e%2f` 越界一律 404；扫目录缓存：库目录一变立刻重扫，没变时 TTL 内复用同一次结果，`?force=1` 强制重扫；面板不再有来源筛选与内置/收藏徽标（「内置默认」这个词现在人设页也在用，所以这条只查表情页那一段 markup），表情页不进 1s 轮询；消息流整页下线（`js/messages.js` 删除、侧栏 10 项、util/nav/poll/refresh/events/sessions 里不再残留 `refreshMessages` 与 `#msg-` 接线），`/api/messages` 保留给仪表盘「最近消息」
 [PASS] web_nav           # 侧栏分组的结构契约（`temp/test_web_nav.py`，解析 index.html，不需要浏览器）：四组十项、组名与归属固定（现场=dash/logs、对话=sessions/schedule、知识=memory/emojis/persona、配置=settings/permissions/tools）、可见组名 == `aria-label` 且每组带 `role=group`、`data-page` 与 `#page-*` 与 `PAGE_META` 与 `PAGE_RENDER` 是同一批十个且顺序一致、默认只有 dash 高亮并带 `aria-current="page"`（nav.js 切换时同步增删）、收起态（`.app.rail`）藏文字靠 `clip-path` + `position:absolute` 的 sr-only 写法而不是 `display:none`（否则按钮的可访问名一起没了），组名才用 `display:none` 藏、主题按钮在侧栏之外
 [PASS] web_page          # 按页面的读模型（`temp/test_web_page.py`，TestClient + 临时库）：侧栏十页 == 后端 `PAGES` == 前端 `PAGE_RENDER`；每页快照的键正好是该页渲染函数从 `d` 上取的键（不多给也不少给，少给就是白屏）；`/api/page/<name>` 未登录 401、未知页 404；`/api/shell` 一次往返里 `presence.status()` 只算一次并带 `runtime`/`env`；按资源开的旧 GET（status/stats/sessions/messages/logs/memories/memories-search/reminders/tools/config/emojis/actors/system-prompt）逐个断言已不存在；`PAGE_LIVE` 只留 dash/schedule/logs 三页，其余页面进出才拉；`PAGE_PARAMS` 里日志/记忆/日程各自读自己的控件，`PAGE_HOLD.persona` 挡住未保存时的自动重载
+[PASS] single_source     # 面板这些数只有一份来源（`temp/test_single_source.py`，TestClient + 真 ToolExecutor）：`kind_of` / `clamp_importance` 把脏值收进区间（空与不认识的类别落到 `KIND_LABELS` 第一类、越界的重要度贴上下界）；`POST /api/memories` 落库前归一（`kind=瞎写` + `importance=99` 进库是 `profile` / 5）；`PUT` 与整组 `DELETE` 的 400 文案 == 用 `KIND_LABELS` 拼的那句；记忆页快照带 `kinds` / `importance_min` / `importance_max`；工具页与权限页的 `levels` 逐字节相等且 == `_level_contract()`（名字表、`max_level`、`locked_level`、`locked_name`）；人设页带 `max_chars`；日志不传 `lines` 时正好回 `LOG_LINES_DEFAULT` 行（造 460 行只给 400，传 `lines=50` 才给 50）；`memory_add` 发给模型的 schema `enum` 就是 `list(KIND_LABELS)`、描述里的区间跟着常量；`admin_manage` 发给模型的等级说明含 `0 禁止` 与 `5 归属` 这两端、`min_level` 就是 `LEVEL_MAX`、`help` 给 `LEVEL_MAX+1` 档且那句「6 为永久锁」由 `LEVEL_LOCKED` / `LEVEL_LOCKED_NAME` 拼；**静态扫描**：`index.html` + `js/*.js` + `tool/admin/permissions.py` 去掉注释后不许再出现类别叫法、`L\d 档位名`、`locked_name`、字数上限、★ 串、`lines:` 或 `p.limit`（注释里举例可以，所以先剥注释；已用注入样本反证过扫描不是空跑）
 [PASS] web_theme         # 双主题的令牌契约（`temp/test_web_theme.py`，离线）：颜色字面量只准出现在 `base.css`（`mask-image` 的 `#000` 是遮罩形状，放行）；每个 `var(--x)` 都在 `:root` 声明过，没有拼错名也没漏浅色覆盖；暗色定义的颜色令牌浅色必须覆盖——只由 `rgba(var(--*-ch), a)` 派生的豁免（通道一变淡底自己跟着变）；浅色七条信号通道全部比暗色更暗；`--live` 当字色落在 `--bg`/`--panel-2` 上 ≥4.5:1、白字压主按钮实底 ≥4.5:1，浅色墨色阶梯（faint/muted/ink-*）每档 ≥4.5:1；**淡底（.10 alpha，覆盖小牌 .09~.1、标签 .08、危险按钮 .07 那批）与日志暗格上的小字逐个反解**——两主题最差 4.55:1（暗色 `--ink-off` 压在 `--idle-ch` 淡底 / panel-2），这就是「通道只当底、字走 `--ink-*`」那条规则的量化版本；主题脚本的位置钉死：`theme.js` 在 `</head>` 内、样式表之后、body 之前，body 里不许再出现一次，`theme.js` 里不许抄颜色，`<meta name="color-scheme" content="dark light">` 必须在 head
 [PASS] web_persona       # 人设页（`temp/test_web_persona.py`）：老 config 没有 `llm.system_prompt` 时加载即补空串（`set_by_path` 才写得进去）；留空/全空白 = 用代码里的内置默认，写进去后常驻的 PresenceManager 下一轮就换新人设（无需重启），`cfg.save()` 落盘重开仍在；`GET/POST /api/system-prompt` 未登录 401、回执含 `custom/default/effective/is_custom/max_chars`、清空保存回到内置默认、超过 20000 字 400；`llm.system_prompt` 不在设置白名单里，走 `POST /api/config` 会被记 `rejected`（人设只有一条写入路径）；前端接线：导航项 / `page-persona` / `persona.js` 引用 / `PAGE_META` / 三个按钮都在，编辑框不带 `data-path`（通用设置保存碰不到它），`poll.js` 与 `refreshAll` 都不碰它（正在打字不会被 1s 轮询冲掉），有未保存改动时切页回来仍是原样；浏览器实测（1440×900 与 390×844，无 JS 报错、无横向溢出）：进页面显示内置默认那 1551 字 + 徽标「内置默认」→ 改成一句话保存 → 徽标变「自定义」、toast「人设已保存，下一轮生效」、重载后编辑框仍是新内容 → 清空保存回到「内置默认」；「填入内置默认」把 1551 字灌回编辑框；粘 20001 字页脚变红并报「系统提示词最长 20000 字，现在 20001 字」，服务端旧值不动，绕过前端直接 POST 也拿到同一句 400
 [PASS] temp_video_policy # 视频附件不下载 + temp 过期文件清理
 [PASS] deploy_scripts    # 部署脚本离线回归（`temp/test_deploy_scripts.py`，只用 bash 与临时目录，不碰服务器）：`deploy/*.sh` 与两个 unix 启动脚本 `bash -n` 通过且都是 LF；`render_unit` 把模板里写死的 `/root/GGBot` 换成传入的/当前项目根（`WorkingDirectory`/`ExecStart` 两处都换、不留旧路径、`LimitNOFILE` 不动），`apply_unit` 对同一目标第二次判定「已是最新」且不再 `daemon-reload`；`web_probe` 五种配置（缺失/关面板/自定义端口/无 web 段/坏 JSON）都按代码默认口径给出 `on|off 端口`；`bot_pids` 对认不出的项目根返回空且退出 0；`deploy/rsync-exclude.txt` 逐条盯住 14 个排除项（含 `*.db.bak-*`，`--reset-db` 的库备份不能被 `--delete` 顺手清了）、是纯模式不含 `#`/`;` 注释行、不碰 `config.example.json`，workflow 改成 `--exclude-from` 引用这份、不再有内联 heredoc、没有 `--delete-excluded`；三个启动脚本的探测模块名一致、与 `requirements.txt` 一一对应，并覆盖代码里所有直接 import 的第三方（`pydantic` 由 fastapi 带装，是唯一例外）；unit 的 `ExecStart` 不带 `--log-level`；`deploy_server.sh` systemd 分支的现场是 `journalctl` 而 `stdout.log` 只在 nohup 分支 tail
 ```
 
-> 未覆盖：QQ 真实收发（需机器人上线 + 群内实测）；`send_image/video/voice` 与表情/克隆语音的富媒体实发（需真实群；本地文件走 base64 直传）；**群全量事件只用 `msg_id`（不带 `event_id`）的被动回复是否真被平台受理**——官方文档写明该事件的 `id` 可用于被动回复，本机没有实测条件，判断依据是之前带上 `event_id` 时被拒（40034027）。若线上仍被拒，日志会有 `被动回复失败，降级主动发送: …`，消息照发不丢，只是白耗一次请求；真出现这种情况就看那条警告的返回码，把 `on_group_message_create` 的 `passive_ok` 改回 False 即可退回旧行为。到点日程的实发（需真实群 + 等一个到期时间）同样没测，周期项「发一场滚下一场」在线上跨天滚动、以及停机一晚后那行 `提醒跳过 N 场未发` 也只做了离线验证。记忆的取代判定用假 LLM 固定了四种回执（new/update/drop/retire）与各种畸形回执，**真模型判得准不准、embedding 服务这一轮是否还通**都要看线上那行 `历史归档 … → 记忆 新增 a · 改写 b · 作废 c`——本轮没有再打真实的 `/embeddings` 调用（会实际计费），向量路径由注入假向量的本地用例覆盖。
+> 未覆盖：QQ 真实收发（需机器人上线 + 群内实测）；富媒体的实发——`send_voice` 的 SILK 上传、`generate_image` 的产物、`send_emoji` 的表情图（需真实群；本地文件走 base64 直传）；**群全量事件只用 `msg_id`（不带 `event_id`）的被动回复是否真被平台受理**——官方文档写明该事件的 `id` 可用于被动回复，本机没有实测条件，判断依据是之前带上 `event_id` 时被拒（40034027）。若线上仍被拒，日志会有 `被动回复失败，降级主动发送: …`，消息照发不丢，只是白耗一次请求；真出现这种情况就看那条警告的返回码，把 `on_group_message_create` 的 `passive_ok` 改回 False 即可退回旧行为。到点日程的实发（需真实群 + 等一个到期时间）同样没测，周期项「发一场滚下一场」在线上跨天滚动、以及停机一晚后那行 `提醒跳过 N 场未发` 也只做了离线验证。记忆的取代判定用假 LLM 固定了四种回执（new/update/drop/retire）与各种畸形回执，**真模型判得准不准、embedding 服务这一轮是否还通**都要看线上那行 `历史归档 … → 记忆 新增 a · 改写 b · 作废 c`——本轮没有再打真实的 `/embeddings` 调用（会实际计费），向量路径由注入假向量的本地用例覆盖。
 
