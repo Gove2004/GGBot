@@ -187,11 +187,14 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   改动时注意：`_scan()` 是**整个素材目录递归**，老机器上 `stickers/`、`user/` 里的图会被一并收进库，不用搬文件；
   上限按整库算（`max_stickers`，默认 200）；这个目录现在代码和素材同住一层，所以素材图不进版本库要靠白名单挑出来
   （`.gitignore` 整目录忽略 `tool/emoji/**`，再用六条 `!` 只放回 `__init__.py`、`emoji.py`、`_emoji_store.py`、`_emoji_match.py`、
-  `index.json` 与 `config.example.json`）。部署侧更狠，直接整目录排除（`deploy/rsync-exclude.txt` 里的 `tool/emoji/**`，
-  同样只放回代码与配置模板）——素材是服务器本地状态，仓库里那份空索引对它没有意义，而 `--delete` 清掉服务器上的图就是清掉用户素材。
-  **两份清单的 `!` 位置相反**：`.gitignore` 是最后匹配生效，放行行写在排除行之后；rsync 是首个匹配生效，放行两行必须排在
-  `tool/emoji/**` 之前。写反了 rsync 依然会进目录逐个比对，但每张 `.py` 先撞上排除规则就定案了——线上表现为 `tool/emoji/`
-  同步成空壳、三个表情工具消失（`工具就绪` 少 3 个），本地测试全绿也照样炸，因为回归读的是本地目录。
+  `index.json` 与 `config.example.json`）。部署侧更狠，素材一律不同步（`deploy/rsync-filter.txt` 里 `- tool/emoji/**`，
+  只用两行 `+` 放回代码与配置模板）——素材是服务器本地状态，仓库里那份空索引对它没有意义，而 `--delete` 清掉服务器上的图就是清掉用户素材。
+  **这份清单在 2026-11-05 炸过一次线上**：以前它用 `--exclude-from` 读，放行行写成 `!`，服务器上表情代码同步成空壳、
+  注册表从 16 个掉到 13 个，而本地 47 项回归全绿（回归读的是本地目录，看不见 rsync 干了什么）。实测 rsync 3.2.7 的
+  `--exclude-from` **根本不认 `!`**（放行一条都不生效），所以清单改成 filter 规则语法（`- 模式` / `+ 模式`），CI 用
+  `--filter="merge deploy/rsync-filter.txt"` 读它。规则本身仍有两个和 `.gitignore` 相反的口径：取**首个**匹配生效
+  （`.gitignore` 是最后一条说了算），所以 `+` 必须排在 `- tool/emoji/**` 前面。这两条现在由 `temp/test_deploy_scripts.py`
+  按 rsync 的口径把清单跑一遍盯住——它不装 rsync 也能验，逐个文件算出「到不到得了服务器」。
 
 ## 生成媒体（media/generate）
 
@@ -415,13 +418,14 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
     以前是拿仓库原文直接覆盖 `/etc` 那份，项目不在 `/root/GGBot` 的机器一次部署就把服务指到不存在的路径上，
     还要人手改 unit 两行、并和 `DEPLOY_SSH_PATH` 对齐——路径有两个口径。现在比对的是渲染结果，
     项目在 `/root/GGBot` 的机器上渲染结果与模板逐字节一致，所以现网部署行为没变（`cmp` 仍判"已是最新"）。
-- **rsync 排除清单也只有**一份**：`deploy/rsync-exclude.txt`，CI 从内联 heredoc 改成 `--exclude-from` 引用它**（手工同步同一份）。
+- **rsync 同步清单也只有**一份**：`deploy/rsync-filter.txt`，CI 从内联 heredoc 改成 `--filter="merge ..."` 引用它**（手工同步同一份）。
   → 清单是"保命"用的：CI 的 checkout 里没有这些文件（`.gitignore` 挡的），而 `--delete` 删的正是"目标有、源没有"的东西。
-    这次补上 `*.db.bak-*`——`--reset-db` 生成的库备份就躺在 `db/` 下，之前每次部署都会被 `--delete` 清掉。
-    rsync 会忽略 exclude 文件里的空行和 `#` / `;` 开头的行（清单里写注释是安全的），但我们这份保持纯模式、
-    条目的理由写在 README 与 workflow 注释里；`.gitattributes` 单独给它定了 `eol=lf`——这份是给服务器上的 rsync 读的，
-    不该跟着本机 `core.autocrlf` 变。改这份清单时记住**顺序有意义**：唯一一组 `!` 放行行排在 `tool/emoji/**` 之前
-    （rsync 首个匹配生效，与 `.gitignore` 的最后匹配相反；写反了 `tool/emoji/` 在服务器上就是个空壳，见「表情库」一节）。
+    补上 `*.db.bak-*`——`--reset-db` 生成的库备份就躺在 `db/` 下，之前每次部署都会被 `--delete` 清掉。
+    这份保持纯规则（一行一条，`- 模式` 排除 / `+ 模式` 放行，不写注释），条目的理由写在 README 与 workflow 注释里；
+    `.gitattributes` 单独给它定了 `eol=lf`——这份是给服务器上的 rsync 读的，不该跟着本机 `core.autocrlf` 变。
+    **它原来叫 `rsync-exclude.txt`、用 `--exclude-from` 读**：那种读法不认 `!` 放行行（在 rsync 3.2.7 上一条都不生效），
+    表情代码同步不上去，线上注册表少了 3 个工具——细节与教训见「表情库（emoji）」一节。规则顺序也有讲究：rsync 取首个匹配
+    生效（与 `.gitignore` 的最后匹配相反），`+` 必须排在 `- tool/emoji/**` 前面。
 - **部署成功的判定看配置，不看固定端口**：`web.enable=false` 是用户故意关面板，以前一律探端口，
   这种机器的每次部署都被判成失败（CI 红叉但服务其实好好的）。现在面板开着才 `curl` 首页，关着就只看服务进程活着。
   失败时的现场也跟着改：systemd 下控制台输出在 journal 里，`temp/logs/stdout.log` 是 nohup 时代留下的旧文件，
@@ -645,7 +649,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 [PASS] web_theme         # 双主题的令牌契约（`temp/test_web_theme.py`，离线）：颜色字面量只准出现在 `base.css`（`mask-image` 的 `#000` 是遮罩形状，放行）；每个 `var(--x)` 都在 `:root` 声明过，没有拼错名也没漏浅色覆盖；暗色定义的颜色令牌浅色必须覆盖——只由 `rgba(var(--*-ch), a)` 派生的豁免（通道一变淡底自己跟着变）；浅色七条信号通道全部比暗色更暗；`--live` 当字色落在 `--bg`/`--panel-2` 上 ≥4.5:1、白字压主按钮实底 ≥4.5:1，浅色墨色阶梯（faint/muted/ink-*）每档 ≥4.5:1；**淡底（.10 alpha，覆盖小牌 .09~.1、标签 .08、危险按钮 .07 那批）与日志暗格上的小字逐个反解**——两主题最差 4.55:1（暗色 `--ink-off` 压在 `--idle-ch` 淡底 / panel-2），这就是「通道只当底、字走 `--ink-*`」那条规则的量化版本；主题脚本的位置钉死：`theme.js` 在 `</head>` 内、样式表之后、body 之前，body 里不许再出现一次，`theme.js` 里不许抄颜色，`<meta name="color-scheme" content="dark light">` 必须在 head
 [PASS] web_persona       # 人设页（`temp/test_web_persona.py`）：老 config 没有 `llm.system_prompt` 时加载即补空串（`set_by_path` 才写得进去）；留空/全空白 = 用代码里的内置默认，写进去后常驻的 PresenceManager 下一轮就换新人设（无需重启），`cfg.save()` 落盘重开仍在；`GET/POST /api/system-prompt` 未登录 401、回执含 `custom/default/effective/is_custom/max_chars`、清空保存回到内置默认、超过 20000 字 400；`llm.system_prompt` 不在设置白名单里，走 `POST /api/config` 会被记 `rejected`（人设只有一条写入路径）；前端接线：导航项 / `page-persona` / `persona.js` 引用 / `PAGE_META` / 三个按钮都在，编辑框不带 `data-path`（通用设置保存碰不到它），`poll.js` 与 `refreshAll` 都不碰它（正在打字不会被 1s 轮询冲掉），有未保存改动时切页回来仍是原样；浏览器实测（1440×900 与 390×844，无 JS 报错、无横向溢出）：进页面显示内置默认那 1551 字 + 徽标「内置默认」→ 改成一句话保存 → 徽标变「自定义」、toast「人设已保存，下一轮生效」、重载后编辑框仍是新内容 → 清空保存回到「内置默认」；「填入内置默认」把 1551 字灌回编辑框；粘 20001 字页脚变红并报「系统提示词最长 20000 字，现在 20001 字」，服务端旧值不动，绕过前端直接 POST 也拿到同一句 400
 [PASS] temp_video_policy # 视频附件不下载 + temp 过期文件清理
-[PASS] deploy_scripts    # 部署脚本离线回归（`temp/test_deploy_scripts.py`，只用 bash 与临时目录，不碰服务器）：`deploy/*.sh` 与两个 unix 启动脚本 `bash -n` 通过且都是 LF；`render_unit` 把模板里写死的 `/root/GGBot` 换成传入的/当前项目根（`WorkingDirectory`/`ExecStart` 两处都换、不留旧路径、`LimitNOFILE` 不动），`apply_unit` 对同一目标第二次判定「已是最新」且不再 `daemon-reload`；`web_probe` 五种配置（缺失/关面板/自定义端口/无 web 段/坏 JSON）都按代码默认口径给出 `on|off 端口`；`bot_pids` 对认不出的项目根返回空且退出 0；`deploy/rsync-exclude.txt` 逐条盯住 14 个排除项（含 `*.db.bak-*`，`--reset-db` 的库备份不能被 `--delete` 顺手清了）、是纯模式不含 `#`/`;` 注释行、不碰 `config.example.json`，workflow 改成 `--exclude-from` 引用这份、不再有内联 heredoc、没有 `--delete-excluded`；三个启动脚本的探测模块名一致、与 `requirements.txt` 一一对应，并覆盖代码里所有直接 import 的第三方（`pydantic` 由 fastapi 带装，是唯一例外）；unit 的 `ExecStart` 不带 `--log-level`；`deploy_server.sh` systemd 分支的现场是 `journalctl` 而 `stdout.log` 只在 nohup 分支 tail
+[PASS] deploy_scripts    # 部署脚本离线回归（`temp/test_deploy_scripts.py`，只用 bash 与临时目录，不碰服务器）：`deploy/*.sh` 与两个 unix 启动脚本 `bash -n` 通过且都是 LF；`render_unit` 把模板里写死的 `/root/GGBot` 换成传入的/当前项目根（`WorkingDirectory`/`ExecStart` 两处都换、不留旧路径、`LimitNOFILE` 不动），`apply_unit` 对同一目标第二次判定「已是最新」且不再 `daemon-reload`；`web_probe` 五种配置（缺失/关面板/自定义端口/无 web 段/坏 JSON）都按代码默认口径给出 `on|off 端口`；`bot_pids` 对认不出的项目根返回空且退出 0；`deploy/rsync-filter.txt` 逐条盯住 17 条排除（含 `*.db.bak-*`，`--reset-db` 的库备份不能被 `--delete` 顺手清了）与 2 条放行、不含 `#`/`;` 注释行、不碰 `config.example.json`，两行 `+` 排在 `- tool/emoji/**` 之前，并按「首个匹配生效」的口径算出表情目录四个 `.py` 加 `config.example.json` 到得了服务器、`index.json`/图片/`config.json`/`usage.json` 到不了（本机没有 rsync，匹配器在测试里现写一份）；workflow 用 `--filter="merge deploy/rsync-filter.txt"` 引用这份、不再有内联 heredoc、没有 `--delete-excluded`；三个启动脚本的探测模块名一致、与 `requirements.txt` 一一对应，并覆盖代码里所有直接 import 的第三方（`pydantic` 由 fastapi 带装，是唯一例外）；unit 的 `ExecStart` 不带 `--log-level`；`deploy_server.sh` systemd 分支的现场是 `journalctl` 而 `stdout.log` 只在 nohup 分支 tail
 ```
 
 > 未覆盖：QQ 真实收发（需机器人上线 + 群内实测）；富媒体的实发——`send_voice` 的 SILK 上传、`generate_image` 的产物、`send_emoji` 的表情图（需真实群；本地文件走 base64 直传）；**群全量事件只用 `msg_id`（不带 `event_id`）的被动回复是否真被平台受理**——官方文档写明该事件的 `id` 可用于被动回复，本机没有实测条件，判断依据是之前带上 `event_id` 时被拒（40034027）。若线上仍被拒，日志会有 `被动回复失败，降级主动发送: …`，消息照发不丢，只是白耗一次请求；真出现这种情况就看那条警告的返回码，把 `on_group_message_create` 的 `passive_ok` 改回 False 即可退回旧行为。到点日程的实发（需真实群 + 等一个到期时间）同样没测，周期项「发一场滚下一场」在线上跨天滚动、以及停机一晚后那行 `提醒跳过 N 场未发` 也只做了离线验证。记忆的取代判定用假 LLM 固定了四种回执（new/update/drop/retire）与各种畸形回执，**真模型判得准不准、embedding 服务这一轮是否还通**都要看线上那行 `历史归档 … → 记忆 新增 a · 改写 b · 作废 c`——本轮没有再打真实的 `/embeddings` 调用（会实际计费），向量路径由注入假向量的本地用例覆盖。

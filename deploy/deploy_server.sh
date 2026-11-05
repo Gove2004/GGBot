@@ -4,7 +4,7 @@
 #   sudo bash deploy/deploy_server.sh     # 用 systemd 托管时（CI 走这条）
 #   bash deploy/deploy_server.sh          # 没有 systemd 时退回后台启动
 #
-# 前提：代码已经同步到项目目录（CI 用 rsync + deploy/rsync-exclude.txt，见 .github/workflows/deploy.yml）。
+# 前提：代码已经同步到项目目录（CI 用 rsync + deploy/rsync-filter.txt，见 .github/workflows/deploy.yml）。
 # 密钥与运行时数据（db/config.json、ggbot.db、temp/、tool 素材）不在同步范围内，
 # 所以这里只补环境、装依赖、更新 unit、重启并探活。
 set -euo pipefail

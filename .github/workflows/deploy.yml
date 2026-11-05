@@ -42,14 +42,15 @@ jobs:
 
       - name: 同步代码（跳过密钥与运行时数据）
         run: |
-          # 排除清单只有一份：deploy/rsync-exclude.txt（CI 与手工同步共用；rsync 会忽略清单里的空行和 # / ; 开头的行，
-          # 这份仍保持纯模式，条目的理由写在 README「部署到云服务器」里）。
+          # 清单只有一份：deploy/rsync-filter.txt（CI 与手工同步共用），用的是 rsync 的 filter 规则语法——
+          # 每行 `- 模式` 排除、`+ 模式` 放行。别改回 --exclude-from：那份语法里的 `!` 放行行实测不生效
+          # （rsync 3.2.7 会把 tool/emoji/ 整个内容排掉，表情工具代码同步不上去），条目理由写在 README「部署到云服务器」。
           # 为什么必须排除：这些文件在服务器上有、在 CI 的 checkout 里没有（.gitignore 挡掉了），
           # 而 --delete 会把"服务器有、源没有"的文件删掉——不排除就等于每次部署清一遍密钥和数据库。
           # 被排除的条目同时受 --delete 保护，不会被清空：表情库/语音素材/库备份都留在服务器上。
-          # 清单的顺序有意义：放行用的 ! 行必须排在 tool/emoji/** 之前（rsync 取首个匹配，和 .gitignore 的最后匹配相反），
-          # 写反了表情工具代码就同步不上去——这个口径由 temp/test_deploy_scripts.py 盯着。
-          rsync -az --delete --exclude-from=deploy/rsync-exclude.txt \
+          # 顺序有意义：rsync 取首个匹配生效（和 .gitignore 的最后匹配相反），两行 `+` 必须排在 `- tool/emoji/**` 前面，
+          # 这个口径由 temp/test_deploy_scripts.py 盯着。
+          rsync -az --delete --filter="merge deploy/rsync-filter.txt" \
             -e "ssh -i ~/.ssh/deploy_key -p ${DEPLOY_SSH_PORT:-22}" \
             ./ "${DEPLOY_SSH_USER:-root}@${DEPLOY_SSH_HOST}:${DEPLOY_SSH_PATH:-/root/GGBot}/"
 

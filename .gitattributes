@@ -10,8 +10,8 @@
 *.md text eol=lf
 *.sh text eol=lf
 *.command text eol=lf
-# rsync 排除清单钉成 LF：它是给服务器上的 rsync 读的，不该跟着 core.autocrlf 变
-deploy/rsync-exclude.txt text eol=lf
+# rsync 同步清单钉成 LF：它是给服务器上的 rsync 读的，不该跟着 core.autocrlf 变
+deploy/rsync-filter.txt text eol=lf
 *.bat text eol=crlf
 *.wav binary
 *.mp3 binary
