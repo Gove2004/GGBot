@@ -408,7 +408,8 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   `chmod 600`：里面有密钥）→ 删 `db/*.db*`、`db/config.json`、`temp/`、表情素材与被删工具集的 `config.json`（素材现在和代码同住
   `tool/emoji/`，只删里面的图片与 `index.json`/`vectors.json`/`usage.json`，整目录删掉等于把工具代码一起删了；索引下次扫描会自己重建）→
   只把初始化配置推回去（`db/config.json` + 各 `tool/*/config.json`；表情素材、记忆、日志这些运行产物不推）→
-  `systemctl enable` 恢复开机自启 → push 走 CI。核对起版看 `GGBot v3.0 启动`、`工具就绪` 的分类计数、空表的新库，
+  `systemctl enable` 恢复开机自启 → push 走 CI。核对起版看 `GGBot v<版本号> 启动`（版本号只认 `ggbot/__init__.py` 的
+  `__version__`，别拿文档里的数字当预期）、`工具就绪` 的分类计数、空表的新库，
   再把面板「工具」页扫一遍：**有"未启用"就等于素材漏推**——工具的启用判定看的不只是 `config.json`，
   `send_voice` 还要求 `tool/media/audio/voice_ref.wav` 真的在磁盘上（参考音色属于初始化素材，
   跟着 `config.json` 一起推，不是运行产物），这次从零部署就漏了它一次，补上文件立刻恢复，不用重启（启用判定每次请求现算）。
