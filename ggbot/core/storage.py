@@ -1,4 +1,4 @@
-"""SQLite 持久化层：会话、消息、被动回复锚点、发送回执、记忆、提醒。
+"""SQLite 持久化层：会话、消息、被动回复锚点、发送回执、记忆、定时任务。
 
 全部落盘，重启不丢。线程安全：每个操作一个连接（用完即关）+ WAL，读写都在 self._lock 里串行。
 表结构只有一份（`SCHEMA`）：v3 起不再就地迁移旧库，旧数据要么用 `--reset-db` 重建，要么留着别开。
@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS actors(
     note TEXT,
     updated_at TEXT
 );
-CREATE TABLE IF NOT EXISTS reminders(
+CREATE TABLE IF NOT EXISTS tasks(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
     owner TEXT,
@@ -89,18 +89,20 @@ CREATE TABLE IF NOT EXISTS reminders(
     notify TEXT,
     notify_name TEXT,
     due_ts INTEGER NOT NULL,
-    text TEXT NOT NULL,
+    instruction TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     created_at TEXT,
     fired_at TEXT,
     rule TEXT NOT NULL DEFAULT '',
     times INTEGER NOT NULL DEFAULT 1,
     fired_count INTEGER NOT NULL DEFAULT 0,
-    last_fired_at TEXT
+    last_fired_at TEXT,
+    fail_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_msg_id ON messages(msg_id);
-CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, due_ts);
-CREATE INDEX IF NOT EXISTS idx_reminders_session ON reminders(session_id, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(status, due_ts);
+CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id, status);
 """
 
 
@@ -124,10 +126,6 @@ REPLY_NONE = "none"          # 不需要回复：助手自己的消息、只读�
 REPLY_STATES = (REPLY_BACKLOG, REPLY_ANSWERED, REPLY_FAILED, REPLY_SKIPPED, REPLY_NONE)
 
 
-REMINDER_STATUS = ("pending", "fired", "cancelled", "expired")
-"""pending = 还在排（周期项发完下一场也还是 pending）；其余三种是终态，只被清理退场。"""
-
-
 def subject_key(name: str | None) -> str | None:
     """记忆归属的人名规范化：折叠空白、掐到 40 字，空串归成 None。
 
@@ -138,9 +136,9 @@ def subject_key(name: str | None) -> str | None:
     return s[:40] or None
 
 
-def _reminder_filter(session_id: str | None, status: str | None,
-                     q: str | None) -> tuple[str, tuple]:
-    """日程列表/计数的共用条件（面板、CLI、批量清理同一份口径）。"""
+def _task_filter(session_id: str | None, status: str | None,
+                 q: str | None) -> tuple[str, tuple]:
+    """任务列表/计数的共用条件（面板、CLI、批量清理同一份口径）。"""
     clauses: list[str] = []
     params: list = []
     if session_id:
@@ -153,7 +151,7 @@ def _reminder_filter(session_id: str | None, status: str | None,
     if needle:
         # 关键词是"像什么"，不是"匹配模式"：% _ 得当字面量，否则搜 % 等于全命中
         like = "%" + needle.replace("%", "\\%").replace("_", "\\_") + "%"
-        clauses.append("(text LIKE ? ESCAPE '\\' OR COALESCE(notify_name,'') LIKE ? ESCAPE '\\'"
+        clauses.append("(instruction LIKE ? ESCAPE '\\' OR COALESCE(notify_name,'') LIKE ? ESCAPE '\\'"
                        " OR COALESCE(owner_name,'') LIKE ? ESCAPE '\\')")
         params += [like, like, like]
     return (" WHERE " + " AND ".join(clauses) if clauses else ""), tuple(params)
@@ -682,55 +680,58 @@ class Storage:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    # ---------- 日程（提醒） ----------
+    # ---------- 定时任务 ----------
 
-    def add_reminder(self, session_id: str, owner: str | None, owner_name: str | None,
-                     notify: str | None, notify_name: str | None, due_ts: int, text: str,
-                     rule: str = "", times: int = 1) -> int:
-        """落一条待触发的日程；due_ts 是下一次到期的 unix 秒（跨时区/重启都比较得动）。"""
+    def add_task(self, session_id: str, owner: str | None, owner_name: str | None,
+                 notify: str | None, notify_name: str | None, due_ts: int, instruction: str,
+                 rule: str = "", times: int = 1) -> int:
+        """落一条待触发的任务；due_ts 是下一次到期的 unix 秒（跨时区/重启都比较得动）。
+
+        instruction 是到点交给模型执行的指令，不是到点原样发出去的台词。
+        """
         with self._lock, self._conn() as c:
             cur = c.execute(
-                "INSERT INTO reminders(session_id, owner, owner_name, notify, notify_name, "
-                "due_ts, text, status, created_at, rule, times) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO tasks(session_id, owner, owner_name, notify, notify_name, "
+                "due_ts, instruction, status, created_at, rule, times) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (session_id, owner, owner_name, notify, notify_name,
-                 int(due_ts), text, "pending", _now(), rule or "", max(0, int(times))),
+                 int(due_ts), instruction, "pending", _now(), rule or "", max(0, int(times))),
             )
             return int(cur.lastrowid)
 
-    def get_reminder(self, rid: int) -> dict | None:
+    def get_task(self, rid: int) -> dict | None:
         with self._lock, self._conn() as c:
-            row = c.execute("SELECT * FROM reminders WHERE id=?", (int(rid),)).fetchone()
+            row = c.execute("SELECT * FROM tasks WHERE id=?", (int(rid),)).fetchone()
         return dict(row) if row else None
 
-    def list_reminders(self, session_id: str | None = None, status: str | None = "pending",
-                       limit: int = 50, offset: int = 0, q: str | None = None) -> list[dict]:
+    def list_tasks(self, session_id: str | None = None, status: str | None = "pending",
+                   limit: int = 50, offset: int = 0, q: str | None = None) -> list[dict]:
         """按会话/状态/关键词筛；待触发的按到期时间从近到远，其余按最后一次落定的时间从新到旧。"""
-        where, params = _reminder_filter(session_id, status, q)
+        where, params = _task_filter(session_id, status, q)
         order = ("due_ts ASC" if status == "pending" else
                  "COALESCE(last_fired_at, fired_at, created_at) DESC, due_ts DESC")
-        sql = f"SELECT * FROM reminders{where} ORDER BY {order} LIMIT ? OFFSET ?"
+        sql = f"SELECT * FROM tasks{where} ORDER BY {order} LIMIT ? OFFSET ?"
         with self._lock, self._conn() as c:
             rows = c.execute(sql, (*params, int(limit), int(offset))).fetchall()
         return [dict(r) for r in rows]
 
-    def count_reminders(self, session_id: str | None = None, status: str | None = "pending",
-                        q: str | None = None) -> int:
-        """和 list_reminders 同一份条件——面板要靠它算「还有几页」，不能用另一套口径。"""
-        where, params = _reminder_filter(session_id, status, q)
+    def count_tasks(self, session_id: str | None = None, status: str | None = "pending",
+                    q: str | None = None) -> int:
+        """和 list_tasks 同一份条件——面板要靠它算「还有几页」，不能用另一套口径。"""
+        where, params = _task_filter(session_id, status, q)
         with self._lock, self._conn() as c:
-            return c.execute(f"SELECT COUNT(*) FROM reminders{where}", params).fetchone()[0]
+            return c.execute(f"SELECT COUNT(*) FROM tasks{where}", params).fetchone()[0]
 
-    def reminder_stats(self, now_ts: int, day_start_ts: int) -> dict:
-        """一次聚合出面板顶部要的数：各状态条数 + 待触发里逾期/今天要发/周期的条数。"""
+    def task_stats(self, now_ts: int, day_start_ts: int) -> dict:
+        """一次聚合出面板顶部要的数：各状态条数 + 待触发里逾期/今天要跑/周期的条数。"""
         with self._lock, self._conn() as c:
             by_status = {r["status"]: int(r["n"]) for r in c.execute(
-                "SELECT status, COUNT(*) AS n FROM reminders GROUP BY status")}
+                "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status")}
             p = c.execute(
                 "SELECT COUNT(*) AS n, "
                 "SUM(CASE WHEN due_ts < ? THEN 1 ELSE 0 END) AS overdue, "
                 "SUM(CASE WHEN due_ts >= ? AND due_ts < ? THEN 1 ELSE 0 END) AS today, "
                 "SUM(CASE WHEN rule <> '' THEN 1 ELSE 0 END) AS periodic "
-                "FROM reminders WHERE status='pending'",
+                "FROM tasks WHERE status='pending'",
                 # 今天从「现在」起算：已经过点的那几条记在 overdue 里，不重复计一次
                 (int(now_ts), max(int(now_ts), int(day_start_ts)), int(day_start_ts) + 86400),
             ).fetchone()
@@ -744,88 +745,119 @@ class Storage:
             "fired": by_status.get("fired", 0),
             "cancelled": by_status.get("cancelled", 0),
             "expired": by_status.get("expired", 0),
+            "failed": by_status.get("failed", 0),
         }
 
-    def due_reminders(self, now_ts: int, limit: int = 20) -> list[dict]:
-        """到期待触发的提醒（含停机期间错过的，由调用方按宽限决定发不发）。"""
+    def due_tasks(self, now_ts: int, limit: int = 20) -> list[dict]:
+        """到期待触发的任务（含停机期间错过的，由调用方按宽限决定跑不跑）。"""
         with self._lock, self._conn() as c:
             rows = c.execute(
-                "SELECT * FROM reminders WHERE status='pending' AND due_ts<=? "
+                "SELECT * FROM tasks WHERE status='pending' AND due_ts<=? "
                 "ORDER BY due_ts ASC LIMIT ?",
                 (int(now_ts), int(limit)),
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def finish_reminder(self, rid: int, status: str, fired_at: str | None = None) -> int:
-        """把提醒置为 fired / cancelled / expired；只动 pending 的行，返回真正改到的行数。"""
+    def finish_task(self, rid: int, status: str, fired_at: str | None = None) -> int:
+        """把任务置为 fired / cancelled / expired / failed；只动 pending 的行，返回真正改到的行数。"""
         with self._lock, self._conn() as c:
             cur = c.execute(
-                "UPDATE reminders SET status=?, fired_at=? WHERE id=? AND status='pending'",
+                "UPDATE tasks SET status=?, fired_at=? WHERE id=? AND status='pending'",
                 (status, fired_at, int(rid)),
             )
             return cur.rowcount
 
-    def complete_reminder(self, rid: int, fired_at: str) -> int:
-        """周期项排满/算不出下一场时的收尾：这一场也算发过，然后置 fired 退场。
+    def complete_task(self, rid: int, fired_at: str) -> int:
+        """周期项排满/算不出下一场时的收尾：这一场也算跑过，然后置 fired 退场。
 
-        和 finish_reminder 分开，是因为「已发场数」只有在发出去的那条路上才该加一格——
-        取消与过期走的还是原来那条。
+        和 finish_task 分开，是因为「已跑场数」只有在真跑完的那条路上才该加一格——
+        取消与过期走的还是原来那条。跑成了就把失败计数清零。
         """
         with self._lock, self._conn() as c:
             cur = c.execute(
-                "UPDATE reminders SET status='fired', fired_at=?, fired_count=fired_count+1, "
-                "last_fired_at=? WHERE id=? AND status='pending'",
+                "UPDATE tasks SET status='fired', fired_at=?, fired_count=fired_count+1, "
+                "last_fired_at=?, fail_count=0, last_error=NULL WHERE id=? AND status='pending'",
                 (fired_at, fired_at, int(rid)),
             )
             return cur.rowcount
 
-    def reschedule_reminder(self, rid: int, next_due_ts: int, fired_at: str) -> int:
-        """周期项发完一场：记一次发出并把到期推到下一场，状态仍是 pending（改不到就说明已被取消）。"""
+    def reschedule_task(self, rid: int, next_due_ts: int, fired_at: str) -> int:
+        """周期项跑完一场：记一次并清零失败计数，把到期推到下一场，状态仍是 pending（改不到就说明已被取消）。"""
         with self._lock, self._conn() as c:
             cur = c.execute(
-                "UPDATE reminders SET due_ts=?, fired_count=fired_count+1, last_fired_at=? "
-                "WHERE id=? AND status='pending'",
+                "UPDATE tasks SET due_ts=?, fired_count=fired_count+1, last_fired_at=?, "
+                "fail_count=0, last_error=NULL WHERE id=? AND status='pending'",
                 (int(next_due_ts), fired_at, int(rid)),
             )
             return cur.rowcount
 
-    def skip_reminder(self, rid: int, next_due_ts: int) -> int:
-        """周期项错过宽限：只把到期推到下一场——错过的那几场不算发过。"""
+    def skip_task(self, rid: int, next_due_ts: int) -> int:
+        """周期项错过宽限：只把到期推到下一场——错过的那几场不算跑过。"""
         with self._lock, self._conn() as c:
             cur = c.execute(
-                "UPDATE reminders SET due_ts=? WHERE id=? AND status='pending'",
+                "UPDATE tasks SET due_ts=? WHERE id=? AND status='pending'",
                 (int(next_due_ts), int(rid)),
             )
             return cur.rowcount
 
-    def update_reminder(self, rid: int, due_ts: int | None = None, text: str | None = None) -> int:
-        """面板改时间/正文：只动还在排的行，终态行改不了（改历史等于伪造发生过的事）。"""
+    def fail_task(self, rid: int, error: str, max_failures: int) -> dict:
+        """一次没跑成：记一笔失败次数与原因，连着失败到上限就置 failed 退场。
+
+        不到上限时行仍是 pending，由巡检下一轮重试（超宽限自然过期）；
+        到了上限就不再占着 pending 反复烧请求，要恢复得在面板上改时间重新排。
+        """
+        with self._lock, self._conn() as c:
+            row = c.execute(
+                "SELECT fail_count FROM tasks WHERE id=? AND status='pending'", (int(rid),)
+            ).fetchone()
+            if row is None:
+                return {"count": 0, "terminal": False}
+            count = int(row["fail_count"] or 0) + 1
+            terminal = count >= max(1, int(max_failures))
+            reason = (error or "")[:200]
+            if terminal:
+                c.execute(
+                    "UPDATE tasks SET fail_count=?, last_error=?, status='failed', fired_at=? "
+                    "WHERE id=?", (count, reason, _now(), int(rid)))
+            else:
+                c.execute("UPDATE tasks SET fail_count=?, last_error=? WHERE id=?",
+                          (count, reason, int(rid)))
+        return {"count": count, "terminal": terminal}
+
+    def update_task(self, rid: int, due_ts: int | None = None,
+                    instruction: str | None = None) -> int:
+        """面板改时间/指令：只动还在排的和失败退场的行，其余终态改不了（改历史等于伪造发生过的事）。
+
+        改一次就是重新排上：failed 的行回到 pending，失败计数跟着清零。
+        """
         sets, params = [], []
         if due_ts is not None:
             sets.append("due_ts=?")
             params.append(int(due_ts))
-        if text is not None:
-            sets.append("text=?")
-            params.append(text)
+        if instruction is not None:
+            sets.append("instruction=?")
+            params.append(instruction)
         if not sets:
             return 0
+        sets += ["status='pending'", "fail_count=0", "last_error=NULL", "fired_at=NULL"]
         params.append(int(rid))
         with self._lock, self._conn() as c:
             cur = c.execute(
-                f"UPDATE reminders SET {', '.join(sets)} WHERE id=? AND status='pending'", params)
+                f"UPDATE tasks SET {', '.join(sets)} WHERE id=? AND status IN ('pending','failed')",
+                params)
             return cur.rowcount
 
-    def delete_reminder(self, rid: int) -> int:
+    def delete_task(self, rid: int) -> int:
         """物理删掉一行（面板「删除」和 CLI 用）；取消才是让它不再触发的动作，删除只清记录。"""
         with self._lock, self._conn() as c:
-            cur = c.execute("DELETE FROM reminders WHERE id=?", (int(rid),))
+            cur = c.execute("DELETE FROM tasks WHERE id=?", (int(rid),))
             return cur.rowcount
 
     def delete_terminal_before(self, cutoff: str) -> int:
         """删掉落定时间早于 cutoff 的终态行（保留天数到了就退场，pending 永不参与）。"""
         with self._lock, self._conn() as c:
             cur = c.execute(
-                "DELETE FROM reminders WHERE status<>'pending' "
+                "DELETE FROM tasks WHERE status<>'pending' "
                 "AND COALESCE(last_fired_at, fired_at, created_at) <= ?", (cutoff,))
             return cur.rowcount
 
@@ -835,20 +867,20 @@ class Storage:
             return 0
         with self._lock, self._conn() as c:
             ids = [r["id"] for r in c.execute(
-                "SELECT id FROM reminders WHERE status<>'pending' "
+                "SELECT id FROM tasks WHERE status<>'pending' "
                 "ORDER BY COALESCE(last_fired_at, fired_at, created_at) ASC LIMIT ?", (int(n),))]
             if not ids:
                 return 0
-            c.executemany("DELETE FROM reminders WHERE id=?", [(i,) for i in ids])
+            c.executemany("DELETE FROM tasks WHERE id=?", [(i,) for i in ids])
             return len(ids)
 
-    def purge_reminders(self, session_id: str | None = None, status: str | None = None,
+    def purge_tasks(self, session_id: str | None = None, status: str | None = None,
                         before_ts: int | None = None) -> int:
         """面板/CLI 的批量清理：只碰终态行；条件全空时删 0 条（整库清空不靠这条路）。"""
         if not any((session_id, status, before_ts)):
             return 0
         if status == "pending":
-            return 0  # 待触发的行要退场得走「取消」，清理不替人删掉还没发出去的东西
+            return 0  # 待触发的行要退场得走「取消」，清理不替人删掉还没跑的东西
         where = ["status<>'pending'"]
         params: list = []
         if session_id:
@@ -862,8 +894,8 @@ class Storage:
             params.append(int(before_ts))
         sql = " AND ".join(where)
         with self._lock, self._conn() as c:
-            n = c.execute(f"SELECT COUNT(*) FROM reminders WHERE {sql}", params).fetchone()[0]
-            c.execute(f"DELETE FROM reminders WHERE {sql}", params)
+            n = c.execute(f"SELECT COUNT(*) FROM tasks WHERE {sql}", params).fetchone()[0]
+            c.execute(f"DELETE FROM tasks WHERE {sql}", params)
         return n
 
     # ---------- 记忆 ----------
@@ -1018,5 +1050,5 @@ class Storage:
                 "messages_today": one("SELECT COUNT(*) FROM messages WHERE ts LIKE ?", (today + "%",)),
                 "waiting": one("SELECT COUNT(*) FROM messages WHERE reply_state=?", (REPLY_BACKLOG,)),
                 "memories": one("SELECT COUNT(*) FROM memories"),
-                "reminders_pending": one("SELECT COUNT(*) FROM reminders WHERE status='pending'"),
+                "tasks_pending": one("SELECT COUNT(*) FROM tasks WHERE status='pending'"),
             }
