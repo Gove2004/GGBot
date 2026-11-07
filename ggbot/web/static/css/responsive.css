@@ -144,12 +144,12 @@
   .table td.msg { max-width: 220px; }
   .table td .badge { white-space: nowrap; }
   #page-dash .table th:nth-child(5), #page-dash .table td:nth-child(5) { display: none; }
-  /* 日程行：钟点那一格挤不进三列布局，改成整行占满、正文与按钮再并排 */
-  #page-schedule .sch-body { max-height: none; }
-  #page-schedule .sch-item { grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-1) var(--s-2); padding: var(--s-2) var(--s-2) var(--s-2) var(--s-3); }
-  #page-schedule .sch-when { grid-column: 1 / -1; display: flex; align-items: baseline; gap: var(--s-2); }
-  #page-schedule .sch-gap { margin-top: 0; }
-  #page-schedule .sch-meta { gap: 6px; }
+  /* 任务行：钟点那一格挤不进三列布局，改成整行占满、指令与按钮再并排 */
+  #page-task .task-body { max-height: none; }
+  #page-task .task-item { grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-1) var(--s-2); padding: var(--s-2) var(--s-2) var(--s-2) var(--s-3); }
+  #page-task .task-when { grid-column: 1 / -1; display: flex; align-items: baseline; gap: var(--s-2); }
+  #page-task .task-gap { margin-top: 0; }
+  #page-task .task-meta { gap: 6px; }
 
   .save-bar { flex-direction: column; align-items: stretch; bottom: 0; padding: var(--s-3) var(--s-4); }
   .form-grid { grid-template-columns: 1fr; }
@@ -182,7 +182,7 @@
 }
 
 @media (hover: none) {
-  .row-actions, .sch-ops { opacity: 1; }
+  .row-actions, .task-ops { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {

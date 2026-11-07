@@ -44,8 +44,8 @@ document.addEventListener("click", async (event) => {
     case "refresh-logs":
       reloadPage("logs");
       break;
-    case "refresh-schedule":
-      reloadPage("schedule");
+    case "refresh-task":
+      reloadPage("task");
       break;
     case "refresh-tools":
       reloadPage("tools");
@@ -106,29 +106,29 @@ document.addEventListener("click", async (event) => {
     case "memory-sweep":
       sweepMemory();
       break;
-    case "schedule-edit":
-      openScheduleEdit(id);
+    case "task-edit":
+      openTaskEdit(id);
       break;
-    case "schedule-save":
-      saveSchedule(id);
+    case "task-save":
+      saveTask(id);
       break;
-    case "schedule-cancel":
-      cancelSchedule(id);
+    case "task-cancel":
+      cancelTask(id);
       break;
-    case "schedule-delete":
-      deleteSchedule(id);
+    case "task-delete":
+      deleteTask(id);
       break;
-    case "schedule-purge":
-      openSchedulePurge();
+    case "task-purge":
+      openTaskPurge();
       break;
-    case "schedule-purge-run":
-      purgeSchedule();
+    case "task-purge-run":
+      purgeTasks();
       break;
-    case "schedule-sweep":
-      sweepSchedule();
+    case "task-sweep":
+      sweepTasks();
       break;
-    case "schedule-more":
-      loadMoreSchedule();
+    case "task-more":
+      loadMoreTasks();
       break;
     case "emoji-view":
       openEmoji(el.dataset.file);
@@ -217,17 +217,17 @@ document.addEventListener("DOMContentLoaded", () => {
   qs("#mem-session").addEventListener("change", () => reloadPage("memory"));
   qs("#mem-kind").addEventListener("change", () => reloadPage("memory"));
   // 换筛选条件时把载入窗口收回默认，否则会带着上一次「载入更多」的偏移量
-  ["#sch-session", "#sch-status"].forEach((sel) =>
+  ["#task-session", "#task-status"].forEach((sel) =>
     qs(sel).addEventListener("change", () => {
-      state.schLimit = 0;
-      reloadPage("schedule");
+      state.taskLimit = 0;
+      reloadPage("task");
     }));
-  let schTimer = null;
-  qs("#sch-q").addEventListener("input", () => {
-    clearTimeout(schTimer);
-    schTimer = setTimeout(() => {
-      state.schLimit = 0;
-      reloadPage("schedule");
+  let taskTimer = null;
+  qs("#task-q").addEventListener("input", () => {
+    clearTimeout(taskTimer);
+    taskTimer = setTimeout(() => {
+      state.taskLimit = 0;
+      reloadPage("task");
     }, 350);
   });
 

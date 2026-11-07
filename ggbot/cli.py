@@ -15,19 +15,19 @@
     .venv\\Scripts\\python -m ggbot.cli memory purge --subject 小明 --yes
     .venv\\Scripts\\python -m ggbot.cli memory sweep --yes
 
-    .venv\\Scripts\\python -m ggbot.cli schedule list [--status all] [--session 群1A2B3C4D] [--q 交稿]
-    .venv\\Scripts\\python -m ggbot.cli schedule show 12
-    .venv\\Scripts\\python -m ggbot.cli schedule cancel 12 --yes
-    .venv\\Scripts\\python -m ggbot.cli schedule delete 12 --yes
-    .venv\\Scripts\\python -m ggbot.cli schedule purge --status fired --yes
-    .venv\\Scripts\\python -m ggbot.cli schedule sweep --yes
+    .venv\\Scripts\\python -m ggbot.cli task list [--status all] [--session 群1A2B3C4D] [--q 交稿]
+    .venv\\Scripts\\python -m ggbot.cli task show 12
+    .venv\\Scripts\\python -m ggbot.cli task cancel 12 --yes
+    .venv\\Scripts\\python -m ggbot.cli task delete 12 --yes
+    .venv\\Scripts\\python -m ggbot.cli task purge --status fired --yes
+    .venv\\Scripts\\python -m ggbot.cli task sweep --yes
 
 会话引用支持：完整 id（group:... / c2c:...）、8 位标签（群1A2B3C4D / 私聊1A2B3C4D）、
 openid 前缀（1A2B3C4D）。配置了 embedding 时记忆检索为语义检索，否则按关键词匹配。
 记忆分两类：profile（某个人的当前状态，同一件事的新说法改写旧的）、
 event（发生过的一件事，到期或被推翻就消失）。
-日程（提醒）分两种：一次性，和带周期的（每天/工作日/每周/每月）——排日程本身只在对话里做，
-CLI 与面板都只能查看、改时间正文、取消与清理历史。
+定时任务分两种：一次性，和带周期的（每天/工作日/每周/每月/每隔多久）——排任务本身只在对话里做，
+CLI 与面板都只能查看、改时间与指令、取消与清理历史。
 """
 
 from __future__ import annotations
@@ -117,7 +117,7 @@ def cmd_stats(storage: Storage) -> None:
     print(f"  消息      {s['messages']}（今日 {s['messages_today']}）")
     print(f"  待处理    {s['waiting']}")
     print(f"  记忆      {s['memories']}")
-    print(f"  待触发日程 {s.get('reminders_pending', 0)}")
+    print(f"  待跑任务 {s.get('tasks_pending', 0)}")
 
 
 def cmd_sessions(storage: Storage, limit: int) -> None:
@@ -258,104 +258,107 @@ def cmd_memory_sweep(memory: MemoryStore, threshold: float | None, yes: bool) ->
           f"合并 {r['merged']}（剩 {r['total']} 条）")
 
 
-def _schedule_for_cli(cfg: Config, storage: Storage):
-    """日程的操作面：配置读的是 tool/remind/config.json，状态全在 reminders 表里。"""
+def _tasks_for_cli(cfg: Config, storage: Storage):
+    """任务的操作面：配置读的是 tool/task/config.json，状态全在 tasks 表里。"""
     from tool.base import ToolRuntime
-    from tool.remind.remind import Reminders
+    from tool.task.task import Tasks
 
-    return Reminders(ToolRuntime(cfg, storage, None, None))
+    return Tasks(ToolRuntime(cfg, storage, None, None))
 
 
-def cmd_schedule_list(storage: Storage, sid: str | None, status: str | None,
-                      limit: int, q: str | None) -> None:
-    from tool.remind._rule import fmt_due, rule_label, span_text
+def cmd_task_list(storage: Storage, sid: str | None, status: str | None,
+                  limit: int, q: str | None) -> None:
+    from tool.task._rule import fmt_due, rule_label, span_text
 
-    rows = storage.list_reminders(sid, status, limit, 0, q)
+    rows = storage.list_tasks(sid, status, limit, 0, q)
     if not rows:
-        print("（暂无日程）")
+        print("（暂无任务）")
         return
     now = int(time.time())
-    print(f"{'ID':>6} {'会话':<12} {'状态':<9} {'周期':<9} {'已发':>5} {'到期':<17} "
-          f"{'距今':>8} {'提醒谁':<8} 正文")
+    print(f"{'ID':>6} {'会话':<12} {'状态':<9} {'周期':<9} {'已跑':>5} {'到期':<17} "
+          f"{'距今':>8} {'汇报给':<8} 指令")
     print("-" * 130)
     for r in rows:
         gap = int(r["due_ts"]) - now
         times = int(r.get("times") or 1)
         fired = int(r.get("fired_count") or 0)
         fires = f"{fired}/{times}" if r.get("rule") and times > 0 else str(fired)
+        fails = f" 失败{int(r.get('fail_count') or 0)}" if int(r.get("fail_count") or 0) else ""
         print(f"{r['id']:>6} {session_label(r['session_id']):<12} {r['status']:<9} "
               f"{rule_label(r.get('rule') or ''):<9} {fires:>5} {fmt_due(r['due_ts']):<17} "
               f"{span_text(abs(gap)) + ('后' if gap >= 0 else '前'):>8} "
-              f"{_clip(r.get('notify_name') or '本人', 8):<8} {_clip(r.get('text'), 40)}")
+              f"{_clip(r.get('notify_name') or '本人', 8):<8} {_clip(r.get('instruction'), 40)}{fails}")
 
 
-def cmd_schedule_show(storage: Storage, rid: int) -> None:
-    from tool.remind._rule import fmt_due, rule_label
+def cmd_task_show(storage: Storage, rid: int) -> None:
+    from tool.task._rule import fmt_due, rule_label
 
-    row = storage.get_reminder(rid)
+    row = storage.get_task(rid)
     if not row:
-        raise SystemExit(f"日程不存在: {rid}")
+        raise SystemExit(f"任务不存在: {rid}")
     times = int(row.get("times") or 1)
     print(f"#{row['id']}  {row['status']}  {session_label(row['session_id'])}")
     print(f"  到期    {fmt_due(row['due_ts'])}")
     print(f"  重复    {rule_label(row.get('rule') or '')}"
-          + (f"（已发 {int(row.get('fired_count') or 0)} 场，"
+          + (f"（已跑 {int(row.get('fired_count') or 0)} 场，"
              + (f"计划 {times} 场）" if times > 0 else "不限场次）") if row.get("rule") else ""))
-    print(f"  正文    {row['text']}")
-    print(f"  谁设的  {row.get('owner_name') or '—'} → 提醒 {row.get('notify_name') or '本人'}")
+    print(f"  指令    {row['instruction']}")
+    print(f"  谁排的  {row.get('owner_name') or '—'} → 汇报给 {row.get('notify_name') or '本人'}")
     print(f"  创建    {row.get('created_at') or '—'}   落定 {row.get('fired_at') or '—'}"
           f"   最后一场 {row.get('last_fired_at') or '—'}")
+    if int(row.get("fail_count") or 0):
+        print(f"  失败    {row['fail_count']} 次：{row.get('last_error') or '—'}")
 
 
-def cmd_schedule_cancel(storage: Storage, rid: int, yes: bool) -> None:
-    row = storage.get_reminder(rid)
+def cmd_task_cancel(storage: Storage, rid: int, yes: bool) -> None:
+    row = storage.get_task(rid)
     if not row:
-        raise SystemExit(f"日程不存在: {rid}")
+        raise SystemExit(f"任务不存在: {rid}")
     if row["status"] != "pending":
         raise SystemExit(f"#{rid} 已经结束了（{row['status']}），取消不了")
-    from tool.remind._rule import fmt_due, rule_label
+    from tool.task._rule import fmt_due, rule_label
 
-    tail = f"（整条{rule_label(row['rule'])}日程，已发 {int(row.get('fired_count') or 0)} 场）" if row["rule"] else ""
-    if not yes and not _confirm(f"取消 #{rid} {fmt_due(row['due_ts'])} {row['text']}{tail}？"):
+    tail = f"（整条{rule_label(row['rule'])}任务，已跑 {int(row.get('fired_count') or 0)} 场）" if row["rule"] else ""
+    if not yes and not _confirm(f"取消 #{rid} {fmt_due(row['due_ts'])} {row['instruction']}{tail}？"):
         print("已取消操作")
         return
-    storage.finish_reminder(rid, "cancelled")
-    print(f"已取消 #{rid}，到点不会再发")
+    storage.finish_task(rid, "cancelled")
+    print(f"已取消 #{rid}，到点不会再跑")
 
 
-def cmd_schedule_delete(storage: Storage, rid: int, yes: bool) -> None:
-    row = storage.get_reminder(rid)
+def cmd_task_delete(storage: Storage, rid: int, yes: bool) -> None:
+    row = storage.get_task(rid)
     if not row:
-        raise SystemExit(f"日程不存在: {rid}")
+        raise SystemExit(f"任务不存在: {rid}")
     if not yes and not _confirm(f"删除 #{rid}（{row['status']}）这条记录？"):
         print("已取消操作")
         return
-    storage.delete_reminder(rid)
+    storage.delete_task(rid)
     print(f"已删除 #{rid}")
 
 
-def cmd_schedule_purge(storage: Storage, status: str | None, sid: str | None,
-                       days: int | None, yes: bool) -> None:
+def cmd_task_purge(storage: Storage, status: str | None, sid: str | None,
+                   days: int | None, yes: bool) -> None:
     if status == "pending":
-        raise SystemExit("待触发的行不能批量删，请用 schedule cancel")
+        raise SystemExit("待触发的行不能批量删，请用 task cancel")
     if not any((status, sid, days)):
         raise SystemExit("需要 --status / --session / --before-days 至少一个条件")
     label = " / ".join(str(x) for x in (status, sid, f"{days}天前" if days else None) if x)
-    if not yes and not _confirm(f"删除匹配 {label} 的历史日程（待触发的不算）？"):
+    if not yes and not _confirm(f"删除匹配 {label} 的历史任务（待触发的不算）？"):
         print("已取消操作")
         return
     before_ts = int(time.time()) - days * 86400 if days else None
-    print(f"已删除 {storage.purge_reminders(sid, status, before_ts)} 条历史日程")
+    print(f"已删除 {storage.purge_tasks(sid, status, before_ts)} 条历史任务")
 
 
-def cmd_schedule_sweep(rem, yes: bool) -> None:
-    cfg = rem.config
+def cmd_task_sweep(tasks, yes: bool) -> None:
+    cfg = tasks.config
     if not yes and not _confirm(
         f"清理历史：终态行超过 {cfg.get('keep_history_days')} 天的删掉，"
         f"整表超 {cfg.get('max_rows')} 行再从最旧的删起？"):
         print("已取消操作")
         return
-    r = rem.sweep()
+    r = tasks.sweep()
     print(f"到期删 {r['aged']} · 超限删 {r['over']}（剩 {r['total']} 条，保留 {r['keep_days']} 天）")
 
 
@@ -427,30 +430,31 @@ def build_parser() -> argparse.ArgumentParser:
                     help="合并相似度阈值；不填按记忆条数自动放宽（0.95 起，最低 0.86）")
     sp.add_argument("--yes", action="store_true")
 
-    sch = sub.add_parser("schedule", help="日程（提醒）管理：查看 / 改 / 取消 / 清理历史")
-    ssub = sch.add_subparsers(dest="sch_cmd", required=True)
+    sch = sub.add_parser("task", help="定时任务管理：查看 / 改 / 取消 / 清理历史")
+    ssub = sch.add_subparsers(dest="task_cmd", required=True)
 
-    sp = ssub.add_parser("list", help="列出日程（含周期、已发场次、距今多久）")
+    sp = ssub.add_parser("list", help="列出任务（含周期、已跑场次、距今多久）")
     sp.add_argument("--session", default=None)
     sp.add_argument("--status", default=None,
-                    choices=["pending", "all", "fired", "cancelled", "expired"],
+                    choices=["pending", "all", "fired", "cancelled", "expired", "failed"],
                     help="默认只列待触发的；all 连历史一起看")
-    sp.add_argument("--q", default=None, help="正文或人名里的关键词")
+    sp.add_argument("--q", default=None, help="指令或人名里的关键词")
     sp.add_argument("--limit", type=int, default=50)
 
-    sp = ssub.add_parser("show", help="看一条日程的全部字段")
-    sp.add_argument("reminder_id", type=int)
+    sp = ssub.add_parser("show", help="看一个任务的全部字段")
+    sp.add_argument("task_id", type=int)
 
-    sp = ssub.add_parser("cancel", help="取消待触发的日程（周期项整条停下）")
-    sp.add_argument("reminder_id", type=int)
+    sp = ssub.add_parser("cancel", help="取消待触发的任务（周期项整条停下）")
+    sp.add_argument("task_id", type=int)
     sp.add_argument("--yes", action="store_true")
 
     sp = ssub.add_parser("delete", help="物理删除一条记录（不代替取消）")
-    sp.add_argument("reminder_id", type=int)
+    sp.add_argument("task_id", type=int)
     sp.add_argument("--yes", action="store_true")
 
     sp = ssub.add_parser("purge", help="批量清历史：按状态 / 会话 / 多少天前（待触发的不算）")
-    sp.add_argument("--status", default=None, choices=["fired", "cancelled", "expired"])
+    sp.add_argument("--status", default=None,
+                    choices=["fired", "cancelled", "expired", "failed"])
     sp.add_argument("--session", default=None)
     sp.add_argument("--before-days", type=int, default=None, dest="before_days",
                     help="只删到期时间在这之前的")
@@ -509,27 +513,27 @@ def main() -> None:
                                 args.subject, args.kind, args.expires)
             elif args.mem_cmd == "sweep":
                 cmd_memory_sweep(memory, args.threshold, args.yes)
-        elif args.cmd == "schedule":
+        elif args.cmd == "task":
             sid = _resolve_session(storage, args.session) if getattr(args, "session", None) else None
-            if args.sch_cmd == "show":
-                cmd_schedule_show(storage, args.reminder_id)
+            if args.task_cmd == "show":
+                cmd_task_show(storage, args.task_id)
                 return
-            if args.sch_cmd == "cancel":
-                cmd_schedule_cancel(storage, args.reminder_id, args.yes)
+            if args.task_cmd == "cancel":
+                cmd_task_cancel(storage, args.task_id, args.yes)
                 return
-            if args.sch_cmd == "delete":
-                cmd_schedule_delete(storage, args.reminder_id, args.yes)
+            if args.task_cmd == "delete":
+                cmd_task_delete(storage, args.task_id, args.yes)
                 return
-            if args.sch_cmd == "purge":
-                cmd_schedule_purge(storage, args.status, sid, args.before_days, args.yes)
+            if args.task_cmd == "purge":
+                cmd_task_purge(storage, args.status, sid, args.before_days, args.yes)
                 return
-            rem = _schedule_for_cli(cfg, storage)
-            if args.sch_cmd == "sweep":
-                cmd_schedule_sweep(rem, args.yes)
+            tasks = _tasks_for_cli(cfg, storage)
+            if args.task_cmd == "sweep":
+                cmd_task_sweep(tasks, args.yes)
             else:
                 st = "pending" if args.status is None else (
                     None if args.status == "all" else args.status)
-                cmd_schedule_list(storage, sid, st, min(max(args.limit, 1), 500), args.q)
+                cmd_task_list(storage, sid, st, min(max(args.limit, 1), 500), args.q)
     finally:
         storage.close()
 

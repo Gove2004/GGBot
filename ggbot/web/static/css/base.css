@@ -16,7 +16,9 @@
   --amber-ch: 255, 180, 84;   /* 待处理 / 需留意 */
   --rose-ch: 255, 111, 130;   /* 失败 / 逾期 */
   --idle-ch: 108, 130, 150;   /* 离线 / 中性 */
-  --teal-ch: 77, 216, 232;    /* 分类色：七个工具分类，信号色只有六种，联网这一类补一个 */
+  --teal-ch: 77, 216, 232;    /* 分类色：九个工具分类，信号色只有六种，联网与存储各补一个 */
+  --lime-ch: 176, 227, 87;    /* 分类色：简单存储（kvdb） */
+  --pink-ch: 240, 140, 200;   /* 分类色：表情包（emoji） */
   /* 通道是唯一的真值来源，实心色由它拼出来——改色只改上面一行，实心色不会跟着漏 */
   --live: rgb(var(--live-ch));
   --info: rgb(var(--info-ch));
@@ -25,6 +27,8 @@
   --rose: rgb(var(--rose-ch));
   --idle: rgb(var(--idle-ch));
   --teal: rgb(var(--teal-ch));
+  --lime: rgb(var(--lime-ch));
+  --pink: rgb(var(--pink-ch));
   --live-deep: #17b98a;       /* 主色实底的渐变收尾（主按钮、勾选块、品牌标） */
   --live-ink: #04231b;        /* 主色实底上的文字 */
 
@@ -140,6 +144,8 @@
   --rose-ch: 187, 43, 67;
   --idle-ch: 86, 102, 118;
   --teal-ch: 10, 110, 128;
+  --lime-ch: 88, 128, 21;
+  --pink-ch: 158, 60, 120;
   --live-deep: #065c3f;
   --live-ink: #ffffff;
 

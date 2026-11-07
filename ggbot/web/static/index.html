@@ -70,9 +70,9 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H8l-4 4V5Z"/></svg>
           <span>会话与上下文</span>
         </button>
-        <button class="nav-item" data-page="schedule">
+        <button class="nav-item" data-page="task">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M8 3v3.5M16 3v3.5"/><path d="M12 12.5V15l1.8 1.2"/></svg>
-          <span>日程</span>
+          <span>任务</span>
         </button>
       </div>
 
@@ -533,37 +533,38 @@
         </div>
       </section>
 
-      <!-- 日程 -->
-      <section id="page-schedule" class="page hidden">
+      <!-- 定时任务 -->
+      <section id="page-task" class="page hidden">
         <div class="card">
           <div class="card-head">
-            <div><h2>日程</h2><p class="card-sub">到点原样发回所在会话，不再问模型<span id="sch-count"></span></p></div>
+            <div><h2>定时任务</h2><p class="card-sub">到点跑完整的一轮：查网页、比上次、再决定说什么<span id="task-count"></span></p></div>
             <div class="head-ops">
-              <button class="btn ghost small" data-action="schedule-purge">清理历史</button>
-              <button class="btn ghost small" data-action="schedule-sweep">按保留期清理</button>
-              <button class="btn ghost small" data-action="refresh-schedule">刷新</button>
+              <button class="btn ghost small" data-action="task-purge">清理历史</button>
+              <button class="btn ghost small" data-action="task-sweep">按保留期清理</button>
+              <button class="btn ghost small" data-action="refresh-task">刷新</button>
             </div>
           </div>
 
           <div class="tool-row">
-            <select id="sch-status" class="sel small-input" title="按状态筛选日程">
+            <select id="task-status" class="sel small-input" title="按状态筛选任务">
               <option value="pending" selected>在排</option>
               <option value="all">全部</option>
-              <option value="fired">已触发</option>
+              <option value="fired">已跑完</option>
               <option value="cancelled">已取消</option>
               <option value="expired">已过期</option>
+              <option value="failed">已失败</option>
             </select>
-            <select id="sch-session" class="sel small-input" title="按会话筛选日程"></select>
-            <input id="sch-q" class="input grow search-input" placeholder="搜正文 / 提醒谁…">
+            <select id="task-session" class="sel small-input" title="按会话筛选任务"></select>
+            <input id="task-q" class="input grow search-input" placeholder="搜指令 / 汇报给谁…">
           </div>
 
-          <div id="sch-body" class="sch-body"><div class="empty">加载中…</div></div>
+          <div id="task-body" class="task-body"><div class="empty">加载中…</div></div>
 
-          <div class="sch-foot">
-            <button class="btn ghost small hidden" id="sch-more" data-action="schedule-more">载入更多</button>
-            <span id="sch-more-note" class="muted small"></span>
+          <div class="task-foot">
+            <button class="btn ghost small hidden" id="task-more" data-action="task-more">载入更多</button>
+            <span id="task-more-note" class="muted small"></span>
           </div>
-          <p class="card-sub" id="sch-tip"></p>
+          <p class="card-sub" id="task-tip"></p>
         </div>
       </section>
 
@@ -602,7 +603,7 @@
 <script src="/static/js/tools.js"></script>
 <script src="/static/js/permissions.js"></script>
 <script src="/static/js/logs.js"></script>
-<script src="/static/js/schedule.js"></script>
+<script src="/static/js/task.js"></script>
 <script src="/static/js/refresh.js"></script>
 <script src="/static/js/events.js"></script>
 </body>

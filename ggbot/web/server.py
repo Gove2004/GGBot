@@ -1,7 +1,7 @@
 """Web 控制面板：FastAPI + 静态前端（ggbot/web/static）。
 
 前端与后端分离：ggbot/web/static/{index.html,css/*.css,js/*.js}，经 /static 托管，可独立修改热加载。
-功能：在线状态、会话与上下文、记忆（检索/写入/编辑/整理）、表情包浏览、提醒、配置热更新、日志查看。
+功能：在线状态、会话与上下文、记忆（检索/写入/编辑/整理）、表情包浏览、定时任务、配置热更新、日志查看。
 
 鉴权（安全）：
 - 登录：POST /api/login 校验 config.web.token，成功后写入 HttpOnly + SameSite=Strict Cookie，
@@ -140,9 +140,9 @@ class ToolLevelIn(BaseModel):
     level: int
 
 
-class ScheduleEditIn(BaseModel):
+class TaskEditIn(BaseModel):
     due_ts: int | None = None
-    text: str | None = None
+    instruction: str | None = None
 
 
 def _day_start_ts(now_ts: int) -> int:
@@ -485,92 +485,92 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
             headers={"Cache-Control": "private, max-age=3600", "Content-Disposition": "inline"},
         )
 
-    # ---------- 日程（提醒） ----------
+    # ---------- 定时任务 ----------
     # 表里的那份是唯一真相（巡检循环也读它），所以面板给「看 + 改 + 删 + 清理」，
-    # 刻意不给新建：面板排日程要的是另一套时间输入，而 when/repeat 的解析只该有一份实现。
+    # 刻意不给新建：面板排任务要的是另一套时间输入，而 when/repeat 的解析只该有一份实现。
 
-    def _schedule_or_none():
-        """日程的操作面；工具没挂载就返回 None（配置是 tool/remind/config.json）。"""
+    def _tasks_or_none():
+        """任务的操作面；工具没挂载就返回 None（配置是 tool/task/config.json）。"""
         rt = getattr(getattr(presence, "executor", None), "rt", None)
         if rt is None:
             return None
-        from tool.remind.remind import Reminders
+        from tool.task.task import Tasks
 
-        return Reminders(rt)
+        return Tasks(rt)
 
-    def _schedule():
-        rem = _schedule_or_none()
-        if rem is None:
-            raise HTTPException(503, "日程工具未挂载，暂时改不了日程")
-        return rem
+    def _tasks():
+        tasks = _tasks_or_none()
+        if tasks is None:
+            raise HTTPException(503, "任务工具未挂载，暂时改不了任务")
+        return tasks
 
-    @app.post("/api/reminders/{rid}/cancel")
-    async def cancel_reminder(
+    @app.post("/api/tasks/{rid}/cancel")
+    async def cancel_task(
         rid: int,
         request: Request,
         x_token: str | None = Header(default=None),
     ):
         _auth(request, x_token)
-        row = await asyncio.to_thread(storage.get_reminder, rid)
+        row = await asyncio.to_thread(storage.get_task, rid)
         if not row:
-            raise HTTPException(status_code=404, detail="reminder not found")
+            raise HTTPException(status_code=404, detail="task not found")
         if row["status"] != "pending":
             raise HTTPException(status_code=400, detail=f"#{rid} 已经是 {row['status']}，不用再取消")
-        # finish_reminder 只动 pending 的行，置为 cancelled 后巡检就不会再触发它
-        await asyncio.to_thread(storage.finish_reminder, rid, "cancelled")
+        # finish_task 只动 pending 的行，置为 cancelled 后巡检就不会再跑它
+        await asyncio.to_thread(storage.finish_task, rid, "cancelled")
         return {"ok": True}
 
-    @app.put("/api/reminders/{rid}")
-    async def edit_reminder(
+    @app.put("/api/tasks/{rid}")
+    async def edit_task(
         rid: int,
-        body: ScheduleEditIn,
+        body: TaskEditIn,
         request: Request,
         x_token: str | None = Header(default=None),
     ):
-        """改时间/正文：只有还在排的行改得了，改完仍是 pending（周期项改的是下一场）。"""
+        """改时间/指令：还在排的行改得了，失败退场的改一次就是重新排上（周期项改的是下一场）。"""
         _auth(request, x_token)
-        text = None if body.text is None else " ".join(str(body.text).split())
-        if body.due_ts is None and text is None:
+        instruction = None if body.instruction is None else str(body.instruction).strip()
+        if body.due_ts is None and instruction is None:
             raise HTTPException(status_code=400, detail="没有需要修改的字段")
-        cfg = _schedule().config
+        cfg = _tasks().config
         now = int(time.time())
-        if text is not None:
-            cap = max(10, int(cfg.get("max_text_chars", 200) or 200))
-            if not text:
-                raise HTTPException(status_code=400, detail="正文不能为空")
-            if len(text) > cap:
-                raise HTTPException(status_code=400, detail=f"正文太长（最多 {cap} 字）")
+        if instruction is not None:
+            cap = max(10, int(cfg.get("max_instruction_chars", 500) or 500))
+            if not instruction:
+                raise HTTPException(status_code=400, detail="指令不能为空")
+            if len(instruction) > cap:
+                raise HTTPException(status_code=400, detail=f"指令太长（最多 {cap} 字）")
         if body.due_ts is not None:
             due = int(body.due_ts)
             if due <= now:
-                raise HTTPException(status_code=400, detail="新时间得是将来——改到过去等于现在就发")
+                raise HTTPException(status_code=400, detail="新时间得是将来——改到过去等于现在就跑")
             max_days = max(1, int(cfg.get("max_days", 30) or 30))
             if due > now + max_days * 86400:
                 raise HTTPException(status_code=400, detail=f"最远只能约 {max_days} 天内的第一次触发")
-        row = await asyncio.to_thread(storage.get_reminder, rid)
+        row = await asyncio.to_thread(storage.get_task, rid)
         if not row:
-            raise HTTPException(status_code=404, detail="reminder not found")
-        if row["status"] != "pending":
+            raise HTTPException(status_code=404, detail="task not found")
+        if row["status"] not in ("pending", "failed"):
             raise HTTPException(status_code=400, detail=f"#{rid} 已经结束了（{row['status']}），改不了")
-        changed = await asyncio.to_thread(storage.update_reminder, rid, body.due_ts, text)
+        changed = await asyncio.to_thread(storage.update_task, rid, body.due_ts, instruction)
         if not changed:
             raise HTTPException(status_code=409, detail=f"#{rid} 刚好被巡检触发了，刷新看看")
         return {"ok": True}
 
-    @app.delete("/api/reminders/{rid}")
-    async def delete_reminder(
+    @app.delete("/api/tasks/{rid}")
+    async def delete_task(
         rid: int,
         request: Request,
         x_token: str | None = Header(default=None),
     ):
         """物理删一行：取消才是"不再触发"，删除只是把这条记录从表里拿掉。"""
         _auth(request, x_token)
-        if not await asyncio.to_thread(storage.delete_reminder, rid):
-            raise HTTPException(status_code=404, detail="reminder not found")
+        if not await asyncio.to_thread(storage.delete_task, rid):
+            raise HTTPException(status_code=404, detail="task not found")
         return {"ok": True}
 
-    @app.delete("/api/reminders")
-    async def purge_reminders(
+    @app.delete("/api/tasks")
+    async def purge_task_history(
         request: Request,
         status: str | None = None,
         session_id: str | None = None,
@@ -587,14 +587,14 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         if before_days:
             before_ts = int(time.time()) - max(0, int(before_days)) * 86400
         removed = await asyncio.to_thread(
-            storage.purge_reminders, session_id or None, status or None, before_ts)
+            storage.purge_tasks, session_id or None, status or None, before_ts)
         return {"ok": True, "removed": removed}
 
-    @app.post("/api/reminders/sweep")
-    async def sweep_reminders(request: Request, x_token: str | None = Header(default=None)):
+    @app.post("/api/tasks/sweep")
+    async def sweep_tasks(request: Request, x_token: str | None = Header(default=None)):
         """按保留天数与总行数上限清历史（pending 不动），和巡检循环里的定时清理同一条路。"""
         _auth(request, x_token)
-        return await asyncio.to_thread(_schedule().sweep)
+        return await asyncio.to_thread(_tasks().sweep)
 
     # ---------- 记忆 ----------
 
@@ -817,7 +817,7 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
     # 面板的读全部收在 GET /api/page/<name>：一次往返就是这一页要画的完整快照，
     # 筛选/分页参数原样带在 query 上，口径校验留在各页自己的 loader 里。
     # 写操作不跟着动——仍然按资源走，改完由前端重新拉一次这一页。
-    # 一份数据一个名字（sessions / memories / reminders…），多页共用的那份只有一份实现。
+    # 一份数据一个名字（sessions / memories / tasks…），多页共用的那份只有一份实现。
 
     class _Q:
         """query 参数的取值口径：缺省、非法、越界都在这层收掉，loader 里只留业务。"""
@@ -889,27 +889,28 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
             log_name = cfg.log_file.name
         return {"logs": {"level": level, "file": log_name, "logs": logs[-n:], "total": total}}
 
-    async def _ds_reminders(q: _Q) -> dict:
-        from tool.remind._rule import rule_label as _rule_label
+    async def _ds_tasks(q: _Q) -> dict:
+        from tool.task._rule import rule_label as _rule_label
 
         st = q.text("status") or "pending"
         st = None if st == "all" else st
         sid, needle = q.text("session_id") or None, q.text("q") or None
         offset = q.num("offset", 0, 0)
         rows = await asyncio.to_thread(
-            storage.list_reminders, sid, st, q.num("limit", 200, 1, 500), offset, needle)
-        total = storage.count_reminders(sid, st, needle)
+            storage.list_tasks, sid, st, q.num("limit", 200, 1, 500), offset, needle)
+        total = storage.count_tasks(sid, st, needle)
         now = int(time.time())
-        stats = await asyncio.to_thread(storage.reminder_stats, now, _day_start_ts(now))
+        stats = await asyncio.to_thread(storage.task_stats, now, _day_start_ts(now))
         for r in rows:
             r["rule_label"] = _rule_label(r.get("rule") or "")
-        rem = _schedule_or_none()
-        tool_cfg = rem.config if rem else {}
-        return {"reminders": {
+        tasks = _tasks_or_none()
+        tool_cfg = tasks.config if tasks else {}
+        return {"tasks": {
             "items": rows, "total": total, "offset": offset, "stats": stats,
             "limits": {k: tool_cfg.get(k) for k in
-                       ("max_pending", "max_days", "max_text_chars",
-                        "keep_history_days", "max_rows", "miss_grace_sec")}}}
+                       ("max_pending", "max_days", "max_instruction_chars",
+                        "min_interval_sec", "max_failures", "keep_history_days",
+                        "max_rows", "miss_grace_sec")}}}
 
     async def _ds_memories(q: _Q) -> dict:
         sid, subject, kind = q.text("session_id") or None, q.text("subject") or None, q.text("kind") or None
@@ -992,7 +993,7 @@ def create_app(cfg, storage, memory, presence) -> FastAPI:
         "dash": [_ds_sessions, _ds_recent],
         "logs": [_ds_logs],
         "sessions": [_ds_sessions],
-        "schedule": [_ds_sessions, _ds_reminders],
+        "task": [_ds_sessions, _ds_tasks],
         "memory": [_ds_sessions, _ds_memories],
         "emojis": [_ds_emojis],
         "persona": [_ds_system_prompt],

@@ -355,15 +355,15 @@ tr.mem-group td {
 }
 tr.mem-group td .muted { float: left; margin-top: 5px; }
 
-/* ================= 日程 ================= */
+/* ================= 定时任务 ================= */
 /* 列表自己滚动：「载入更多」把列表撑长时，底部的统计和清理说明仍留在视野里 */
-.sch-body { overflow: auto; max-height: calc(100vh - 300px); padding: 2px 4px 0; }
+.task-body { overflow: auto; max-height: calc(100vh - 300px); padding: 2px 4px 0; }
 /* 一行一条：左边钟点 + 倒计时，中间正文与元信息，右边操作。
    用 grid 而不是 table，是因为正文长度不可控——表格会被长正文顶变形，窄屏更是一字一行。 */
-.sch-group { margin-bottom: var(--s-3); }
-.sch-group:last-child { margin-bottom: 0; }
-.sch-group-head { display: flex; align-items: center; gap: var(--s-2); padding: 0 2px var(--s-2); }
-.sch-item {
+.task-group { margin-bottom: var(--s-3); }
+.task-group:last-child { margin-bottom: 0; }
+.task-group-head { display: flex; align-items: center; gap: var(--s-2); padding: 0 2px var(--s-2); }
+.task-item {
   position: relative;
   display: grid; grid-template-columns: 104px minmax(0, 1fr) auto; gap: var(--s-3); align-items: center;
   padding: var(--s-2) var(--s-3) var(--s-2) var(--s-4); margin-bottom: var(--s-1);
@@ -371,26 +371,26 @@ tr.mem-group td .muted { float: left; margin-top: 5px; }
   background: var(--recess);
   transition: border-color .15s, background .15s;
 }
-.sch-item::before {
+.task-item::before {
   content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px;
   border-radius: 3px; background: var(--info); opacity: .5;
 }
-.sch-item:hover { border-color: var(--border); background: rgba(var(--info-ch), .05); }
-.sch-item.overdue { border-color: rgba(var(--rose-ch), .3); background: rgba(var(--rose-ch), .05); }
-.sch-item.overdue::before { background: var(--rose); opacity: .8; }
-.sch-item.today::before { background: var(--amber); opacity: .75; }
-.sch-item.history { opacity: .72; }
-.sch-item.history::before { background: var(--idle); }
-.sch-when { min-width: 0; }
-.sch-clock { font-size: var(--fs-3); color: var(--text); }
-.sch-gap { margin-top: var(--s-1); font-size: var(--fs-1); white-space: nowrap; }
-.sch-main { min-width: 0; }
-.sch-text { overflow-wrap: anywhere; line-height: 1.5; }
-.sch-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin-top: var(--s-1); }
-.sch-ops { display: flex; align-items: center; gap: 6px; justify-content: flex-end; opacity: .78; transition: opacity .15s; }
-.sch-item:hover .sch-ops { opacity: 1; }
-.sch-foot { display: flex; align-items: center; gap: var(--s-2); margin-top: var(--s-1); }
-.sch-foot .muted { font-variant-numeric: tabular-nums; }
+.task-item:hover { border-color: var(--border); background: rgba(var(--info-ch), .05); }
+.task-item.overdue { border-color: rgba(var(--rose-ch), .3); background: rgba(var(--rose-ch), .05); }
+.task-item.overdue::before { background: var(--rose); opacity: .8; }
+.task-item.today::before { background: var(--amber); opacity: .75; }
+.task-item.history { opacity: .72; }
+.task-item.history::before { background: var(--idle); }
+.task-when { min-width: 0; }
+.task-clock { font-size: var(--fs-3); color: var(--text); }
+.task-gap { margin-top: var(--s-1); font-size: var(--fs-1); white-space: nowrap; }
+.task-main { min-width: 0; }
+.task-text { overflow-wrap: anywhere; line-height: 1.5; }
+.task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin-top: var(--s-1); }
+.task-ops { display: flex; align-items: center; gap: 6px; justify-content: flex-end; opacity: .78; transition: opacity .15s; }
+.task-item:hover .task-ops { opacity: 1; }
+.task-foot { display: flex; align-items: center; gap: var(--s-2); margin-top: var(--s-1); }
+.task-foot .muted { font-variant-numeric: tabular-nums; }
 
 /* ================= 设置 ================= */
 /* 卡片按内容收高度（align-items: start）：
@@ -588,11 +588,13 @@ tr.mem-group td .muted { float: left; margin-top: 5px; }
   background: var(--cat, var(--idle)); opacity: .75;
 }
 .tool-card[data-cat="core"] { --cat: var(--info); }
-.tool-card[data-cat="schedule"] { --cat: var(--amber); }
+.tool-card[data-cat="task"] { --cat: var(--amber); }
+.tool-card[data-cat="kvdb"] { --cat: var(--lime); }
 .tool-card[data-cat="media"] { --cat: var(--live); }
 .tool-card[data-cat="memory"] { --cat: var(--violet); }
 .tool-card[data-cat="web"] { --cat: var(--teal); }
-.tool-card[data-cat="mail"] { --cat: var(--rose); }
+.tool-card[data-cat="email"] { --cat: var(--rose); }
+.tool-card[data-cat="emoji"] { --cat: var(--pink); }
 .tool-card[data-cat="admin"] { --cat: var(--idle); }
 .tool-card:hover { border-color: var(--border-hover); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
 .tool-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-2); }

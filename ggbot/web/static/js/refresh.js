@@ -8,8 +8,8 @@
    写操作照旧按资源走（POST/PUT/DELETE），改完由调用方 reloadPage() 把这一页重新拉回来。 */
 
 /* 只有这几页的数据会自己变，才值得挂着定时器；其余页面进出才拉。
-   日志要跟得上滚动，仪表盘和日程的倒计时/逾期得走着看。 */
-const PAGE_LIVE = { dash: 5000, schedule: 5000, logs: 1000 };
+   日志要跟得上滚动，仪表盘和任务的倒计时/逾期得走着看。 */
+const PAGE_LIVE = { dash: 5000, task: 5000, logs: 1000 };
 
 /* 每页的参数从它自己的控件读出来：轮询和手工刷新拉的是同一份口径，不会两套筛法。
    日志一次多少行不由前端报数——后端 LOG_LINES_DEFAULT 说了算，前端要筛就只筛级别和会话。 */
@@ -31,14 +31,14 @@ const PAGE_PARAMS = {
     else if (kind) p.kind = kind;
     return p;
   },
-  schedule: () => {
-    // 「载入更多」是把窗口撑大（state.schLimit），不是翻页：轮询和刷新都跟着这个窗口走
+  task: () => {
+    // 「载入更多」是把窗口撑大（state.taskLimit），不是翻页：轮询和刷新都跟着这个窗口走
     const p = {
-      status: qs("#sch-status").value,
-      limit: String(Math.min(state.schLimit || SCH_PAGE, SCH_WINDOW)),
+      status: qs("#task-status").value,
+      limit: String(Math.min(state.taskLimit || TASK_PAGE, TASK_WINDOW)),
     };
-    const sid = qs("#sch-session").value;
-    const q = qs("#sch-q").value.trim();
+    const sid = qs("#task-session").value;
+    const q = qs("#task-q").value.trim();
     if (sid) p.session_id = sid;
     if (q) p.q = q;
     return p;
@@ -56,7 +56,7 @@ const PAGE_RENDER = {
   dash: (d) => { setSessions(d.sessions); renderDashRecent(d.recent); },
   logs: (d) => renderLogs(d.logs),
   sessions: (d) => { setSessions(d.sessions); renderSessionsPage(); },
-  schedule: (d) => { setSessions(d.sessions); renderSchedule(d.reminders); },
+  task: (d) => { setSessions(d.sessions); renderTaskPage(d.tasks); },
   memory: (d) => { setSessions(d.sessions); renderMemories(d.memories); },
   emojis: (d) => renderEmojis(d.emojis),
   persona: (d) => applyPersona(d.system_prompt),
