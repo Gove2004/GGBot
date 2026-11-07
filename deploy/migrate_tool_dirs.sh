@@ -17,7 +17,8 @@ PY="${PYTHON:-python3}"
 export PYTHONIOENCODING=utf-8
 
 # 旧目录 -> 现用目录（历次改名逐级对齐，所以更早期的路径也一并接住）
-# 表情素材从 tool/media/emoji/ 升到顶层 tool/emoji/，和代码同目录；邮件、定时随分类改名。
+# 表情素材从 tool/media/emoji/ 升到顶层 tool/emoji/，和代码同目录；
+# 定时随分类改名（schedule -> remind -> task），简单存储 kvdb 是新增分类，没有旧路径。
 pairs="
 tool/chat/emoji tool/emoji
 tool/chat/audio tool/media/audio
@@ -25,6 +26,7 @@ tool/chat/gen tool/media/generate
 tool/knowledge/web tool/web
 tool/mail tool/email
 tool/schedule tool/remind
+tool/remind tool/task
 tool/media/emoji tool/emoji
 tool/memory_fetch tool/memory_search
 tool/memory_write tool/memory_add
@@ -79,7 +81,10 @@ RENAME = {
     "sticker_save": "save_emoji",
     "emoji_save": "save_emoji",
     "send_voice_clone": "send_voice",
-    "remind_cancel": "remind_del",
+    "remind_cancel": "task_del",
+    "remind_add": "task_add",
+    "remind_list": "task_list",
+    "remind_del": "task_del",
     "web_search": "search",
     "web_fetch": "fetch",
 }
