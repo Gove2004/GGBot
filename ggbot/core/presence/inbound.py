@@ -25,8 +25,8 @@ logger = logging.getLogger("ggbot.presence")
 # 上线原因在日志里的说法（面板与排查都对得上）
 ONLINE_LABEL = {"scheduled": "自然上线", "wake-on-at": "强制上线", "startup": "启动上线"}
 
-SPEAK_ONLINE_WITHIN_SEC = 30.0
-"""主动说完话之后，把上线倒计时压到半分钟之内：有人回这句话时不用等整个离线周期。"""
+TASK_ONLINE_WITHIN_SEC = 30.0
+"""任务汇报发出之后，把上线倒计时压到半分钟之内：有人回这句话时不用等整个离线周期。"""
 
 
 class InboundOrchestrator:
@@ -276,19 +276,19 @@ class InboundOrchestrator:
             if self._debounce.get(st.sid) and st.is_online:
                 self._schedule_flush(st)
 
-    # ---------- 回合外发言 ----------
+    # ---------- 回合外：定时任务 ----------
 
-    async def speak(self, sid: str, text: str) -> bool:
-        """替会话把一句话说出去（提醒到点就走这条通道），发送由决策层完成。
+    async def run_task(self, sid: str, task: dict) -> str:
+        """任务到点就跑一个完整回合（决策层组装上下文、模型调工具），返回这一场的结果状态。
 
         真发出去了才把上线倒计时压到半分钟内：有人回这句话时不用等整个离线周期。
         积压交给正常的上线流程读，这里不抢读，免得把还没回的消息标成已读。
         """
         st = self.state_of(sid)
-        ok = await self.decision.speak(sid, text, st)
-        if ok and not st.is_online:
-            st.hurry_online(SPEAK_ONLINE_WITHIN_SEC)
-        return ok
+        state = await self.decision.run_task(sid, task, st)
+        if state == "sent" and not st.is_online:
+            st.hurry_online(TASK_ONLINE_WITHIN_SEC)
+        return state
 
     # ---------- 面板 ----------
 

@@ -3,7 +3,7 @@
 三条路径共用同一条出站（outbox）：
 - process_batch：在线窗口聚合好的一批；
 - reply_now：被@唤醒，单条直接回；
-- speak：回合外发言（提醒到点、管理代发），没有本轮消息也要能说。
+- run_task：定时任务到点，没有本轮消息也要能跑（模型自己查、自己比、自己决定说什么）。
 
 三条都是 outbox.open_turn（有锚点走被动回复，没锚点才问过主动频控闸门）→
 上下文组装 + agent 循环（模型自己决定说还是调 silence）→ 把结果记回 messages 的
@@ -19,7 +19,6 @@ import logging
 from tool import agent_loop
 from ggbot.core.outbox import Outbox
 from ggbot.core.storage import REPLY_ANSWERED, REPLY_FAILED, REPLY_SKIPPED
-from ggbot.util.logging_setup import clip
 from ggbot.util.session import session_label
 
 from ggbot.core.presence.state import SessionState
@@ -63,30 +62,40 @@ class TurnDecider:
             return False
         return await self._run_turn([inbound], ctx)
 
-    async def speak(self, sid: str, text: str, st: SessionState | None = None) -> bool:
-        """不经模型往会话里说一句话（提醒到点就走这条通道），发送路径和回合内一致。
+    async def run_task(self, sid: str, task: dict, st: SessionState | None = None) -> str:
+        """定时任务到点：跑一个完整回合，返回这一场的结果状态（巡检按它落账）。
 
-        先找还能用的锚点走被动回复，没有才主动发送——主动被本地频控闸门拦下就返回 False，
-        由调用方下一轮重试。发出去那一下的续期由 ctx 上的钩子记（和回合内同一个口子），
-        这里不再补记一次。
+        - sent：真发出去了（正文或媒体都算）；
+        - silence：模型跑完了但判断没什么可说（数据没变就不吵人），同样算跑过一场；
+        - blocked：锚点用尽且主动被闸门拦下，这一场什么都没做，下一轮再试；
+        - error：生成失败或工具报错，由调用方记失败次数；
+        - denied：创建者权限已降为禁止，这条任务再也跑不了。
+
+        权限主体是**当初排下这条任务的人**，不是模型：任务里要调什么工具，按他的等级校验。
         """
+        label = session_label(sid)
+        rid = int(task.get("id") or 0)
+        actor = self.perms.resolve(task.get("owner"), task.get("owner_name"))
+        if actor["level"] <= 0:
+            logger.warning("任务 #%d 跑不了：创建者权限为禁止", rid, extra={"session": label})
+            return "denied"
         ctx, blocked = self._open_turn(sid, [], st)
         if ctx is None:
-            logger.debug("主动发言被拦（%s）: %s", blocked, clip(text, 40),
-                         extra={"session": session_label(sid)})
-            return False
-        label = session_label(sid)
+            logger.debug("任务 #%d 被拦（%s），下一轮再试", rid, blocked, extra={"session": label})
+            return "blocked"
         try:
-            result = await self.executor.outbound.send(ctx, text)
+            await self._agent_loop(sid, [], ctx, task=task)
         except Exception as e:  # noqa: BLE001
-            logger.warning("发言失败: %s", clip(str(e), 80), extra={"session": label})
-            return False
-        if not ctx.get("sent_any"):
-            logger.warning("发言未送出: %s", clip(str(result.get("error") or result), 80),
+            logger.warning("任务 #%d 执行失败: %s", rid, e, extra={"session": label})
+            return "error"
+        if ctx.get("sent_any"):
+            self.outbox.commit_turn(sid, ctx)
+            return "sent"
+        if ctx.get("tool_error"):
+            logger.warning("任务 #%d 工具执行失败: %s", rid, ctx["tool_error"],
                            extra={"session": label})
-            return False
-        self.outbox.commit_turn(sid, ctx)
-        return True
+            return "error"
+        return "silence"
 
     # ---------- 出站与回合 ----------
 
@@ -141,15 +150,21 @@ class TurnDecider:
         self.storage.finish_backlog(ids, REPLY_SKIPPED)
         return False
 
-    async def _agent_loop(self, sid: str, msgs: list[dict], ctx: dict) -> str:
+    async def _agent_loop(self, sid: str, msgs: list[dict], ctx: dict,
+                          task: dict | None = None) -> str:
         """组装上下文并交给 agent 循环：模型写正文、调工具，实际发送由运行时完成。"""
-        ctx_msg = msgs[-1] if msgs else {}
-        # 权限主体 = 本轮触发者（批次最后一条），由服务端解析，不接受模型参数
-        actor = self.perms.resolve(ctx_msg.get("sender"), ctx_msg.get("sender_name"))
+        if task is not None:
+            # 任务到点没有触发者，权限主体是当初排下它的人（run_task 已先校验过等级）
+            actor = self.perms.resolve(task.get("owner"), task.get("owner_name"))
+        else:
+            # 权限主体 = 本轮触发者（批次最后一条），由服务端解析，不接受模型参数
+            ctx_msg = msgs[-1] if msgs else {}
+            actor = self.perms.resolve(ctx_msg.get("sender"), ctx_msg.get("sender_name"))
         ctx["actor"] = actor
         if actor["level"] <= 0:
             return ""
-        assembled = await self.context.assemble(sid, msgs, overflow=self.archiver.overflow)
+        assembled = await self.context.assemble(sid, msgs, overflow=self.archiver.overflow,
+                                                task=task)
         if assembled.overflow_before_id is not None:
             # 窗口已满：把最旧一段交给后台分批写入记忆，不阻塞本轮回复
             self.archiver.schedule(sid, assembled.overflow_before_id)

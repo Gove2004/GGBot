@@ -149,13 +149,13 @@ async def main(cfg: Config | None = None) -> None:
     # 开机扫一次遗忘：到期、淡出、超上限、近似重复一次清掉。放后台线程，不挡启动也不拖首轮回复
     forget_task = asyncio.create_task(asyncio.to_thread(memory.sweep))  # noqa: F841
 
-    from tool.remind.remind import Reminders
+    from tool.task.task import Tasks
 
-    # 提醒的真相在 reminders 表里，这里只是把巡检循环跑起来：重启后错过的按宽限处置
-    reminders = Reminders(executor.rt, presence.speak)
-    reminder_task = asyncio.create_task(reminders.run())
-    # 开机清一次日程历史（终态行过了保留天数就退场），之后由巡检循环按间隔继续清
-    schedule_sweep_task = asyncio.create_task(asyncio.to_thread(reminders.sweep))  # noqa: F841
+    # 任务的真相在 tasks 表里，这里只是把巡检循环跑起来：重启后错过的按宽限处置
+    tasks = Tasks(executor.rt, presence.run_task)
+    task_scan = asyncio.create_task(tasks.run())
+    # 开机清一次任务历史（终态行过了保留天数就退场），之后由巡检循环按间隔继续清
+    task_sweep = asyncio.create_task(asyncio.to_thread(tasks.sweep))  # noqa: F841
 
     async def _temp_cleanup_loop():
         """temp 目录过期文件清理（storage.temp_ttl_hours，默认 24h），每小时巡检一次。"""
@@ -178,7 +178,7 @@ async def main(cfg: Config | None = None) -> None:
         await bot.start(cfg.qq["appid"], cfg.qq["secret"])
     finally:
         await presence.stop()
-        reminder_task.cancel()
+        task_scan.cancel()
         cleanup_task.cancel()
         if web_task:
             web_task.cancel()

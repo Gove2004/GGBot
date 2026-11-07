@@ -1,14 +1,14 @@
-"""日程的时间写法与周期规则：整个项目只有这一份解析。
+"""任务的时间写法与周期规则：整个项目只有这一份解析。
 
 对话侧的 `when` / `repeat` 走这里（模型只填固定写法，自然语言先调 `time` 换算）；
 面板不给解析——它直接写绝对 unix 秒（日期时间选择器算出来的），所以第二套"猜时间"的
 实现没有存在的必要。
 
 - `parse_when`：把 `+30m` / `18:30` / `10-30 18:30` / `2026-10-30 18:30` 换成到期 unix 秒
-- `parse_rule`：把 `daily` / `weekdays` / `weekly` / `monthly` 归一成一个自描述的规则串，
-  月周期把"几号"钉在串里（`monthly:31`），否则 1 月 31 日会一路漂成 28 号
+- `parse_rule`：把 `daily` / `weekdays` / `weekly` / `monthly` / `every:30m` 归一成一个
+  自描述的规则串，月周期把"几号"钉在串里（`monthly:31`），否则 1 月 31 日会一路漂成 28 号
 - `advance`：给一个到期时间和规则，算下一场的到期时间（从**原本的那一格**往后推，
-  不从"现在"推，每天 8 点才不会因为晚发两分钟漂成 8:02）
+  不从"现在"推，每天 8 点才不会因为晚跑两分钟漂成 8:02）
 
 时区口径：全都按**服务器本地时间**理解和计算（`time` 工具返回的就是它），存的是 unix 秒。
 """
@@ -20,7 +20,9 @@ from datetime import datetime, timedelta
 
 _WEEKDAYS = "一二三四五六日"
 _UNITS = {"m": 60, "h": 3600, "d": 86400}
+_UNIT_WORDS = {"m": "分", "h": "小时", "d": "天"}
 _REL_RE = re.compile(r"^\+(\d{1,5})([mhd])$")
+_EVERY_RE = re.compile(r"^every:(\d{1,5})([mhd])$")
 _HM_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$")
 _MD_RE = re.compile(r"^(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$")
 _YMD_RE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$")
@@ -31,7 +33,8 @@ WHEN_HELP = (
 )
 REPEAT_HELP = (
     "repeat 只认这几种：daily（每天）/ weekdays（工作日，跳过周六日）/ weekly（每周同一天）/ "
-    "monthly（每月同一号，遇到没这一天就当月最后一天）；不填就是一次性提醒"
+    "monthly（每月同一号，遇到没这一天就当月最后一天）/ every:30m、every:2h、every:1d"
+    "（每隔多久跑一次，盯变化用它）；不填就是一次性任务"
 )
 
 _RULE_WORDS = {
@@ -101,9 +104,14 @@ def parse_rule(raw, due_ts: int) -> tuple[str, str]:
     """把 repeat 归一成规则串；月周期把「几号」钉进串里，防止月末一路漂下去。
 
     返回 (rule, 错误说明)。规则串自己就够 describe：`''` / `daily` / `weekdays` /
-    `weekly` / `monthly:31`。
+    `weekly` / `monthly:31` / `every:30m`。
     """
     s = str(raw or "").strip().lower()
+    m = _EVERY_RE.match(s)
+    if m:
+        return f"every:{int(m.group(1))}{m.group(2)}", ""
+    if s.startswith("every:"):
+        return "", f"repeat 看不懂：{raw}。间隔写成 every:30m / every:2h / every:1d"
     word = _RULE_WORDS.get(s)
     if word is None:
         return "", f"repeat 看不懂：{raw}。{REPEAT_HELP}"
@@ -112,8 +120,17 @@ def parse_rule(raw, due_ts: int) -> tuple[str, str]:
     return word, ""
 
 
+def rule_seconds(rule: str) -> int:
+    """`every:Nm/h/d` 的间隔秒数；别的规则（含一次性）返回 0。下限校验与推进都用这一份。"""
+    m = _EVERY_RE.match(str(rule or ""))
+    return int(m.group(1)) * _UNITS[m.group(2)] if m else 0
+
+
 def rule_label(rule: str) -> str:
     """规则串说回人话，面板和工具返回都用它，不再各写一份映射。"""
+    m = _EVERY_RE.match(str(rule or ""))
+    if m:
+        return f"每{int(m.group(1))}{_UNIT_WORDS[m.group(2)]}"
     return {
         "": "一次性",
         "daily": "每天",
@@ -130,6 +147,9 @@ def _month_end(year: int, month: int) -> int:
 
 def advance(due_ts: int, rule: str) -> int:
     """一场结束后的下一场到期时间（unix 秒）。一次性规则返回 0，调用方按"跑完了"处理。"""
+    gap = rule_seconds(rule)
+    if gap:
+        return int(due_ts) + gap
     dt = datetime.fromtimestamp(int(due_ts))
     if rule in ("daily",):
         return int((dt + timedelta(days=1)).timestamp())

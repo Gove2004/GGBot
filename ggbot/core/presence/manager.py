@@ -78,9 +78,9 @@ class PresenceManager:
         """处理一条入站消息。返回 True 表示消息已被机器人消费。"""
         return await self.inbound.handle_message(inbound)
 
-    async def speak(self, sid: str, text: str) -> bool:
-        """不经模型往会话里说一句话（提醒到点就走这条通道）。"""
-        return await self.inbound.speak(sid, text)
+    async def run_task(self, sid: str, task: dict) -> str:
+        """定时任务到点：跑一个完整回合，返回 sent / silence / blocked / error / denied。"""
+        return await self.inbound.run_task(sid, task)
 
     async def forget_session(self, sid: str) -> None:
         """丢弃会话运行态（清空上下文/重置后调用），不影响其他会话。"""

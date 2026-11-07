@@ -6,7 +6,7 @@
 - 主动消息的本地频控闸门：平台群聊硬限制 20 条/分钟、1000 条/天，这里再留余量；
 - 富媒体来源判定：temp/ 与 tool/ 下的本地文件走 base64 file_data 直传，超过 10MB 才退回签名公网 URL。
 
-speak（提醒到点）和回合内回复走同一条 open_turn → 发送 → commit_turn，回执也记在同一处（sends 表），
+run_task（定时任务到点）和回合内回复走同一条 open_turn → 发送 → commit_turn，回执也记在同一处（sends 表），
 排查「被动回复是不是被平台拒了」不用去翻日志。
 """
 
@@ -32,7 +32,7 @@ def derive_target(session_id: str) -> tuple[str, str]:
     """从 session_id（如 group:g_xxx / c2c:u_xxx）反推发送目标与场景。
 
     sessions.key 里存的是完整 openid，库里的消息行只留 session_id，因此重启后或
-    只按会话发言（提醒到点）时需要这条推导兜底。
+    只按会话发言（任务到点）时需要这条推导兜底。
     """
     sid = session_id or ""
     if ":" in sid:
@@ -169,7 +169,7 @@ class Outbox:
         """给出这一轮的发送上下文，以及被拦下的原因（ctx 为 None 时这轮发不出去）。
 
         一律先试被动回复：有还能用的锚点就挂上它，不占主动额度；锚点过期或回满次数才走主动，
-        主动受本地闸门约束（提醒这类回合外发言拿不到锚点时也会被它挡住，由调用方下一轮重试）。
+        主动受本地闸门约束（任务这类回合外发言拿不到锚点时也会被它挡住，由调用方下一轮重试）。
         """
         anchor, seq = self.anchors.pick(sid, msgs or [], scene)
         passive = anchor is not None

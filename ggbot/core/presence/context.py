@@ -1,6 +1,7 @@
 """上下文组装：一次请求 = 全量工具列表 + 静态人设 + 历史窗口 + 相关记忆 + 本轮消息。
 
 前两段所有会话逐字节相同，是厂商上下文缓存的前缀；后三段每轮都换，所以一律排在后面。
+最后一段有两种：群友发来的消息，或定时任务到点的指令（两者都只占这一个位置）。
 这里只负责"拼出发给模型的 messages"，不决定发不发消息、也不动数据库里的状态。
 """
 
@@ -9,12 +10,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 
 from ggbot.core.storage import REPLY_BACKLOG
 from ggbot.util.media import media_kind_label
 from ggbot.util.session import oid8, session_label
 
-from ggbot.core.presence.defaults import MEMORY_BLOCK, SYSTEM_TEMPLATE
+from ggbot.core.presence.defaults import MEMORY_BLOCK, SYSTEM_TEMPLATE, TASK_BLOCK
 
 logger = logging.getLogger("ggbot.presence")
 
@@ -68,6 +70,17 @@ def fmt_user_messages(msgs: list[dict]) -> str:
             parts.append(f"[{media_kind_label(ct)}{ref}]")
         lines.append(" ".join(parts))
     return "\n".join(lines)
+
+
+def fmt_task(task: dict) -> str:
+    """任务到点的本轮输入：编号、触发时刻、通知对象与当初写下的指令。
+
+    触发时刻直接给出来，模型存带日期的键（kv_set）时不必再为「今天几号」多跑一次 time。
+    """
+    who = sender_label({"sender": task.get("notify"), "sender_name": task.get("notify_name")})
+    return (f"任务 #{task.get('id')} · {datetime.now():%Y-%m-%d %H:%M}\n"
+            f"通知对象: {who or '本人'}\n"
+            f"指令: {task.get('instruction') or ''}")
 
 
 def fmt_archive(msgs: list[dict]) -> str:
@@ -136,12 +149,12 @@ class ContextBuilder:
         before_id = window[keep_from]["id"] if (len(window) >= self.history_limit and keep_from > 0) else None
         return window, before_id
 
-    async def memory_block(self, sid: str, ctx_msg: dict) -> str:
-        """相关记忆：按本轮内容检索全局 + 本会话，最多 3 条；没有命中就不注入这一段。
+    async def memory_block(self, sid: str, text: str) -> str:
+        """相关记忆：按本轮内容（群友的话，或任务指令）检索全局 + 本会话，最多 3 条；没命中就不注入。
 
         命中即强化（touch）：被捞进上下文算"想起来过"一次，遗忘扫描按最后命中时间算淡出。
         """
-        query = (ctx_msg.get("content") or "").strip()
+        query = (text or "").strip()
         if not query or self.memory is None:
             return ""
         try:
@@ -161,14 +174,17 @@ class ContextBuilder:
 
     # ---------- 组装 ----------
 
-    async def assemble(self, sid: str, msgs: list[dict], *, overflow: int) -> Assembled:
+    async def assemble(self, sid: str, msgs: list[dict], *, overflow: int,
+                       task: dict | None = None) -> Assembled:
         """请求顺序就是缓存顺序：人设在前、历史次之，相关记忆与本轮消息放最后。
 
         每轮只换尾巴，前缀才命中得了；窗口装满时把要消化的最旧一段一并报给调用方
         （这里不碰归档，只负责"该消化了"这个判断）。
+        task 给了就是定时任务到点：本轮没有群友消息，尾巴换成那条任务的指令。
         """
         ctx_msg = msgs[-1] if msgs else {}
-        digest = await self.memory_block(sid, ctx_msg)
+        query = (task.get("instruction") if task else ctx_msg.get("content")) or ""
+        digest = await self.memory_block(sid, query)
         window, before_id = self.history_window(sid, len(msgs), overflow)
         messages = [{"role": "system", "content": self.system_prompt}]
         for h in window:
@@ -178,8 +194,9 @@ class ContextBuilder:
                 messages.append({"role": "assistant", "content": h["content"]})
         if digest:
             messages.append({"role": "system", "content": digest})
-        messages.append({"role": "user",
-                         "content": "【本轮消息】（只回应这里的内容）\n" + fmt_user_messages(msgs)})
+        tail = (TASK_BLOCK + fmt_task(task)) if task else (
+            "【本轮消息】（只回应这里的内容）\n" + fmt_user_messages(msgs))
+        messages.append({"role": "user", "content": tail})
         # 「历史」是本轮注入的历史消息条数，「估算」是整次请求的 tokens（口径见 LLM 请求行）。
         # 128k 预算装 1024 条历史足够，这里只留一行做观测，不再按它压缩历史。
         total = self.llm.estimate_messages_tokens(messages)
