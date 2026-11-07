@@ -44,12 +44,13 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 
 - **一条链按职责切成七块，不再有一千行的 `presence.py`**：`ggbot/core/presence/` 包里 `manager`（组装 + 2 秒 tick + 面板读的 `status()`）、
   `state`（这个会话此刻的作息，只有作息）、`inbound`（权限闸门 → 入库 → 按此刻作息分流 → 在线抖动窗口聚一批）、
-  `decision`（一批消息要不要说话：拼上下文 → 模型自己说或调 `silence`；回合外发言也在这里）、
+  `decision`（一批消息要不要说话：拼上下文 → 模型自己说或调 `silence`；定时任务到点跑的那一轮也在这里）、
   `context`（历史窗口 + 记忆尾注怎么拼）、`archiver`（满窗消化）、`defaults`（内置人设与记忆块文案）；出站单独一份 `ggbot/core/outbox.py`。
   → 之前那 887 行里四件事共用一堆局部变量：改作息要通读入站、改上下文要通读决策，回归测试只能造假对象整块喂，
     任何一段出错都得先搞清楚它在哪一段。切开后每块只认自己的输入，测试直接 `import ggbot.core.presence.decision` 替那一段。
-  改动时注意：`PresenceManager` 只留"装配 + 心跳 + 面板口径"，别往它身上加业务方法；工具/日程/面板要发言一律走
-  `pm.speak` → `TurnDecider.speak`，不要在工具里直接调 bot API 另开第二条出站（那条不过锚点、不过频控、不记回执）。
+  改动时注意：`PresenceManager` 只留"装配 + 心跳 + 面板口径"，别往它身上加业务方法；要发言只有一个入口——回合内是模型把话写在回复正文里，
+  回合外（定时任务）是 `pm.run_task` → `TurnDecider.run_task` 开一个真回合让模型说话。v3.4 起 `speak`（"替别人念一句写好的话"）已经整条删掉：
+  它绕过了模型，也就绕过了"要不要说、说到什么程度"的判断，而任务现在要的就是这个判断。不要在工具里直接调 bot API 另开第二条出站（那条不过锚点、不过频控、不记回执）。
 
 - **一条消息两条时间线，各一列**：`messages.read_state`（`unread`/`read`）与 `messages.reply_state`
   （`waiting`/`answered`/`failed`/`skipped`/`none`）。「到达」不占列——行存在 + `ts` 就是到达，`role` 就是方向。
@@ -241,10 +242,10 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 
 ## 工具与权限
 
-- **一切皆 Tool**，按能力域放在根目录 `tool/{core,memory,media,emoji,remind,web,email,admin}/`，每个目录自包含代码 + `config.json` + 数据；
-  拷走文件夹就能迁移。`silence` 单独成 `core`（回合控制），`schedule`→`remind`、`mail`→`email` 按能力域直命名，
+- **一切皆 Tool**，按能力域放在根目录 `tool/{core,memory,media,emoji,task,kvdb,web,email,admin}/`，每个目录自包含代码 + `config.json` + 数据；
+  拷走文件夹就能迁移。`silence` 单独成 `core`（回合控制，同目录还有归属专属的 `bash`），`schedule`→`remind`→`task`、`mail`→`email` 按能力域直命名，
   富媒体（语音克隆 / 生图）合在 `media`，表情从 `media` 底下升到顶层 `emoji`（它有自己的目录契约与素材目录，不该寄在"媒体"下），
-  记忆与上下文合在 `memory`，联网（搜索 / 抓取 / 当前时间）单独成类，`admin` 只有权限管理一个工具。
+  记忆与上下文合在 `memory`，联网（搜索 / 抓取 / 当前时间）单独成类，`kvdb` 只干"存一小段带名字的值"这一件事，`admin` 只有权限管理一个工具。
 - **`send_image` / `send_video`（转发现成的图或视频）与 `clear_context`（清空本会话上下文）已整体删除**：
   → 前两个是"把群里已有的东西原样再发一遍"，QQ 侧本来就允许用户自己转发，工具位与等级面白占着；要一张**新**图靠 `generate_image`。
   `clear_context` 是模型能自己动手抹掉一段对话历史的能力，这类"改机器状态"的动作只留在面板「会话」页与 `ggbot.cli clear`——
@@ -267,6 +268,10 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   工具名去掉重复的分类前缀：`memory_save`→`memory_add`、`memory_fetch`→`memory_search`、`web_search`→`search`、`web_fetch`→`fetch`、
   `send_voice_clone`→`send_voice`、`remind_cancel`→`remind_del`（语义没变，只是名字里那个"取消"和别的工具不一致）、
   `manage_permission`→`admin_manage`、`emoji_list`→`list_emoji`、`emoji_save`→`save_emoji`。
+  2026-11-08（v3.4）再来一次：`remind` 重做成 `task`（到点不再是念一句写好的话，是跑一个完整回合），
+  目录 `tool/remind`→`tool/task`、工具 `remind_add`/`remind_list`/`remind_del`→`task_add`/`task_list`/`task_del`，
+  面板页与 CLI 子命令跟着从 `schedule` 改成 `task`（这一次不再保留两个名字——那一页管的已经不是"提醒"）；
+  同一版新增 `kvdb`（`kv_set`/`kv_get`/`kv_list`/`kv_del`，L2）和 `core` 里的 `bash`（L5）。
   → 名字前缀在分类已经存在时是纯噪声（`web.web_search`），面板与日志里读到的应该是能力，不是路径复述。
   改动时注意：换目录要在**每台机器各搬一次**已有数据（素材、参考音频、含密钥的 `config.json`），搬漏一次等于工具"未启用"；
   换工具名会让 `config.levels` 里的旧键静默失效（回到代码默认门槛），迁移脚本 `deploy/migrate_tool_dirs.sh` 一起做这两件事——
@@ -290,43 +295,75 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   → 早期是"没素材就不给看 schema"，但那要每次请求扫一遍目录才能让列表稳定；素材会长会删，把它当下发条件等于每轮重算列表、
     正好劈开缓存前缀。凭据（Agnes/MiMo key）不一样，它只在部署时变，所以仍按 `enabled` 决定进不进列表。
 
-## 日程（remind：一次性 + 周期）
+## 定时任务（task：到点跑一个完整回合）
 
-- **分类目录叫 `remind`，面板页与 CLI 子命令仍叫 `schedule`**：对话侧三个工具是 `remind_add`/`remind_list`/`remind_del`，
-  网页那一页的 `data-page="schedule"`、`python -m ggbot.cli schedule list|…` 不变。
-  → 工具名要跟着"群里怎么说这件事"走（"提醒我"），面板与 CLI 是运维入口，那一页管的是整张日程表（含历史与清理），
-    两个语境用同一个词反而别扭。改名要同时动 `PAGE_META`/`PAGE_RENDER`/nav 与 CLI parser，收益只有好看，代价是一整批测试与文档。
-
-- **真相在 `reminders` 表，进程里只有一个巡检循环**：`main.py` 起 `Reminders.run()`，每 `scan_interval_sec`（默认 15s）扫一次到期行；启动时另跑一次历史清理。
-  → 排好的日程必须活过重启，所以不能放内存堆；工具实例与巡检实例各持一个 `Reminders`，状态全在表里，两边看到的是同一张表。
+- **一句话定位：`task` 不是"到点念一句写好的话"，是"到点开一个真回合"**：巡检把到期行交给 `PresenceManager.run_task` → `TurnDecider.run_task`，
+  拼上下文、下发全量工具，让模型自己去查（`fetch`/`search`）、自己去比（`kv_get`/`kv_set`）、自己决定说不说，说完按普通回合落库。
+  → 上一版 `remind` 只会"到点把当初那句原文 @ 给某人"，所以"每天 18 点看一眼网站有没有变化再汇报"这种要求根本做不到——要它做就得跑模型。
+    代价是每一场一次请求，所以门槛从 L2 抬到 L4、间隔有 `min_interval_sec` 下限，这两处都是为这条代价服务的。
+  改动时注意：**不要给任务加"廉价直发"分支**（哪怕 instruction 看起来只是一句话）。两条路就是两套校验和两套措辞，而"要不要说、说到什么程度"本来就该模型判断；
+    也不要另开第二条出站（`speak` 这类"替别人念一句写好的话"的方法已整条删掉），出站只有正文通道那一条。
+- **五种落定状态**（`run_task` 的返回值，日志和 `tasks.status` 都按它走）：`sent`（写了正文、回合已提交）/ `silence`（模型调了 silence，什么都没发）/
+  `blocked`（出站被本地频控拦住）/ `error`（模型请求或工具报错）/ `denied`（创建者权限已降为禁止）。
+  → `blocked` 与 `error` 必须分开：前者是平台节奏问题（`continue`，留在 `pending` 下一轮重试，不计失败），后者是真坏了。把频控算进失败会让一次深夜限流把整条任务打死。
+  改动时注意：`denied` 在开回合之前就判掉；`error` 看 `ctx["tool_error"]`、`sent` 看 `ctx["sent_any"]`——这两个键就是"这一轮发生了什么"的唯一信号，别再立标志位。
+- **权限的主体是"当初排下这条任务的人"**：`perms.resolve(task["owner"], task["owner_name"])` 还原 actor，等级 ≤ 0 直接 `denied`（连回合都不开）；
+  到点那一轮的工具门槛按这个人裁。
+  → 让触发时的在场者（可能是群友 B）的等级决定别人排的任务能调什么，等于借一条排好的任务越权；创建者被降到禁止，那条就该停住，而不是换个主人继续跑。
+- **真相在 `tasks` 表，进程里只有一个巡检循环**：`main.py` 起 `Tasks.run()`，每 `scan_interval_sec`（默认 15s）扫一次到期行；启动时另跑一次 `sweep()`。
+  → 排好的任务必须活过重启，所以不能放内存堆；工具实例与巡检实例各持一个 `Tasks`，状态全在表里，两边看到的是同一张表。
   改动时注意：不要加"下次触发时间"堆、定时器句柄缓存之类第二套状态，扫表 + `status='pending'` 就是唯一真相。
-- **到点发的是当初写好的原文，不再问一次模型**：省一次请求，也保证发出去的就是那句话。
-  → 到点重新组织语言等于把"提醒你交材料"变成模型自由发挥，还会在深夜多烧一次调用。
-- **发送复用回合外发言 `PresenceManager.speak`，不新建第二条发送链路**：`speak` → `TurnDecider.speak` 走的是和回合内一样的通道——先找还能用的被动锚点，
-  找不到才主动发送；主动被本地频控拦住就返回失败、这一条留在 `pending` 下一轮重试，重试到超过宽限自然转 `expired`。
-  → 日程的送达约束（@ 转换、引用、入库成 assistant 行、失败降级）和模型说话完全一样，另写一个发送函数就会有两套口径要维护。
-  改动时注意：`speak` 会 `st.renew()`（替它说了话接下来得在场），但会话正离线时**只把上线倒计时压到 30 秒内、不抢读积压**——
-  抢读会把还没回的消息一起置成「已读 + 不需要回复」，那些话就永远没人答了。
-- **周期项的下一场从「原本那一格」往后推，不从"现在"推**（`_rule.advance(due_ts, rule)`），发完一场只 `fired_count +1` 并把到期推到下一格，状态仍是 `pending`，
+- **旧 `reminders` 表的数据不迁移**：v3.4 起没有任何代码读它，`tasks` 从零开始，线上挂着的旧提醒不会自动变成任务。
+  → v3 的政策本来就是"大版本不保运行数据"；真需要保留就在服务器上手动 `INSERT INTO tasks SELECT …` 一次，别在代码里养一套兼容两种表形状的读取路径。
+- **连着失败 `max_failures`（默认 5）次才 `failed` 退场**：中间几次仍是 `pending`，由巡检下一轮重试；`failed` 的行在面板改一次时间就回到 `pending`
+  （`update_task` 顺手把 `fail_count` 清零），跑成一场则由 `reschedule_task`/`complete_task` 归零。失败原因只有 `_FAIL_REASONS` 那两类，面板行上直接显示「失败 2 · 模型请求或工具报错（详情见日志）」。
+  → 不封顶就会在深夜为一条永远坏掉的任务反复烧请求；不计数直接退场又会被一次限流误杀。
+- **周期项的下一场从「原本那一格」往后推，不从"现在"推**（`_rule.advance(due_ts, rule)`），跑完一场只 `fired_count +1` 并把到期推到下一格，状态仍是 `pending`，
   排满 `times` 场（或算不出下一格）才置 `fired`；`times=0` 是不限场数，靠取消退场。
+  `every:30m`/`every:2h`/`every:1d` 是 v3.4 为"每隔一阵看一眼有没有变化"新加的间隔规则，和 daily/weekly 共用 `rule_seconds` 一份算法，间隔下限由 `min_interval_sec` 拦。
   → 从"现在"推的话，8 点的打卡迟到两分钟发出就永久变成 8:02，一路漂下去；`monthly` 在解析时把几号钉进规则串（`monthly:31`），遇到没 31 号的月份 clamp 到当月最后一天、
-    下个月又回到 31 号——不钉号就会一路漂到月末再也回不去。规则串本身自解释（`''`/`daily`/`weekdays`/`weekly`/`monthly:D`），面板和日志都用 `rule_label` 说回人话。
-- **错过宽限（`miss_grace_sec`，默认 300s）分两种处置**：一次性项直接 `expired` 不发（`提醒过期未发（错过 …s，宽限 …s）#id: …`），
-  周期项是 `_catch_up` 跳过没赶上的那几场继续挂着，**不消耗已发场数**（`提醒跳过 N 场未发…`）。
-  → 进程关了一小时才冒出来的「五分钟后记得开会」只会让人莫名其妙，宁可作废；但停一周不该把一整年的打卡清零，也不该在重启瞬间把欠下的场次一次灌完。
-- **清理只碰终态行**（`fired`/`cancelled`/`expired`）：`delete_terminal_before`、`delete_oldest_terminal`、`purge_reminders` 的 SQL 里都写死 `status<>'pending'`，
-  `purge_reminders` 还拒绝"没有任何筛选条件"的删除（面板/CLI 同理）；`max_rows` 比的是**整表行数**不是待触发的条数。
-  → 还在排的日程被一条 `DELETE` 悄悄删掉等于吞掉一次约定，比事故更糟的是没人知道发生过；上限若只看 pending，巡检一删历史就会让"是否超限"跟着抖动，删多删少说不清。
-- **`when` 与 `repeat` 的解析全项目只有 `tool/remind/_rule.py` 一份**：`when` 只认固定写法（`+30m` / `+2h` / `+1d` / `18:30` / `10-30 18:30` / `2026-10-30 18:30`），
-  中文自然语言由模型先调 `time` 换算；`repeat` 只认 `daily`/`weekdays`/`weekly`/`monthly`（含中文说法）。报错文案都带上合法写法（`WHEN_HELP` / `REPEAT_HELP`），模型看一次就能改对。
+    下个月又回到 31 号——不钉号就会一路漂到月末再也回不去。规则串本身自解释（`''`/`daily`/`weekdays`/`weekly`/`monthly:D`/`every:N{m,h,d}`），面板和日志都用 `rule_label` 说回人话。
+- **错过宽限（`miss_grace_sec`，默认 300s）分两种处置**：一次性项直接 `expired` 不跑（`任务过期未跑（错过 …s，宽限 …s）#id: …`），
+  周期项是 `_catch_up` 把到期推到第一场还没到的格子、跳过欠下的那几场，**不消耗已发场数**（`任务跳过 N 场未跑…`）。
+  → 进程关了一小时才冒出来的「五分钟后把结果告诉我」只会让人莫名其妙，宁可作废；但停一周不该把一整年的日更清零，也不该在重启瞬间把欠下的场次一次灌完（每一场都要跑一次模型）。
+- **清理只碰终态行**（`fired`/`cancelled`/`expired`/`failed`）：`purge_tasks`、`delete_terminal_before`、`delete_oldest_terminal` 的 SQL 里都写死 `status<>'pending'`，
+  `purge_tasks` 还拒绝"没有任何筛选条件"的删除，面板和 CLI 同样显式挡掉 `status=pending`；`max_rows` 比的是**整表行数**不是待触发的条数。
+  → 还在排的任务被一条 `DELETE` 悄悄删掉等于吞掉一次约定，比事故更糟的是没人知道发生过；上限若只看 pending，巡检一删历史就会让"是否超限"跟着抖动，删多删少说不清。
+- **`when` 与 `repeat` 的解析全项目只有 `tool/task/_rule.py` 一份**：`when` 只认固定写法（`+30m` / `+2h` / `+1d` / `18:30` / `10-30 18:30` / `2026-10-30 18:30`），
+  中文自然语言由模型先调 `time` 换算；`repeat` 只认 `daily`/`weekdays`/`weekly`/`monthly`/`every:N{m,h,d}`（含中文说法）。报错文案都带上合法写法（`WHEN_HELP` / `REPEAT_HELP`），模型看一次就能改对。
   → 自己养一套中文时间解析（"下周三下午"、"傍晚"）是无限期的边界修补，而模型本来就会查日期；面板要是再写一套 `when`，两边对"明天 8 点"的理解迟早分叉——所以面板改时间送的是日期选择器算出的**绝对 unix 秒**。
-- **面板「日程」只改不建**：分组视图 + 统计 + 筛选 + 逐行改时间/正文、取消、删除、批量清理历史与按保留期清理；**没有新建入口**，也没有第 4 个对话工具。
-  → 改日程在对话里靠「取消 + 重排」两步说清楚，再开一个 `remind_update` 只得多养一套校验和一套措辞；面板能改字段但不能替用户理解 `repeat`，那就别让它在网页上排周期。
-  改动时注意：「改」只把用户**真动过的那一格**发给后端（逾期项预填的就是已经过去的时间，改个错别字不该被「必须是将来」挡回来）。
-- **三件套共享 `tool/remind/config.json`**：`remind_list`/`remind_del` 标 `config_owner=false, toggleable=false`（表情三件套同口径），
-  门槛 `remind_add` = **L2**——约定一句话不花钱、不越权，跟发语音、写记忆同档就够；取消只能撤自己设的或提醒自己的那条（L5 例外），取消周期项等于整条停下。
-- **提醒第三人**：`who` 走 `storage.find_sender_openid`（本会话发言者 → 别处的同名发言者 → `actors`），查不到就如实报错不猜人；
-  群里提醒第三人时 `_compose` 自动在正文前补 `@昵称`，由正文通道换成真 @，私聊不补。
+- **面板「任务」只改不建**：分组视图 + 统计 + 筛选 + 逐行改时间/指令、取消、删除、批量清理历史与按保留期清理；**没有新建入口**，也没有第 4 个对话工具。
+  → 面板排任务要的是另一套时间输入，而 `when`/`repeat` 的解析只该有一份实现；改任务在对话里靠「取消 + 重排」两步说清楚，再开一个 `task_update` 只得多养一套校验和一套措辞。
+  改动时注意：① 「改」只把用户**真动过的那一格**发给后端（逾期项预填的就是已经过去的时间，改个错别字不该被「必须是将来」挡回来）；
+  ② `pending` 与 `failed` 都改得了（后者改一次就是重新排上），其余终态 400，工具没挂载 503；面板与巡检抢同一行时 `update_task` 改不到就回 409，别改成重试覆盖。
+- **三件套共享 `tool/task/config.json`**：`task_list`/`task_del` 标 `config_owner=false, toggleable=false`（表情三件套、kvdb 四件套同口径），
+  门槛整组 = **L4 心腹**——到点要跑一次模型、还允许它调工具，是花钱 + 有动作的事，不再是"约定一句话"；取消只能撤自己设的或汇报给自己的那条（L5 例外），取消周期项等于整条停下。
+- **汇报对象靠 `who` 反查**：`storage.find_sender_openid`（本会话发言者 → 别处的同名发言者 → `actors`），查不到就如实报错不猜人；默认汇报给排任务的人本人。
+  → 这一版**不再由代码在正文前自动补 `@昵称`**：正文是模型写的，@ 不 @、@ 谁由它按指令决定，人设里【定时任务触发】那段就是这么教它的；代码补 @ 等于替模型把话说完。
+
+
+
+## 简单存储（kvdb）
+
+- **它是给任务用的记事本，不是第二套记忆**：`kv_set`/`kv_get`/`kv_list`/`kv_del`，键和值都是模型自己写的字符串，数据落在 `tool/kvdb/kv.db`（单文件 SQLite，跟着目录走）。
+  → "每天 18 点汇报增量"要的是"昨天那个数"。`memory` 那一层是按人/类别检索的自然语言条目，还要走遗忘扫描和取代判定；把 `price:2026-11-08` 这种日期序列塞进去既检不准也活不长。
+    kvdb 只保证一件事：**按前缀列出来就是按时间排好的**（键按字典序排序，日期前缀天然对齐），并且一次都不请求 LLM。
+- **命名空间是 `ctx["session_id"]`，模型选不了**：它只能读写自己所在会话的键，参数里没有 namespace。
+  → 让模型传命名空间等于开一个跨会话读写面；真要跨会话共享该走记忆或人设，不该靠一个键前缀。
+- **上限全在 `tool/kvdb/config.json`**（总条数、键长、值长、`kv_list` 条数与列表里每条给多少字），超了拒绝写入并如实报错；门槛 **L2**——写一条备忘不花钱、不出站，跟发语音、写记忆同档。
+  → `list_value_chars` 把列表里的值截短，是因为整段贴回上下文比省下的那几个 token 贵；单条取值不截。
+- **`kv_del` 幂等**：删不存在的键也返回成功。`kv_set` 回 `old` 与 `created`，让模型知道自己刚才是在覆盖还是新写。
+
+## 宿主机命令（core/bash）
+
+- **全项目唯一一条能在服务器上执行命令的路，门槛锁死 L5 归属**：住在 `tool/core/bash.py`、配置 `tool/core/config.json`（`timeout_sec`/`max_output_chars`/`work_dir`，留空 = 项目根目录）。
+  → 和 `admin_manage` 同口径：schema 照样全量下发（缓存前缀要所有会话一份列表），拒绝发生在执行期、按本轮触发者的等级——别人叫模型跑命令，模型能调、调用被拒，所以描述里直接写清"只有归属能用，别替他们试"。
+- **输出回给模型前先脱敏**：从主配置和每个 `tool/*/config.json` 递归收集 `SECRET_KEYS` 的真实值（长度 < 6 的跳过，否则把正常输出打得面目全非），逐个替换成 `***`，再按 `max_output_chars` 截断。
+  → 「密钥不外发」是配置层既有的约束，不能因为多了个 shell 就破掉。**它只覆盖得到本项目配置里的密钥**，`~/.ssh`、环境变量那些管不到——这正是这个工具只给 L5、不给 L4 的理由，别把它往心腹档放。
+- **超时连整个进程组一起收掉**：POSIX 用 `os.killpg`（子进程 `start_new_session=True` 自成进程组），Windows 用 `taskkill /F /T`。
+  → bash 跑管道会 fork 孙进程，只杀 bash 的话孙进程还攥着输出管道，`communicate()` 会一直等到它自己跑完（Windows 上实测等满整条命令的时长）。
+- 找不到 `bash` 时如实报错（Windows 需要 Git Bash 在 PATH 里），不退回 `cmd`/PowerShell。
+  → 描述、脱敏、截断都按 bash 的输出口径写；换一种 shell 等于再养一套边界。
 
 
 ## 联网搜索
@@ -466,17 +503,17 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   所以这个位置既能读到令牌、又抢在 body 画出来之前。
   → 放进 body 就是每次刷新先黑一下（暗色是 `:root` 默认值，浅色要等脚本挂 `data-theme`）。三档状态：没表过态=跟随系统，手动按过=以选的为准，
   只有按过才写 `ggbot.theme`；`theme-color` 那个 meta 从 `--bg` 现读，不在 HTML 里抄第二份十六进制。
-- **侧栏的四组说的是「我此刻来面板干什么」，不是后端的模块边界。** 现场（仪表盘 / 日志）、对话（会话 / 日程）、知识（记忆 / 表情 / 人设）、配置（设置 / 权限 / 工具）。
-  → 以前十项平铺，「日程」和「提醒」的词在面板里指同一件事，工具页和权限页隔着一屏却改的是同一批 Tool；重排只动分组与命名，页面和接口没动。
+- **侧栏的四组说的是「我此刻来面板干什么」，不是后端的模块边界。** 现场（仪表盘 / 日志）、对话（会话 / 任务）、知识（记忆 / 表情 / 人设）、配置（设置 / 权限 / 工具）。
+  → 以前十项平铺，「日程」和「提醒」的词在面板里指同一件事，工具页和权限页隔着一屏却改的是同一批 Tool；重排只动分组与命名，页面和接口没动。v3.4 那一页跟着任务口径改叫「任务」（页键 `task`）。
   改动时注意：组名同时是 `.nav-label` 的可见文字和 `nav-group` 的 `aria-label`，两处必须一致（`temp/test_web_nav.py` 钉着）；
   收起态（`.rail`）藏的是文字的**形状**（`visibility: hidden` + 宽度收 0），不是文字本身——`display:none` 会把按钮的可访问名一起删掉，读屏就只剩一串没有名字的按钮。
 - **面板的读只剩两条路：`GET /api/shell` 每秒一次，`GET /api/page/<name>` 按页拉。** 后端 `PAGES` 表决定这一页要读哪几份数据，
   一页一次往返画完整页；`/api/status|stats|sessions|messages|logs|memories|memories/search|reminders|tools|config|emojis|actors|system-prompt`
-  这十三条按资源开的 GET 全删了，只剩 `/api/shell`、`/api/page/<name>`、`/api/auth` 和会话详情那一条 `GET /api/sessions/{sid}/messages`。
+  这十三条按资源开的 GET 全删了（`reminders` 那条 v3.4 变成任务后同样没有 GET，这一页的数据跟着 `/api/page/task` 回来），只剩 `/api/shell`、`/api/page/<name>`、`/api/auth` 和会话详情那一条 `GET /api/sessions/{sid}/messages`。
   → 以前不管停在哪一页，每秒都要打三个请求，而一页的数据分四五次回来，中间态就是「表格画了、徽标还是上一轮的」。在线态也因此被算了两遍
   （`/api/status` 与 `/api/stats` 各跑一次 `presence.status()`），两份读数还可能对不上——现在 `/api/shell` 一次算完。
   改动时注意：① **页面上的筛选控件就是这一页请求的 query**（`PAGE_PARAMS`），轮询、切页、刷新按钮读同一份口径，别再在某个 js 里单开一次 fetch；
-  ② 只有会自己变的页面挂定时器（`PAGE_LIVE`：仪表盘与日程 5s、日志 1s），其余进出才拉；③ 编辑器页不吃自动重载靠 `PAGE_HOLD`，
+  ② 只有会自己变的页面挂定时器（`PAGE_LIVE`：仪表盘与任务 5s、日志 1s），其余进出才拉；③ 编辑器页不吃自动重载靠 `PAGE_HOLD`，
   带 params 的调用（刷新按钮、写完回读、人设页的「重载」）是明确要拉的，绕过这条限制；④ 写操作照旧按资源走，改完调 `reloadPage()`，
   不要在模块里自己拼「该刷哪几块」；⑤ **新增一页要同时动六处**（`index.html` 的 section、`index.html` 里挂进某一组的 nav 按钮、
   `util.js` 的 `PAGE_META`、`server.py` 的 `_ds_*` 装载函数、`server.py` 的 `PAGES`、`refresh.js` 的 `PAGE_RENDER`），少一处就是点了没反应或画成空白页；要自动刷新再补 `PAGE_LIVE`，页面上有筛选控件再补 `PAGE_PARAMS`。
@@ -512,7 +549,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   → 现在 `.metrics` 是 `gap: 1px` 的分栏读数带，分隔线靠容器底色透出，读数压到 `--fs-7`，状态色只留在 `.hero.online` 那一层。
   改动时注意：给 `.metrics` 补 `gap` 等于把分隔线画丢；手机上只收列数（`repeat(2, minmax(0, 1fr))`），别再叠 `gap`/`padding`/字号覆盖。
 - **控件只有一种高度语言**：常规控件 36px、胶囊/小按钮 30px、整块按钮 44px（`components.css`）。按钮标签至少两个字——
-  单字那颗会被 `min-width` 撑成正方形，一排看着高低不齐（日程页的「改/删」已改成「改期/删除」）。
+  单字那颗会被 `min-width` 撑成正方形，一排看着高低不齐（任务页的「改/删」已改成「改期/删除」）。
   → 以前乱的主要来源是同一排里混了三种来源的宽度（`width` 写死的 select、按内容收的 input、被 `min-width` 顶住的按钮）。
   改动时注意：断点只允许写在 `responsive.css`（1080/900/620），别的样式表里出现 `@media` 就是层叠顺序被打乱的前兆。
 - **版本号只有一处：`ggbot.__version__`。** 页面标题、登录卡、侧栏徽标写的是 `{{VERSION}}`，`GET /` 返回前一次性替换；
@@ -521,18 +558,18 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 - **前端按页拆在 `static/js/`（20 个）与 `static/css/`（6 个），没有打包步骤，靠 `index.html` 的引用顺序拼回来。**
   脚本仍是经典脚本（不是 module），全局 `const/function` 跨文件可见，所以顺序 = 原来单个 `app.js` 的行序，
   `events.js` 必须最后（它挂 DOMContentLoaded 并 `boot()`）；样式表 `responsive.css` 必须最后（层叠覆盖）；`theme.js` 见上面那条主题契约。
-  → 用户要求「不要全堆在三个文件」，而拆分的唯一风险就是漏引/错序——`temp/test_web_schedule.py` 里那半截
-  就是守这个的：引用的文件必须存在、`js/` 与 `css/` 里不许有没被引用的文件、首尾顺序钉死（`schedule.js` 排在 `refresh.js` 之前，页面自己也要在 nav 里登记）。
+  → 用户要求「不要全堆在三个文件」，而拆分的唯一风险就是漏引/错序——`temp/test_web_task.py` 里那半截
+  就是守这个的：引用的文件必须存在、`js/` 与 `css/` 里不许有没被引用的文件、首尾顺序钉死（`task.js` 排在 `refresh.js` 之前，页面自己也要在 nav 里登记）。
   改动时注意：**新增一页要动的就是上面那条读模型列出的六处**（`index.html` 的 section 与 nav、`util.js` 的 `PAGE_META`、
   `server.py` 的 `_ds_*` 与 `PAGES`、`refresh.js` 的 `PAGE_RENDER`），少一处就是点了没反应或画成空白页；
   `nav.js` 的 `switchPage` 不再按页面分支取数（只管 `reloadPage(name)`），要自动刷新再补 `PAGE_LIVE`、有筛选控件再补 `PAGE_PARAMS`。
   例外是"编辑器页"：「人设」不进 `PAGE_LIVE`，编辑中还由 `PAGE_HOLD` 暂缓自动重载，只有带 params 的调用（「重载」按钮 `{ force: "1" }`）绕得过——
   否则轮询会把用户正在敲的字冲掉；`temp/test_web_persona.py` 把"poll.js 与 PAGE_LIVE 里不许出现 persona"钉成了断言。
-- **面板「日程」页能看、能改、能删，但刻意没有新建入口。** 分组视图（已经过点 / 今天要发 / 这周之内 / 以后 / 历史）+ 全局统计 + 三个筛选 + 逐行改时间正文/取消/删 + 批量清理历史与按保留期清理；排日程仍然只有对话里那三个工具。
+- **面板「任务」页能看、能改、能删，但刻意没有新建入口。** 分组视图（已经过点 / 今天要跑 / 这周之内 / 以后 / 历史）+ 全局统计 + 三个筛选 + 逐行改时间或指令、取消、删除、批量清理历史与按保留期清理；排任务仍然只有对话里那三个工具。
   → 时间语法只在 `_rule.py` 解析一次：面板上真要做"明天 8 点、每个工作日"就得多养一套输入与校验，两边对同一句话的理解迟早分叉。用户要的"看看挂着什么、点掉某条、改个时间"不需要理解规则。
-  改动时注意三件事：① 列表是卡片行不是表格，手机端只需放开 `.sch-body` 的 `max-height`；② `stats` 走**全表口径**、`total` 跟着筛选条件走，别拿其中一个当另一个用；
-  ③ 这一页在 5 秒一轮的自动刷新里会被整片重画，所以渲染要保住 `#sch-body` 的滚动位置，写完请求再用 `guarded("schedule", refreshSchedule)` 顶一下——
-  `guarded` 会丢掉并发调用，因此"点完没立刻变"是既有 house 行为，下一轮轮询自然追上，不要为它加乐观改本地状态。
+  改动时注意三件事：① 列表是卡片行不是表格，手机端只需放开 `.task-body` 的 `max-height`；② `stats` 走**全表口径**、`total` 跟着筛选条件走，别拿其中一个当另一个用；
+  ③ 这一页在 5 秒一轮的自动刷新里会被整片重画，所以 `renderTaskPage` 自己记下并还原 `#task-body` 的 `scrollTop`，写完请求统一调 `reloadPage("task")`——
+  它内部是 `guarded("page:task", …)`，会丢掉并发调用，因此"点完没立刻变"是既有 house 行为，下一轮轮询自然追上，不要为它加乐观改本地状态。
 - **会话详情多了一块「最近出站」，读的是 `sends` 表不是日志。** `GET /api/sessions/{sid}/messages` 一次回
   `{session, messages, sends}`（出站只给最近 10 条），前端把 `via` 翻成「被动回复 / 主动发送 / 降级主动」、把 `ok` 翻成
   「已送达 / 被拒：<原因>」，消息气泡上的「待处理 / 回复失败 / 没接话」来自 `reply_state`。
@@ -568,7 +605,7 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
   `TurnDecider._agent_loop` 就是为这个接缝留的（拼上下文 + 归档触发都在这儿，不经模型也能单测）。
   → 这次拆分的收益就在这儿：内部实现改名不该让测试报废，而测试一旦开始伸进别的私有步骤，说明那段职责又混回去了。
 - 每次改动同步 README；**文档不写代码里没有的行为**。
-- **用例清单**：README 只留「跑 `sh temp/run_all.sh`」那一句，这里记每一条锁住了什么行为。标签是当时从输出抓下来的，和今天的 47 个脚本不是一对一——有的已并进别的脚本（`messages_state` 就在 `temp/test_sender_quote.py` 第 5 节），有的是一次性的真实调用或浏览器实测（`llm_chat`、`voice_clone`、`email_tool`、`web_ui*`，脚本早删了，结论还值得留着）。改行为时按说明去找脚本，别按标签猜文件名。
+- **用例清单**：README 只留「跑 `sh temp/run_all.sh`」那一句，这里记每一条锁住了什么行为。标签是当时从输出抓下来的，和今天的脚本不是一对一——有的已并进别的脚本（`messages_state` 就在 `temp/test_sender_quote.py` 第 5 节），有的是一次性的真实调用或浏览器实测（`llm_chat`、`voice_clone`、`email_tool`、`web_ui*`，脚本早删了，结论还值得留着）。改行为时按说明去找脚本，别按标签猜文件名。
   → 面板改成一页一次 `GET /api/page/<name>` 之后，早先那几条 `web_*` 记录里写的「`GET /api/memories` / `/api/logs` / `/api/emojis` …」都应读成 `page/<对应页>`（口径没变，只是并入快照）；本轮重写的 `web_page` / `web_nav` / `web_theme` 三条才是当前的读模型与主题契约。
 
 ```
@@ -584,9 +621,8 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 [PASS] memory_commit     # 写入前的取代判定：没有 LLM / `reconcile=false` / 判定抛异常三种情况都退回直写、照样落库；一批多条只发一次判定请求；`update` 改写旧条目不新增、`drop` 一个字不写、`retire` 作废被推翻的旧条目；模型给乱编号（target 越界、retire 非数字）按「新增」处理不崩；同归属向量 ≥0.95 的重复在没走判定时并成一条；`expires_in_days` 落成 `expires_at` 且到期条目检索取不到；累计写入够 `sweep_every_writes` 顺手跑一次遗忘扫描
 [PASS] web_memories      # 记忆页接口：`GET /api/memories` 按 session/subject/kind 组合筛、回执带 `limits`（整库上限 / 每人档案 / 淡出天数）与每条的保留分、安静天数；`GET /api/memories/search` 看一眼不写命中；`POST /api/memories` 走 commit（假 LLM 判 update/retire 生效，回执 written/updated/dropped/retired）、空内容 400、只填日期 `2026-11-20` 补成当天 23:59:59；`PUT` 改 kind 非法 400、未知 id 404、空 body 400、`expires_at` 传空串取消到期；`POST /api/memories/sweep` 回四类计数并把该删的删干净；`DELETE /api/memories` 无条件 400、给条件时整组删到零；全部端点未登录 401
 [PASS] llm_chat          # LLM 真实调用（实测 DeepSeek deepseek-flash，thinking=disabled 生效）
-[PASS] tools_schema      # 16 个 Tool 插件自动发现（8 个分类）+ schema 校验 + 启用状态过滤
-[PASS] tool_layout       # 根目录 tool/ 按分类包自动发现（core/remind/media/emoji/memory/web/email/admin）+ 嵌套数据目录（media/audio、media/generate、remind、web、email）+ config-less 工具 toggle 生效 + 正文通道不在 registry 里 + remind 三件套共享 tool/remind/config.json（附属工具不可单独启停）+ fs 分类已下线不残留目录
-[PASS] module_refs       # 静态守住「改了名没人跟」：扫全仓每一条 `tool.*` 导入（11 条）要求逐段落得到真实文件、且不含已下线的旧包名（`tool.schedule`/`tool.mail`/`tool.fs`/`tool.media.emoji`…），再查注册表 16 个工具的 category 都在八个分类内、声明了 data_name 的都有对应数据目录。加这条是因为 `main.py` 里那句日程导入没人测——本地 47 项全绿的同时线上崩循环，`import main` 不在任何测试路径里
+[PASS] tool_layout       # 根目录 tool/ 按分类包自动发现（core/admin/memory/media/emoji/task/kvdb/web/email 九个分类、共 21 个工具）+ 嵌套数据目录（media/audio、media/generate）+ config-less 工具 toggle 生效 + 正文通道不在 registry 里 + task 三件套与 kvdb 四件套各共享一份 config（附属工具不可单独启停）+ 旧分类不残留目录（chat/knowledge/mail/schedule/remind/fs）
+[PASS] module_refs       # 静态守住「改了名没人跟」：扫全仓每一条 `tool.*` 导入（11 条）要求逐段落得到真实文件、且不含已下线的旧包名（`tool.schedule`/`tool.remind`/`tool.mail`/`tool.fs`/`tool.media.emoji`…），再查注册表 21 个工具的 category 都在九个分类内、声明了 data_name 的都有对应数据目录。加这条是因为 `main.py` 里那句任务导入没人测——本地全绿的同时线上崩循环，`import main` 不在任何测试路径里
 [PASS] gen_tools         # Agnes 生图：无 api_key 时不进下发列表（L4 心腹，填上 key 才下发，不按发送者等级裁剪）、参数与比例校验、参考图只允许 temp/ 与 emoji/ 素材（配置/密钥/越界路径拒绝）、纯文生图不带 image 字段与单张参考图写成字符串两种载荷、只给 URL 的形态补一次下载、503 退避重试、产物落 temp/tool/media/generate 并按 file_type=1 发出、`生图 2K/4:3 …（…s）` 日志形状
 [PASS] permissions       # 发送者等级解析（未登记→默认 2、空 id→0）、owners 引导不覆盖面板设置、全量下发（每个等级拿到同一份列表、6 级永久锁不进列表、没有工具提示词注入）、门槛覆盖、执行期拒绝/放行/未知工具/永久锁；正文通道不是工具（不在 registry 里）
 [PASS] media_paths       # 本地媒体只允许 temp/ 与 tool/emoji/ 里的图片，日志、其他工具目录、emoji 目录下的代码与配置/密钥拒绝发送
@@ -624,11 +660,13 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 [PASS] web_tools         # 元宝 SearchPro：`Response.Pages` 里每条 JSON 字符串 → 行（逐条再解一次；标题/摘录去 HTML 实体、`date` 归一成 `published`、没 `url` 的丢掉、`passage` 缺才退 `content`）、参数口径（`Cnt` 按 k 向上取 10/20/30/40/50 五档并封顶 50、`Mode`/`Site` 没配不传、`mode` 非 0/1/2 拒绝、`Query` 超 1500 字节按字节截且半个汉字丢掉、`Authorization: Bearer` 与端点地址）、错误码翻人话（key 无效/未开通/欠费/太频繁/参数不合法，含 `{Code}` 与 `{Response.Error.Code}` 两种错误体、HTTP 403 与连不上/非 JSON）、**HTTP 200 + `Response.Error` = 报错**（没有 Error 的空 Pages 才回 `[]`）、`api_key` 没填不下发且一个请求都不发、每日配额（3 次放行第 4 次拦住且拦住那次不占额度、跨天归零、坏文件当 0、写不回仍放行、填 0 不限也不写文件、`run()` 到顶时一个请求都不发且换了实例=重启仍认）；HTML 正文提取与编码识别、超时/体积/字符限制、SSRF 拒绝回环/内网/保留地址与 file://；published 归一函数各格式都认（ISO、中英文月名、`2026-09-29 00:00:00`，认不出回空）；关键词字面重合度 <0.3 判为不沾边→返回 note 且不去抓正文（`……` 这类拆不出词的不判、空结果不误标），相干结果不带 note；search read=true 并发抓前 3 条正文（单页失败只标 content_error）；fetch urls 批量最多 5 个并回 N/M 成功
 [PASS] web_live          # 用本地 `tool/web/config.json` 里的元宝 key 真实调用两次（`王者荣耀 新英雄 2026` / `北京 天气 2026年11月4日`），各回 3 条且都对题；实测 `site` 是站点名、`date` 多为空、错误都在 `Response.Error`——解析口径与文档就是这么对不上，改这块前先看代码注释
 [PASS] system_prompt     # 默认提示词仅保留感觉与说话方式（无固定名字/经历），工具行动与主动记忆引导生效；整段全静态、不含任何运行时占位符，跨会话逐字节一致
-[PASS] presence_proactive # 发送通道一律先试可回：本轮批次有可回消息用它、没有就回看窗口内最近一条，同一个锚点的 msg_seq 接着上次排；锚点这本账落在 `reply_anchors` 表里，**进程重启也从上次接着排**、不会又从 1 开始撞上平台拒绝的重复 msg_id+msg_seq（`temp/test_proactive.py` 的跨重启场景直接查表核对）；锚点回满 5 次（群）/过期 → 无锚点，这一轮改主动发送（不带 msg_id/event_id）并受 `proactive_enabled` 与每分钟/每日闸门约束；每条发送的实际路径（被动/主动/降级）都落在 `sends` 里；回合外发言 `speak` 同样先找锚点、过同一个主动闸门，主动被拦时返回失败不硬发
-[PASS] schedule_rule     # 日程时间规则（`temp/test_schedule_rule.py`，全离线不碰库）：`parse_when` 只认固定写法（+30m/+2h/+1d/18:30/10-30 18:30/2026-10-30 18:30），非法与看不懂的都把合法写法回给用户，只说 `18:30` 而今天已过就滚明天、`MM-DD` 滚下一年；`parse_rule` 认中英两种说法并把 `monthly` 归一成 `monthly:<几号>`；`advance` 从**原本那一格**往后推（迟到两分钟发出的 8 点打卡，下一场仍是明天 8:00，钟点不漂）、`weekdays` 跳过周六日、`weekly` 固定同一天、`monthly:31` 在没 31 号的月份 clamp 到当月最后一天而下个月又回到 31 号（不锯齿式漂移）；`rule_label` 与 `fmt_due`/`span_text` 的中文口径
-[PASS] schedule_remind   # 日程工具与巡检循环（`temp/test_schedule_remind.py`）：排与校验（空会话/空内容/超长/过去时间/超 `max_days`/超 `max_pending`、`repeat` 看不懂报错、`times` 只在填了 `repeat` 时生效且负数与超 `max_repeat_times` 被拒），周期字段落库（`rule`/`times`，`times=0`=一直排到被取消，回执 note 分别说「排 3 场」与「一直排到被取消」）、`who` 反查（查得到用别人、查不到报错、不填就是本人）、列表口径（待触发按到期时间从近到远、周期项带规则与「已发/总场数」，不限场数只显示已发几场，一次性不带场次）、取消（按编号或唯一关键词，多条命中给候选，别人的日程除 L5 外撤不掉，**取消周期项一次停整条**）、到期就发（群聊自动补 @昵称、私聊不带）、发完一场 `fired_count` +1 且状态仍 `pending`、排满 `times` 场才置 `fired`、超宽限的一次性置 `expired` 不发、周期项错过宽限只跳过没赶上的场次（`fired_count` 不变、继续挂着）、发送失败留 `pending` 下一轮重试、统计与筛选/分页口径
-[PASS] schedule_sweep    # 日程历史退场（`temp/test_schedule_sweep.py`，真库离线）：各状态与逾期/今天/周期的统计；过了 `keep_history_days` 的终态行退场；整表超 `max_rows` 从最旧的历史行删起、不够删也绝不碰 `pending`；单条删除与批量清理只认 `fired`/`cancelled`/`expired`，条件全空（怕一句 `DELETE` 清了全表）拒绝执行；列表与计数共用同一份过滤条件（翻页数对不上就是这里）
-[PASS] remind_send       # 日程端到端（`temp/test_remind_send.py`，真 Storage + 真正文通道 + 假 bot 记账）：触发第一条走被动（带锚点 msg_id、msg_seq=1）、同锚点第二条 seq 递增、锚点回满后转主动发送（msg_id 为空）、宽限外的 stale 一次性行只置 expired 一次都不发、提醒第三人时用窗口内最新锚点并在 wire 上带真 @；周期项到点同样只发一场然后把自己的到期推到下一格（从原定格子推，不从"现在"推）、排满最后一场记满场数再退场、错过宽限的周期项一场都不发只跳过
+[PASS] presence_proactive # 发送通道一律先试可回：本轮批次有可回消息用它、没有就回看窗口内最近一条，同一个锚点的 msg_seq 接着上次排；锚点这本账落在 `reply_anchors` 表里，**进程重启也从上次接着排**、不会又从 1 开始撞上平台拒绝的重复 msg_id+msg_seq（`temp/test_proactive.py` 的跨重启场景直接查表核对）；锚点回满 5 次（群）/过期 → 无锚点，这一轮改主动发送（不带 msg_id/event_id）并受 `proactive_enabled` 与每分钟/每日闸门约束；每条发送的实际路径（被动/主动/降级）都落在 `sends` 里；回合外发言只剩一条路——任务到点开的那一轮（`pm.run_task`）同样先找锚点、过同一个主动闸门，锚点回满且主动关闭时返回 `blocked`，一场都不发、下一轮再试
+[PASS] task_rule         # 任务时间规则（`temp/test_task_rule.py`，全离线不碰库）：`parse_when` 只认固定写法（+30m/+2h/+1d/18:30/10-30 18:30/2026-10-30 18:30），非法与看不懂的都把合法写法回给用户，只说 `18:30` 而今天已过就滚明天、`MM-DD` 滚下一年；`parse_rule` 认中英两种说法并把 `monthly` 归一成 `monthly:<几号>`、`every:30m`/`every:2h`/`every:1d` 认单位；`rule_seconds` 与 `rule_label` 同一份口径（间隔下限校验、日志、面板都靠它）；`advance` 从**原本那一格**往后推（迟到两分钟发出的 8 点打卡，下一场仍是明天 8:00，钟点不漂）、`weekdays` 跳过周六日、`monthly:31` 在没 31 号的月份 clamp 到当月最后一天而下个月又回到 31 号（不锯齿式漂移）；`fmt_due`/`span_text` 的中文显示
+[PASS] task_tick         # task 三件套与巡检循环（`temp/test_task_tick.py`，全离线）：载荷是 `instruction`（到点交出去跑一个完整回合，不是念台词）；排与校验（空会话/空指令/超长/过去时间/超 `max_days`/超 `max_pending`、`repeat` 看不懂报错、间隔低于 `min_interval_sec` 被拒、`times` 只在填了 `repeat` 时生效且负数与超 `max_repeat_times` 被拒）、周期字段落库（`times=0`=一直排到被取消）、`who` 反查（查得到用别人、查不到报错、不填就是本人）、列表口径（待触发按到期从近到远、周期项带规则与「已跑/总场数」）、取消（按编号或唯一关键词，多条命中给候选，别人的除 L5 外撤不掉，**取消周期项一次停整条**）；状态流转：`sent`/`silence` 都算跑完并落定，`blocked` 不计失败、留 `pending` 下一轮重试，`error`/`denied` 各记一次失败、连着到 `max_failures` 才置 `failed`；周期逐场滚动、排满才退场、跑成一场就清零失败计数；错过宽限时一次性直接 `expired`、周期只跳过没赶上的场次（`fired_count` 不变）；统计与筛选/分页口径
+[PASS] task_sweep        # 任务历史退场（`temp/test_task_sweep.py`，真库离线）：各状态与逾期/今天/周期的统计；过了 `keep_history_days` 的终态行退场；整表超 `max_rows` 从最旧的历史行删起、不够删也绝不碰 `pending`；失败行的落定、面板改一次期就是重排（`fail_count` 清零）、再失败到上限才退场；单条删除与批量清理只认 `fired`/`cancelled`/`expired`/`failed`，条件全空（怕一句 `DELETE` 清了全表）拒绝执行；列表与计数共用同一份过滤条件（翻页数对不上就是这里）；面板与 CLI 用的「待跑任务」数同一口径
+[PASS] task_send         # 任务端到端跑完整回合（`temp/test_task_send.py`：真 Storage + 真出站 + 真 ToolExecutor，只把 QQ 网关换成记参数的假 bot、模型循环换成脚本）：到点真的开一个回合并执行指令里要的工具（`fetch`/`kv_get`/`kv_set` 都真调用）；正文走被动优先（带锚点 msg_id、同锚点第二条 seq 递增），回满才转主动；群聊里模型写的 `@昵称` 在 wire 上换成真 @；上一场存的值下一场读得到（「汇报增量」这条线）；`silence` 算跑完且一次出站都不发，`blocked`/`error`/`denied` 按各自失败口径落账；周期项在真链路上跑完一场并把自己的到期推到下一格（从原定格子推，不从"现在"推）
+[PASS] kvdb              # 简单存储（`temp/test_kvdb.py`，全离线）：存/取/列/删与 `kv_set` 回 `old`（算增量不用多一次 get）；会话之间互不可见（命名空间就是 `session_id`，模型选不了）；键带日期时 `kv_list` 取前缀即一条时间序、前缀里的 `%`/`_` 按字面量不当通配符、列表截断只截显示不改库；超上限明确报错，不静默截断也不挤掉旧数据；重启不丢、close 把 WAL 归并回主库；四件套共用一份 `tool/kvdb/config.json` 与数据目录
+[PASS] bash              # 宿主机命令的边界（`temp/test_bash.py`，离线）：只有归属等级 L5 放行，L2/L4 在执行期被拒（schema 照样全量下发，与 admin_manage 同口径）；退出码、stderr、工作目录、输出空白如实带回；`work_dir` 可配、配错明确报错；超时按时返回不把调用方挂住且不残留程；超 `max_output_chars` 截断并显式补省略号（截断不去空白——缩进与换行本身可能就是要看的东西）；本项目配置里的真实密钥值在输出里变成 `***`，长度 <6 的短值不误伤；机器上没有 bash 时明确报错；schema 与配置目录口径
 [PASS] renew_flat        # 续期时机（`temp/test_renew.py`）：**真发出去一条**才正式续期（`note_sent` → `st.renew()`，默认 30s 带抖动，本轮累计 ≤ `renew_max_sec`，每轮 `begin_round` 重新计）；只向模型发一次请求算"保命"（`note_request` → `keep_alive()`，把倒计时抬到至少还有一份在线时长，不累加）——请求发出去不代表一会儿会说话；离线时两种调用都不把截止点往前推（`reason` 不能写成一个没发生的续期）
 [PASS] presence_fail     # 发送失败隔离（失效会话把这批记成 `reply_state=failed`，不中断其余会话积压）
 [PASS] target_derive     # 发送目标反查（session_id 内部主键 ≠ openid，从 sessions.key 取完整 openid；c2c/group 双场景）
@@ -641,12 +679,12 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 [PASS] web_ui_env        # 本轮布局实测（533px 窄窗，命中 ≤620 移动端规则）：仪表盘「调用/开销」两组（识图独立、输入/输出/缓存命中率/费用）与「运行环境」卡渲染、会话表「待处理」列 + 上线事件折进状态格（空闲列隐藏）、会话详情只看消息 / 待处理 / 最近发言 / 作息（摘要段已随会话摘要一起去掉）、工具页等级徽标（L2 普通…）、设置页 6 张卡 39 个字段读写（含「满窗一次归档（条）」）、侧栏显示对话模型；无 JS 报错、无横向溢出；`POST /api/config` 拒绝 llm.api_key/vision.api_key/web.token，接受 vision.model、llm.pricing.* 与 llm.context.archive_overflow_messages，负数单价被拒；「需重启」徽标只挂在 `vision.timeout_sec` 上（19px 高、不越出字段列宽，标签首个文本节点仍是「超时 (s)」，非法数字提示不带徽标字样）
 [PASS] web_static        # web/ 前端拆分托管（/ + /static）、无内联脚本/样式（CSP）、手机端日志行重排与筛选控件自适应；`GET /` 返回前只把 `{{VERSION}}` 占位换成 `ggbot.__version__`，前端不留第二份版本号
 [PASS] version_badge     # 发版口径：升 `__version__` 后 `GET /` 的 HTML 里三处版本位（标签页标题 / 登录卡 / 侧栏徽标）全是新版本号且不留 `{{VERSION}}` 占位；`index.html` 源文件仍是 3 个占位符、且不含 `v<版本号>` 之类写死的版本号（发版只改 `ggbot/__init__.py` 一处）
-[PASS] web_schedule      # 日程页接口（`temp/test_web_schedule.py`）：`GET /api/reminders` 默认只列 pending 且按到期时间从近到远（逾期那条排最前）、`limit` 夹在 1..500、`offset` 翻页时 `total` 与 `items` 用同一份筛选条件（`session_id`/`status`/`q` 三样都算进 total）、`status=all` 出全表、每行带 `rule_label`、`stats` 是**全表口径**（不跟着筛选走，免得顶上的数字和列表对不上）且「今天要发」从"现在"起算不重复计逾期、`limits` 回显 6 个配置项；`POST /api/reminders/{id}/cancel` 只把 pending 置 cancelled（非 pending 400、无此 id 404）；`PUT /api/reminders/{id}` 改时间/正文（正文压掉连续空白、超 `max_text_chars` 与空正文 400、两个字段都不给 400、过去时间与超 `max_days` 400、非 pending 400、无此 id 404、行在别人手里刚被巡检推走时 409），改时间只收浏览器算出的绝对 unix 秒；`DELETE /api/reminders/{id}` 删单条（含终态行，无此 id 404）；`DELETE /api/reminders` 批量清理必须带条件（无条件 400 且提示写清「条件」、`status=pending` 直接拒绝、按会话/状态/`before_days` 各删对号）；`POST /api/reminders/sweep` 回 `aged/over/total/keep_days` 且不碰 pending；工具未挂载时 `GET` 仍出数据（`limits` 全为 null）而 `PUT`/`sweep` 返回 503（没有配置可读就不给改）；未登录 401、令牌错 403；前端拆分守护——`index.html` 引用的每个 `/static/` 文件都存在、`js/` 19 个与 `css/` 6 个一个不漏不多、顺序为 util 最先 / events 最后 / responsive 最后、`schedule.js` 在 `refresh.js` 之前、侧栏 10 项且不再有 `reminders.js` / `app.js` / `style.css` 引用；页面接线：`data-page="schedule"` + `id="page-schedule"` + 三个筛选控件 + 列表容器 + 「载入更多」+ 计数 + 提示位都在，8 个 `schedule-*` 动作在 HTML 里有出处、在 `events.js` 里有分支
-[PASS] web_ui_schedule   # 日程页浏览器实测（本地预览服务 + 无头窗口截图核对，1440×900 / 1280×800 / 390×844，控制台无 JS 报错、无横向溢出）：待触发按「已经过点 / 今天要发 / 这周之内 / 以后」四堆 + 「历史」一堆，每堆自己按到期时间排序（「全部」视图里后端按落定时间排的历史混进 pending 就没有方向了）；顶栏一行统计与筛选（状态/会话/关键词，搜「登山」当场只剩 1 行）；周期行挂「每天 已发 0」「每周 0/8」徽标，终态行挂状态徽标与「落定 <时间>」；行内「改 / 取消 / 删」——改弹窗预填 datetime-local 与正文且**只发人真动过的那一格**（逾期项的时间本来就是过去的，改个错别字不该被「必须是将来」挡回来），保存后 toast 报新时间；清理历史弹窗按状态实时给出「已触发 / 已取消 / 已过期」条数再确认删除；「按保留期清理」确认后 toast「到期删 0 · 超限删 0（剩 8 条）」；66 条 pending 时首屏拉 50，点「载入更多」把窗口撑到 66、按钮消失、提示改「共 66 条」，随后两轮 1s 轮询不重复插行；1s 轮询重画列表时保持滚动位置（读到一半不被弹回顶部）；手机端列折进行内、操作按钮仍点得到
+[PASS] web_task          # 任务页接口与前端拆分（`temp/test_web_task.py`，TestClient + 临时库）：`GET /api/page/task` 默认只列在排且按到期时间从近到远（逾期那条排最前）、`limit` 夹在合法区间、`offset` 翻页时 `total` 与 `items` 用同一份筛选条件（`session_id`/`status`/`q` 三样都算进 total）、`status=all`/`failed` 出对应行、每行带后端算好的 `rule_label`（面板不再自己映射）、`stats` 是**全表口径**（不跟着筛选走，免得顶上数字和列表对不上）且「今天要跑」从"现在"起算不重复计逾期、`limits` 回显 `tool/task/config.json` 那几项；`POST /api/tasks/{id}/cancel` 只把 pending 置 cancelled（非 pending 400、无此 id 404）；`PUT /api/tasks/{id}` 改时间/指令（指令压掉连续空白、超 `max_instruction_chars` 与空指令 400、两个字段都不给 400、过去时间与超 `max_days` 400、终态 400、无此 id 404、行刚被巡检推走时 409），改时间只收浏览器算出的绝对 unix 秒；`failed` 行改一次期就回到 pending 且 `fail_count` 清零（重排）；`DELETE /api/tasks/{id}` 物理删一行；`DELETE /api/tasks` 批量清理必须带条件（无条件 400 且提示写清「条件」、`status=pending` 直接拒绝、按会话/状态/`before_days` 各删对号）；`POST /api/tasks/sweep` 回 `aged/over/total/keep_days` 且不碰 pending；任务工具未挂载时页面仍出数据（`limits` 全为 null）而改期/`sweep` 返回 503（直接走表的批量清理不依赖工具）；未登录仍然要挡（401/403）；前端拆分守护——`index.html` 引用的每个 `/static/` 文件都存在、`js/` 与 `css/` 里没有一个漏引或多余、顺序为 util 最先 / events 最后 / responsive 最后、`task.js` 在 `refresh.js` 之前，`data-page="task"` + `#page-task` + 三个筛选控件 + 列表容器 + 「载入更多」都在，任务页的每个动作在 HTML 里有出处、在 `events.js` 里有分支
+[PASS] web_ui_task       # 任务页浏览器实测（本地预览服务 + 无头窗口截图核对，1440×900 / 1280×800 / 390×844、暗色与浅色两套，控制台无 JS 报错、无横向溢出）：待触发按「已经过点 / 今天要跑 / 这周之内 / 以后」四堆 + 「历史」一堆，每堆自己按到期时间排序（「全部」视图里后端按落定时间排的历史混进待触发就没有方向了）；顶栏一行统计与筛选（状态/会话/关键词）；周期行挂「每天 已跑 0」「每周 0/8」徽标，终态行挂状态徽标与「落定 <时间>」，失败行显示「失败 2 · 模型请求或工具报错（详情见日志）」并把按钮换成「重排」；行内「改期 / 取消 / 删除」——改弹窗预填 datetime-local 与指令且**只发人真动过的那一格**（逾期项的时间本来就是过去的，改个错别字不该被「必须是将来」挡回来），保存后 toast 报新时间；清理历史弹窗按状态实时给出条数再确认删除；「按保留期清理」确认后 toast「到期删 0 · 超限删 0（剩 N 条）」；首屏拉满后点「载入更多」把窗口撑大、按钮消失、计数跟着改；5 秒一轮的重画保持列表滚动位置（读到一半不被弹回顶部）；手机端列折进行内、操作按钮仍点得到
 
 [PASS] web_emojis        # 表情包页（`temp/test_web_emojis.py`）：`GET /api/emojis` 列的就是目录里的图（库目录与旧 stickers//user/ 子目录并列、手动丢进去的当场出现、删掉的条目失效），回 file/desc/added_at/url/use_count/last_used_at/has_vec 与 mode/上限，既不给向量也没有来源字段；浏览只读——不写索引、不建向量与使用统计文件；`PUT /emoji/<rel>` 改描述（清空退回文件名、超长 400、不在库里 404）、`DELETE /emoji/<rel>` 连图片文件一起删、`POST /api/emojis/import?name=` 收原始字节上传并按摘要去重（非图片 / 空文件 400），三个写动作都要登录；`GET /emoji/<rel>` 出图且 `Cache-Control: private`，非图片 / 不存在 / `%2e%2e%2f` 越界一律 404；扫目录缓存：库目录一变立刻重扫，没变时 TTL 内复用同一次结果，`?force=1` 强制重扫；面板不再有来源筛选与内置/收藏徽标（「内置默认」这个词现在人设页也在用，所以这条只查表情页那一段 markup），表情页不进 1s 轮询；消息流整页下线（`js/messages.js` 删除、侧栏 10 项、util/nav/poll/refresh/events/sessions 里不再残留 `refreshMessages` 与 `#msg-` 接线），`/api/messages` 保留给仪表盘「最近消息」
-[PASS] web_nav           # 侧栏分组的结构契约（`temp/test_web_nav.py`，解析 index.html，不需要浏览器）：四组十项、组名与归属固定（现场=dash/logs、对话=sessions/schedule、知识=memory/emojis/persona、配置=settings/permissions/tools）、可见组名 == `aria-label` 且每组带 `role=group`、`data-page` 与 `#page-*` 与 `PAGE_META` 与 `PAGE_RENDER` 是同一批十个且顺序一致、默认只有 dash 高亮并带 `aria-current="page"`（nav.js 切换时同步增删）、收起态（`.app.rail`）藏文字靠 `clip-path` + `position:absolute` 的 sr-only 写法而不是 `display:none`（否则按钮的可访问名一起没了），组名才用 `display:none` 藏、主题按钮在侧栏之外
-[PASS] web_page          # 按页面的读模型（`temp/test_web_page.py`，TestClient + 临时库）：侧栏十页 == 后端 `PAGES` == 前端 `PAGE_RENDER`；每页快照的键正好是该页渲染函数从 `d` 上取的键（不多给也不少给，少给就是白屏）；`/api/page/<name>` 未登录 401、未知页 404；`/api/shell` 一次往返里 `presence.status()` 只算一次并带 `runtime`/`env`；按资源开的旧 GET（status/stats/sessions/messages/logs/memories/memories-search/reminders/tools/config/emojis/actors/system-prompt）逐个断言已不存在；`PAGE_LIVE` 只留 dash/schedule/logs 三页，其余页面进出才拉；`PAGE_PARAMS` 里日志/记忆/日程各自读自己的控件，`PAGE_HOLD.persona` 挡住未保存时的自动重载
+[PASS] web_nav           # 侧栏分组的结构契约（`temp/test_web_nav.py`，解析 index.html，不需要浏览器）：四组十项、组名与归属固定（现场=dash/logs、对话=sessions/task、知识=memory/emojis/persona、配置=settings/permissions/tools）、可见组名 == `aria-label` 且每组带 `role=group`、`data-page` 与 `#page-*` 与 `PAGE_META` 与 `PAGE_RENDER` 是同一批十个且顺序一致、默认只有 dash 高亮并带 `aria-current="page"`（nav.js 切换时同步增删）、收起态（`.app.rail`）藏文字靠 `clip-path` + `position:absolute` 的 sr-only 写法而不是 `display:none`（否则按钮的可访问名一起没了），组名才用 `display:none` 藏、主题按钮在侧栏之外
+[PASS] web_page          # 按页面的读模型（`temp/test_web_page.py`，TestClient + 临时库）：侧栏十页 == 后端 `PAGES` == 前端 `PAGE_RENDER`；每页快照的键正好是该页渲染函数从 `d` 上取的键（不多给也不少给，少给就是白屏）；`/api/page/<name>` 未登录 401、未知页 404；`/api/shell` 一次往返里 `presence.status()` 只算一次并带 `runtime`/`env`；按资源开的旧 GET（status/stats/sessions/messages/logs/memories/memories-search/tasks/tools/config/emojis/actors/system-prompt）逐个断言已不存在；`PAGE_LIVE` 只留 dash/task/logs 三页，其余页面进出才拉；`PAGE_PARAMS` 里日志/记忆/任务各自读自己的控件，`PAGE_HOLD.persona` 挡住未保存时的自动重载
 [PASS] single_source     # 面板这些数只有一份来源（`temp/test_single_source.py`，TestClient + 真 ToolExecutor）：`kind_of` / `clamp_importance` 把脏值收进区间（空与不认识的类别落到 `KIND_LABELS` 第一类、越界的重要度贴上下界）；`POST /api/memories` 落库前归一（`kind=瞎写` + `importance=99` 进库是 `profile` / 5）；`PUT` 与整组 `DELETE` 的 400 文案 == 用 `KIND_LABELS` 拼的那句；记忆页快照带 `kinds` / `importance_min` / `importance_max`；工具页与权限页的 `levels` 逐字节相等且 == `_level_contract()`（名字表、`max_level`、`locked_level`、`locked_name`）；人设页带 `max_chars`；日志不传 `lines` 时正好回 `LOG_LINES_DEFAULT` 行（造 460 行只给 400，传 `lines=50` 才给 50）；`memory_add` 发给模型的 schema `enum` 就是 `list(KIND_LABELS)`、描述里的区间跟着常量；`admin_manage` 发给模型的等级说明含 `0 禁止` 与 `5 归属` 这两端、`min_level` 就是 `LEVEL_MAX`、`help` 给 `LEVEL_MAX+1` 档且那句「6 为永久锁」由 `LEVEL_LOCKED` / `LEVEL_LOCKED_NAME` 拼；**静态扫描**：`index.html` + `js/*.js` + `tool/admin/permissions.py` 去掉注释后不许再出现类别叫法、`L\d 档位名`、`locked_name`、字数上限、★ 串、`lines:` 或 `p.limit`（注释里举例可以，所以先剥注释；已用注入样本反证过扫描不是空跑）
 [PASS] web_theme         # 双主题的令牌契约（`temp/test_web_theme.py`，离线）：颜色字面量只准出现在 `base.css`（`mask-image` 的 `#000` 是遮罩形状，放行）；每个 `var(--x)` 都在 `:root` 声明过，没有拼错名也没漏浅色覆盖；暗色定义的颜色令牌浅色必须覆盖——只由 `rgba(var(--*-ch), a)` 派生的豁免（通道一变淡底自己跟着变）；浅色七条信号通道全部比暗色更暗；`--live` 当字色落在 `--bg`/`--panel-2` 上 ≥4.5:1、白字压主按钮实底 ≥4.5:1，浅色墨色阶梯（faint/muted/ink-*）每档 ≥4.5:1；**淡底（.10 alpha，覆盖小牌 .09~.1、标签 .08、危险按钮 .07 那批）与日志暗格上的小字逐个反解**——两主题最差 4.55:1（暗色 `--ink-off` 压在 `--idle-ch` 淡底 / panel-2），这就是「通道只当底、字走 `--ink-*`」那条规则的量化版本；主题脚本的位置钉死：`theme.js` 在 `</head>` 内、样式表之后、body 之前，body 里不许再出现一次，`theme.js` 里不许抄颜色，`<meta name="color-scheme" content="dark light">` 必须在 head
 [PASS] web_persona       # 人设页（`temp/test_web_persona.py`）：老 config 没有 `llm.system_prompt` 时加载即补空串（`set_by_path` 才写得进去）；留空/全空白 = 用代码里的内置默认，写进去后常驻的 PresenceManager 下一轮就换新人设（无需重启），`cfg.save()` 落盘重开仍在；`GET/POST /api/system-prompt` 未登录 401、回执含 `custom/default/effective/is_custom/max_chars`、清空保存回到内置默认、超过 20000 字 400；`llm.system_prompt` 不在设置白名单里，走 `POST /api/config` 会被记 `rejected`（人设只有一条写入路径）；前端接线：导航项 / `page-persona` / `persona.js` 引用 / `PAGE_META` / 三个按钮都在，编辑框不带 `data-path`（通用设置保存碰不到它），`poll.js` 与 `refreshAll` 都不碰它（正在打字不会被 1s 轮询冲掉），有未保存改动时切页回来仍是原样；浏览器实测（1440×900 与 390×844，无 JS 报错、无横向溢出）：进页面显示内置默认那 1551 字 + 徽标「内置默认」→ 改成一句话保存 → 徽标变「自定义」、toast「人设已保存，下一轮生效」、重载后编辑框仍是新内容 → 清空保存回到「内置默认」；「填入内置默认」把 1551 字灌回编辑框；粘 20001 字页脚变红并报「系统提示词最长 20000 字，现在 20001 字」，服务端旧值不动，绕过前端直接 POST 也拿到同一句 400
@@ -654,5 +692,5 @@ README 讲「怎么用、怎么装、字段是什么意思」；这里只记**�
 [PASS] deploy_scripts    # 部署脚本离线回归（`temp/test_deploy_scripts.py`，只用 bash 与临时目录，不碰服务器）：`deploy/*.sh` 与两个 unix 启动脚本 `bash -n` 通过且都是 LF；`render_unit` 把模板里写死的 `/root/GGBot` 换成传入的/当前项目根（`WorkingDirectory`/`ExecStart` 两处都换、不留旧路径、`LimitNOFILE` 不动），`apply_unit` 对同一目标第二次判定「已是最新」且不再 `daemon-reload`；`web_probe` 五种配置（缺失/关面板/自定义端口/无 web 段/坏 JSON）都按代码默认口径给出 `on|off 端口`；`bot_pids` 对认不出的项目根返回空且退出 0；`deploy/rsync-filter.txt` 逐条盯住 17 条排除（含 `*.db.bak-*`，`--reset-db` 的库备份不能被 `--delete` 顺手清了）与 2 条放行、不含 `#`/`;` 注释行、不碰 `config.example.json`，两行 `+` 排在 `- tool/emoji/**` 之前，并按「首个匹配生效」的口径算出表情目录四个 `.py` 加 `config.example.json` 到得了服务器、`index.json`/图片/`config.json`/`usage.json` 到不了（本机没有 rsync，匹配器在测试里现写一份）；workflow 用 `--filter="merge deploy/rsync-filter.txt"` 引用这份、不再有内联 heredoc、没有 `--delete-excluded`；三个启动脚本的探测模块名一致、与 `requirements.txt` 一一对应，并覆盖代码里所有直接 import 的第三方（`pydantic` 由 fastapi 带装，是唯一例外）；unit 的 `ExecStart` 不带 `--log-level`；`deploy_server.sh` systemd 分支的现场是 `journalctl` 而 `stdout.log` 只在 nohup 分支 tail
 ```
 
-> 未覆盖：QQ 真实收发（需机器人上线 + 群内实测）；富媒体的实发——`send_voice` 的 SILK 上传、`generate_image` 的产物、`send_emoji` 的表情图（需真实群；本地文件走 base64 直传）；**群全量事件只用 `msg_id`（不带 `event_id`）的被动回复是否真被平台受理**——官方文档写明该事件的 `id` 可用于被动回复，本机没有实测条件，判断依据是之前带上 `event_id` 时被拒（40034027）。若线上仍被拒，日志会有 `被动回复失败，降级主动发送: …`，消息照发不丢，只是白耗一次请求；真出现这种情况就看那条警告的返回码，把 `on_group_message_create` 的 `passive_ok` 改回 False 即可退回旧行为。到点日程的实发（需真实群 + 等一个到期时间）同样没测，周期项「发一场滚下一场」在线上跨天滚动、以及停机一晚后那行 `提醒跳过 N 场未发` 也只做了离线验证。记忆的取代判定用假 LLM 固定了四种回执（new/update/drop/retire）与各种畸形回执，**真模型判得准不准、embedding 服务这一轮是否还通**都要看线上那行 `历史归档 … → 记忆 新增 a · 改写 b · 作废 c`——本轮没有再打真实的 `/embeddings` 调用（会实际计费），向量路径由注入假向量的本地用例覆盖。
+> 未覆盖：QQ 真实收发（需机器人上线 + 群内实测）；富媒体的实发——`send_voice` 的 SILK 上传、`generate_image` 的产物、`send_emoji` 的表情图（需真实群；本地文件走 base64 直传）；**群全量事件只用 `msg_id`（不带 `event_id`）的被动回复是否真被平台受理**——官方文档写明该事件的 `id` 可用于被动回复，本机没有实测条件，判断依据是之前带上 `event_id` 时被拒（40034027）。若线上仍被拒，日志会有 `被动回复失败，降级主动发送: …`，消息照发不丢，只是白耗一次请求；真出现这种情况就看那条警告的返回码，把 `on_group_message_create` 的 `passive_ok` 改回 False 即可退回旧行为。到点任务的实发（需真实群 + 等一个到期时间）同样没测——尤其**真模型拿到 `【定时任务触发】` 那一轮到底会不会真去调 `fetch`/`kv_get`、汇报得像不像人话**，离线用例只钉住了链路走得通与状态落得对，措辞质量要上线后看那行 `任务到期跑完 #id（汇报给 …，已汇报）` 与它上下文里的 LLM 行；周期项「跑一场滚下一场」在线上跨天滚动、停机一晚后那行 `任务跳过 N 场未跑`、以及 `bash` 在真服务器上的超时与脱敏，都只做了离线验证。记忆的取代判定用假 LLM 固定了四种回执（new/update/drop/retire）与各种畸形回执，**真模型判得准不准、embedding 服务这一轮是否还通**都要看线上那行 `历史归档 … → 记忆 新增 a · 改写 b · 作废 c`——本轮没有再打真实的 `/embeddings` 调用（会实际计费），向量路径由注入假向量的本地用例覆盖。
 
