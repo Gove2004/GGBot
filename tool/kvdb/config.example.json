@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "max_keys": 500,
+  "max_key_chars": 100,
+  "max_value_chars": 4000,
+  "max_list_items": 50,
+  "list_value_chars": 200
+}
