@@ -2,6 +2,8 @@
 
 搜索特化为腾讯元宝搜索（SearchPro，服务 API KEY 方式，标准库直连，无 SDK）：
 `api_key` 没填 = 工具未启用，不进下发列表。抓取只允许公网 http/https，限制跳转、体积、超时与字符数，阻断内网/回环/保留地址（SSRF）。
+抓取走两条道：先纯 HTTP（零依赖，绝大多数站点够用）；命中 WAF 那类拦截码（BLOCK_STATUSES，如 403/405）时再用 headless Chromium 渲染一遍，
+这条兜底要机器上装过 playwright 和它的浏览器，没装就照实说（见 BROWSER_HINT）。逐请求都重做一遍公网校验，页面自己跳去内网也拦得住。
 search 可选 read=true 直接把前几条正文抓回来（省掉一整轮 fetch）；
 fetch 支持 urls 批量并发。元宝每条结果自带正文级摘录与发布时间，`published` 归一成 YYYY-MM-DD，认不出就不给这个字段。
 结果与关键词字面重合度过低时返回 note 提示重搜。
@@ -35,6 +37,18 @@ BLOCK_TAGS = {
     "ul", "ol", "hr", "form", "nav",
 }
 SKIP_TAGS = {"script", "style", "noscript", "template", "svg", "iframe", "canvas"}
+
+# 反爬/WAF 把纯 HTTP 客户端关在外面时的常见回法：拿到的是拦截页，值得用浏览器再试一次
+BLOCK_STATUSES = {401, 403, 405, 412, 429, 503}
+BROWSER_MAX_PAGES = 3   # 一次调用里最多渲染几页：Chromium 是几百 MB 的活，别为兜底把机器压死
+
+
+class _Blocked(RuntimeError):
+    """站点回了个拦截码（不是 404 那种真没了），交给浏览器兜底。"""
+
+    def __init__(self, status: int):
+        super().__init__(f"网页返回 HTTP {status}")
+        self.status = status
 
 
 # ---------- 抓取 ----------
@@ -178,6 +192,8 @@ def _fetch(url: str, cfg: dict, max_chars: int | None = None) -> dict:
             raw = resp.read(max_bytes + 1)
             final_url = resp.geturl()
     except urllib.error.HTTPError as e:
+        if e.code in BLOCK_STATUSES:
+            raise _Blocked(e.code) from e
         raise RuntimeError(f"网页返回 HTTP {e.code}") from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"抓取失败: {e.reason}") from e
@@ -204,6 +220,109 @@ def _fetch(url: str, cfg: dict, max_chars: int | None = None) -> dict:
         "content": content or "（页面没有可读正文）",
         "truncated": truncated,
     }
+
+
+# ---------- 浏览器兜底 ----------
+
+BROWSER_HINT = "pip install playwright 后再跑一次 python -m playwright install chromium"
+
+
+async def _guard_route(route) -> None:
+    """浏览器会自己跳去任何地方，所以每一跳都重新做一遍公网校验；图片字体直接掐。
+
+    校验里带 DNS 解析，放到线程池去查，别把机器人主循环按在一跳的解析上；查不动就当内网掐掉。
+    """
+    if route.request.resource_type in ("image", "media", "font"):
+        await route.abort()          # 只要文字，顺带省掉大半请求和它们的 DNS 解析
+        return
+    try:
+        await asyncio.to_thread(_assert_public_url, route.request.url)
+    except Exception:  # noqa: BLE001  宁可错杀：解析不了/查不动的内网地址比少一页正文危险
+        await route.abort()
+        return
+    await route.continue_()
+
+
+async def _render_pages(urls: list[str], cfg: dict, chars: int) -> list[dict]:
+    """起一个 headless Chromium 把这批链接渲染成正文，一次调用共用一个浏览器。
+
+    没装 playwright 就整批失败（调用方退回原始拦截错误并附装法）；装了就只坏打不开的那一页。
+    """
+    try:
+        from playwright.async_api import TimeoutError as PWTimeout
+        from playwright.async_api import async_playwright
+    except ImportError as e:
+        raise RuntimeError(f"没装 playwright（装法：{BROWSER_HINT}）") from e
+
+    timeout = min(60.0, max(5.0, float(cfg.get("browser_timeout_sec", 25) or 25)))
+    pages: list[dict | None] = [None] * len(urls)
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        try:
+            ctx = await browser.new_context(user_agent=USER_AGENT, locale="zh-CN")
+            await ctx.route("**/*", _guard_route)
+
+            async def one(i: int, url: str) -> None:
+                page = await ctx.new_page()
+                try:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+                    try:
+                        # SPA 常有长连接，networkidle 等不到就用当前已经渲出来的部分
+                        await page.wait_for_load_state("networkidle", timeout=8000)
+                    except PWTimeout:
+                        pass
+                    text = await page.evaluate(
+                        "() => document.body ? document.body.innerText : ''")
+                    text = _squash(text or "")
+                    cut = len(text) > chars
+                    title = _squash(await page.title() or "")
+                    pages[i] = {
+                        "ok": True,
+                        "url": page.url or url,
+                        "title": title,
+                        "content": (text[:chars] if cut else text) or "（页面没有可读正文）",
+                        "truncated": cut,
+                    }
+                except Exception as e:  # noqa: BLE001
+                    pages[i] = {"ok": False, "url": url, "error": f"浏览器也没打开: {e}"}
+                finally:
+                    await page.close()
+
+            await asyncio.gather(*(one(i, u) for i, u in enumerate(urls)))
+        finally:
+            await browser.close()
+    return pages
+
+
+async def _http_page(url: str, cfg: dict, chars: int | None) -> dict:
+    try:
+        return {"ok": True, **(await asyncio.to_thread(_fetch, url, cfg, chars))}
+    except _Blocked as e:
+        return {"ok": False, "url": url, "error": str(e), "blocked_status": e.status}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "url": url, "error": str(e)}
+
+
+async def _fetch_pages(urls: list[str], cfg: dict, chars: int | None) -> list[dict]:
+    """两个工具共用的一条抓取通道：先纯 HTTP，被 WAF 关在外面的那几个再用浏览器补。"""
+    pages = list(await asyncio.gather(*(_http_page(u, cfg, chars) for u in urls)))
+    need = [i for i, p in enumerate(pages) if p.get("blocked_status")]
+    if not need or not _as_bool(cfg.get("browser_render", True)):
+        return pages
+    if chars is None:   # 浏览器那条道用同一个字数口径，别渲染出比 HTTP 更长的一页
+        chars = min(20_000, max(500, int(cfg.get("fetch_max_chars", 6000) or 6000)))
+    retry = need[:BROWSER_MAX_PAGES]
+    try:
+        rendered = await _render_pages([urls[i] for i in retry], cfg, chars)
+    except Exception as e:  # noqa: BLE001  兜底自己也塌了就只说原委，别把 HTTP 那条错误盖掉
+        for i in retry:
+            pages[i]["error"] = f"{pages[i]['error']}；浏览器兜底也没用（{e}）"
+        return pages
+    for i, page in zip(retry, rendered):
+        pages[i] = page
+    return pages
 
 
 # ---------- 搜索（元宝搜索 SearchPro）----------
@@ -480,6 +599,8 @@ class WebSearch(Tool):
         "fetch_max_chars": 6000,
         "fetch_max_bytes": 2000000,
         "read_max_chars": 1200,
+        "browser_render": True,          # 纯 HTTP 被 WAF 拦住时，改用 headless Chromium 再试一次
+        "browser_timeout_sec": 25,       # 浏览器那一趟的单页上限（额外只给 8s 等 SPA 静下来）
     }
 
     def __init__(self, rt):
@@ -524,16 +645,19 @@ async def _with_content(results: list[dict], cfg: dict, k: int) -> list[dict]:
     """给前几条结果并上正文：抓不到就标 content_error，不拖累其他条。"""
     top = min(3, k, len(results))
     chars = min(4000, max(500, int(cfg.get("read_max_chars") or 1200)))
+    pages = await _fetch_pages([row["url"] for row in results[:top]], cfg, chars)
 
-    async def one(row: dict) -> dict:
-        try:
-            page = await asyncio.to_thread(_fetch, row["url"], cfg, chars)
-        except Exception as e:  # noqa: BLE001
-            return {**row, "content_error": str(e)}
-        return {**row, "content": page["content"]}
-
-    read = await asyncio.gather(*(one(row) for row in results[:top]))
-    return [*read, *results[top:]]
+    rows = []
+    for row, page in zip(results[:top], pages):
+        if page.get("ok"):
+            rows.append({**row, "content": page["content"]})
+        else:
+            err = page["error"]
+            if page.get("blocked_status"):
+                # HTTP 和浏览器都没进去，那这条就只剩摘要可用，而摘要是引擎什么时候爬的不确定
+                err += "（正文没抓到，这条只有搜索引擎的旧快照，别当成现在的数据）"
+            rows.append({**row, "content_error": err})
+    return [*rows, *results[top:]]
 
 
 def _as_bool(value) -> bool:
@@ -579,19 +703,16 @@ class WebFetch(Tool):
         except (TypeError, ValueError):
             max_chars = None
 
-        async def one(url: str) -> dict:
-            try:
-                return {"ok": True, **(await asyncio.to_thread(_fetch, url, self.config, max_chars))}
-            except Exception as e:  # noqa: BLE001
-                return {"ok": False, "url": url, "error": str(e)}
-
+        pages = await _fetch_pages(batch, self.config, max_chars)
         if len(batch) == 1:
-            data = await one(batch[0])
+            data = pages[0]
+            data.pop("blocked_status", None)
             if not data.get("ok"):
                 return data
             data.pop("ok", None)
             return {"ok": True, **data}
-        pages = await asyncio.gather(*(one(url) for url in batch))
+        for page in pages:
+            page.pop("blocked_status", None)
         return {"ok": True, "pages": list(pages),
                 "note": f"{sum(1 for p in pages if p.get('ok'))}/{len(pages)} 页抓取成功"}
 

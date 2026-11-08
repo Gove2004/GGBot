@@ -8,5 +8,7 @@
   "max_results": 5,
   "fetch_max_chars": 6000,
   "fetch_max_bytes": 2000000,
-  "read_max_chars": 1200
+  "read_max_chars": 1200,
+  "browser_render": true,
+  "browser_timeout_sec": 25
 }
