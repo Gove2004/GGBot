@@ -39,6 +39,8 @@ python -m venv .venv
 
 Linux 用 `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`。
 
+抓取的浏览器兜底是可选的，不装在清单里：`pip install playwright` → `python -m playwright install chromium` → `python -m playwright install-deps`（Linux 上装 Chromium 需要的系统共享库）。浏览器本体几百 MB，不装则遇到只回拦截页的站点会照实说没装。
+
 ### 3. 全局配置
 
 首次启动时若 `db/config.json` 不存在，会自动从 `db/config.example.json` 生成并提示填写；也可以手动复制：
@@ -196,6 +198,7 @@ unit 里有 `LimitNOFILE=65535`：systemd 拉起的服务 soft nofile 默认只�
 - 表情包以图片富媒体发送（非 QQ 商城表情）；本地素材走 base64 直传，不需要公网地址
 - 工具目录 `tool/*/config.json` 含第三方密钥/授权码，已在 `.gitignore` 中排除；首次运行会按 `config.example.json`/代码默认值自动生成，无需手工创建
 - 联网搜索特化为腾讯元宝搜索（SearchPro，`POST https://api.wsa.cloud.tencent.com/SearchPro`，标准库直连、无 SDK）：`api_key` 没填 = `search` 不下发（口径同语音克隆/生图），`fetch` 不受影响。按次计费，所以 `max_search_per_day`（默认 50）在请求发出前就拦下，计数写在 `tool/web/search_usage.json` 里、跨天归零、发版重启不清零。搜索质量仍受收录情况限制：结果与关键词字面重合度过低时挂 `note` 提醒模型换词或直说不确定，代码不能替它保证搜得到
+- 抓不到只回拦截页的站点：按 IP 段拦的 WAF（实测阿里云 WAF 对机房 IP 的 TapTap 一律回 405）不是客户端能解决的，HTTP 和 headless 浏览器都进不去，长相无关，只有换出口 IP，代码不做绕过。这种情况下 `search` 的摘录还能用，但引擎什么时候爬的没人说，所以抓正文失败时会把「只有旧快照，别当成现在的数据」写进 `content_error`
 - 一轮里的工具动作不进下一轮历史：`messages` 表只存发出去的消息（含代发的正文）与用户消息，`search` / `memory_search` 这类中间结果只在当轮请求里存在，下一轮模型看不到自己查过什么；要跨轮记住就让它写进正文或主动 `memory_add`
 - 任务的触发精度就是 `scan_interval_sec`（默认 15s）；停机期间错过的按 `miss_grace_sec` 处置——一次性项作废不补跑，周期项只跳过没赶上的那几场、整条继续往后排。任务行存在 `tasks` 表里，`--reset-chat` 只清 messages + sessions + 出站记账（已排好的任务**仍在**，要停得在对话里 `task_del` 或在面板点「取消」），`--reset-db` 删整个库文件时才一起没了；面板「任务」页能看、能改下一次到期与指令、能取消删除与清理历史，但**排新任务与设周期仍然只能在对话里说**
 - 自动部署只在 Linux + systemd 这条路上验证过：unit 模板里写死的 `/root/GGBot` 会在装/部署时换成本机项目根，所以换目录不用改 unit，但 `DEPLOY_SSH_PATH` 得指对（渲染取的就是代码实际落地的那个目录）；`rsync --delete` 只保住在 `deploy/rsync-filter.txt` 里的运行时数据，服务器上手工放的其他文件会被清掉
@@ -358,7 +361,7 @@ stateDiagram-v2
 | task | `task_list` / `task_del` | 看本会话挂着哪些任务（默认只列待触发，带编号、「还有多久」，周期项带「每天/每30分…」与已跑几场，连着失败的带上次数与原因）/ 按编号或唯一关键词取消（置 `cancelled`，行仍留在历史里；周期项一取消就是整条停下；只能撤自己设的或汇报给自己的那条） | 与 `task_add` 同组（不单独启停） |
 | kvdb | `kv_set` / `kv_get` | 往本会话的键值库存一条 / 取一条（L2 普通，重启不丢、别的会话读不到）。键带日期就是时间序（`网站价格:2026-11-06`，日期先调 `time` 拿），`kv_set` 返回里带 `old`（被覆盖前的值），算增量不用再取一次；`found=false` 是没存过，不等于 0 | `kvdb/config.json`（每会话键数上限、键/值长度、列表条数与截断） |
 | kvdb | `kv_list` / `kv_del` | 按前缀列出存过的键值（按键名字典序，带日期的键即时间序；每条值只给前一小段，看全值用 `kv_get`）/ 删一条（不存在也算成功，别拿它清整批） | 与 `kv_set` 同组（不单独启停） |
-| web | `search` / `fetch` | 联网搜索（腾讯元宝搜索 SearchPro，每天默认最多 50 次；`read=true` 顺带抓回前 3 条正文；结果与关键词几乎不沾边时返回 `note` 让模型换词或承认不确定）/ 抓取网页正文（`urls` 可批量并发，最多 5 个） | `web/config.json`（`api_key`、`mode`、`site`、`max_search_per_day`、超时、抓取上限、`read_max_chars`） |
+| web | `search` / `fetch` | 联网搜索（腾讯元宝搜索 SearchPro，每天默认最多 50 次；`read=true` 顺带抓回前 3 条正文；结果与关键词几乎不沾边时返回 `note` 让模型换词或承认不确定）/ 抓取网页正文（`urls` 可批量并发，最多 5 个；纯 HTTP 被 WAF 拦下时改用 headless 浏览器再渲染一遍，没装 playwright 就照实说） | `web/config.json`（`api_key`、`mode`、`site`、`max_search_per_day`、超时、抓取上限、`read_max_chars`、`browser_render`） |
 | web | `time` | 当前日期 / 时间 / 星期 / 时区（中文时间说法先问它再换算） | 无 |
 | email | `send_email` | SMTP 发邮件（文本/HTML + 附件，L3） | `email/config.json` |
 | admin | `admin_manage` | 权限管理（L5）：`grant` / `revoke` / `list` / `help`，支持昵称 / 8 位 id / openid | 无（首次停用才生成 config） |
@@ -426,15 +429,19 @@ stateDiagram-v2
 ### 联网（web）
 
 - 搜索特化为腾讯元宝搜索（SearchPro）：`POST https://api.wsa.cloud.tencent.com/SearchPro`，标准库直连、无 SDK，`Authorization: Bearer <api_key>`
-- `tool/web/config.json`：`api_key`（控制台「服务 API KEY」，`sk-` 开头；**没填 = `search` 不下发**，口径同语音克隆/生图，`fetch` 不受影响）、`mode`（0 公开网页 / 1 权威垂直信源 / 2 混合，默认 2）、`site`（非空则只搜这个域名，默认空）、`max_search_per_day`（每天最多发多少次搜索，默认 50，填 0 = 不限；`fetch` 不计）、`timeout_sec`、`max_results`、`fetch_max_chars`、`fetch_max_bytes`、`read_max_chars`（`read=true` 时每页正文截断，默认 1200）
+- `tool/web/config.json`：`api_key`（控制台「服务 API KEY」，`sk-` 开头；**没填 = `search` 不下发**，口径同语音克隆/生图，`fetch` 不受影响）、`mode`（0 公开网页 / 1 权威垂直信源 / 2 混合，默认 2）、`site`（非空则只搜这个域名，默认空）、`max_search_per_day`（每天最多发多少次搜索，默认 50，填 0 = 不限；`fetch` 不计）、`timeout_sec`、`max_results`、`fetch_max_chars`、`fetch_max_bytes`、`read_max_chars`（`read=true` 时每页正文截断，默认 1200）、`browser_render` / `browser_timeout_sec`（浏览器兜底，见下）
 - `Cnt` 只认 10/20/30/40/50 五档（传别的直接报错），按 `k` 向上取档、本地再截到 `k` 条；`Query` 超官方 1500 字节上限时按字节截，落在半个汉字上就丢掉半个
 - **每天最多 50 次搜索**：额度在请求发出之前就用掉，所以拦住的那次根本不碰服务，也告诉模型"今天到头了，别再搜，用已有信息回答或直说查不到"。计数写在 `tool/web/search_usage.json`（`{"day":"YYYY-MM-DD","count":N}`，gitignored 且 rsync 排除）而不是内存里——每次发版都会重启进程，放内存等于每天多发一轮次数，而 SearchPro 是按次计费的；跨到新的日期自动归零，`max_search_per_day=0` 时不计数也不拦
 - `search` 返回标题 / 链接 / 正文级摘录（`passage` 截 300 字，没给才退到 `content`）与来源站点名（`site` 是「腾讯网」这类名字，不是域名）；`published`（`YYYY-MM-DD`）取服务的 `date`，实测多为空、非空时是 `2026-09-29 00:00:00` 这种形状，认不出就不给这个字段。**这修掉了旧 Bing RSS 的坑**：那边的 `pubDate` 是抓取/更新时间，会把 2024 年的页面标成昨天，模型据此说"最新"比不说更糟
 - 服务的错误码翻成人话再回给模型（错误码决定该不该重试）：`UnauthorizedOperation`＝key 无效、`ResourceNotFound`＝服务未开通、`ResourceUnavailable`＝欠费或免费额度用尽、`RequestLimitExceeded`＝太频繁、`InvalidParameter`＝参数不合法、`InternalError`。**鉴权与参数错误都是 HTTP 200 + `Response.Error`**（实测拿到无效 key 就是这个形状），只有传输层问题才走 HTTP 错误码；空 `Pages` 且没有 `Error` 才是真 0 条，回 `note` 让模型换词
 - **结果不沾边就说破**：中文按二元组、英文按词，把 `query` 拆成词去比对标题+摘要，最高重合度 < 0.3 时整批结果挂一条 `note`（"多半是这个词没被收录或写法不对，别当成答案，换个说法再搜一次"），此时 `read=true` 也不再浪费一轮去抓这些垃圾正文；空结果同样回 `note`
 - `query` 写法已按此约束在 schema 里提示：2~6 个关键词、不要写成整句、专有名词配类型词（如「XX 游戏 TapTap」）——收录不到的词会退化成单字匹配，整句几乎必然命中上面那条 `note`
-- `read=true` 时并发抓回前 3 条结果的正文一起返回（单页失败只标 `content_error`，不影响别的页），省掉"搜完再逐条 fetch"的一整轮往返
+- `read=true` 时并发抓回前 3 条结果的正文一起返回（单页失败只标 `content_error`，不影响别的页）；HTTP 和浏览器都没进去的那条会补一句「只有搜索引擎的旧快照，别当成现在的数据」——线上那次「TapTap 热度 9」（三周前引擎爬到的快照，当时真实值 134）就是被这种旧数据骗的，摘要本身不带爬取时间，只能把这层不确定性说明白
 - `fetch` 支持 `urls` 批量（最多 5 个，并发；只给一个 `url` 时返回结构与以前一样），返回 `pages` 与 `N/M 页抓取成功`
+- **两条道抓取**：先纯 HTTP（零依赖，绝大多数站点够用）；只有拿到 401/403/405/412/429/503 这类拦截码（`BLOCK_STATUSES`，回的是拦截页不是真 404）才起 headless Chromium 把那一页渲染一遍。一次调用最多补 3 页、共用一个浏览器，`browser_render=false` 可整条关掉。兜底要机器上装过 `playwright` 和它的浏览器，**故意不进 `requirements.txt`**（几十 MB，且没有浏览器二进制时装了也没用），没装就在错误里附上装法照实说
+- **浏览器那条道同样过 SSRF**：页面自己发起的每一跳都重新做一遍公网校验（含跳去内网/元数据地址的），DNS 查询放线程池、查不动就当内网掐掉；图片/字体/媒体子请求直接 abort，只要文字，顺带省掉大半请求
+- SPA 页面纯 HTTP 只会拿回一段混淆脚本（实测掘金首页 2.4KB 全是反爬 JS，浏览器渲染才出正文），这是兜底的价值所在。**但它救不了按 IP 段拦的 WAF**：阿里云 WAF 对机房 IP 直接回 405 拦截页，服务器上用真浏览器渲染也一样进不去（实测 TapTap）——这类站点能不能抓取决于出口 IP，不取决于客户端长什么样，代码不去做绕过
+- `browser_render`（默认 true，关掉就只走纯 HTTP）、`browser_timeout_sec`（默认 25，另给 SPA 最多 8 秒等网络静下来，等不到就用已经渲出来的部分）
 - **抓取安全**：只允许公网 http/https，拒绝回环/内网/链路本地/保留地址与含账号密码的 URL；每次重定向重新校验，最多 3 跳；限制超时、响应体积与返回字符数，只接收文本类内容（HTML/JSON/XML）
 - 网页内容只当资料：prompt 明确要求不执行网页里的指令，降低提示词注入风险
 
