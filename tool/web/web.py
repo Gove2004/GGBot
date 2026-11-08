@@ -41,6 +41,15 @@ SKIP_TAGS = {"script", "style", "noscript", "template", "svg", "iframe", "canvas
 # 反爬/WAF 把纯 HTTP 客户端关在外面时的常见回法：拿到的是拦截页，值得用浏览器再试一次
 BLOCK_STATUSES = {401, 403, 405, 412, 429, 503}
 BROWSER_MAX_PAGES = 3   # 一次调用里最多渲染几页：Chromium 是几百 MB 的活，别为兜底把机器压死
+THIN_CONTENT_CHARS = 120   # HTML 正文短过这个数基本就是 JS 还没跑的空壳（实测掘金首页只回 "Please wait..."）
+
+
+def _needs_render(page: dict) -> bool:
+    """值得再用浏览器渲一遍的两种页：被拦截码关在外面的，和 200 但正文薄得像个空壳的。"""
+    if page.get("blocked_status"):
+        return True
+    return bool(page.get("ok")) and bool(page.get("html")) and \
+        len(page.get("content") or "") < THIN_CONTENT_CHARS
 
 
 class _Blocked(RuntimeError):
@@ -219,6 +228,7 @@ def _fetch(url: str, cfg: dict, max_chars: int | None = None) -> dict:
         "title": title,
         "content": content or "（页面没有可读正文）",
         "truncated": truncated,
+        "html": is_html,   # 内部用的：正文薄不薄只有 HTML 页才值得用浏览器再试
     }
 
 
@@ -267,7 +277,13 @@ async def _render_pages(urls: list[str], cfg: dict, chars: int) -> list[dict]:
             async def one(i: int, url: str) -> None:
                 page = await ctx.new_page()
                 try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+                    resp = await page.goto(url, wait_until="domcontentloaded",
+                                           timeout=timeout * 1000)
+                    if resp is not None and resp.status in BLOCK_STATUSES:
+                        # 浏览器进去看到的还是那张拦截页；把状态码留着，别把 WAF 的公告当正文交出去
+                        pages[i] = {"ok": False, "url": url, "blocked_status": resp.status,
+                                    "error": f"网页返回 HTTP {resp.status}（浏览器渲染后仍是拦截页）"}
+                        return
                     try:
                         # SPA 常有长连接，networkidle 等不到就用当前已经渲出来的部分
                         await page.wait_for_load_state("networkidle", timeout=8000)
@@ -306,9 +322,11 @@ async def _http_page(url: str, cfg: dict, chars: int | None) -> dict:
 
 
 async def _fetch_pages(urls: list[str], cfg: dict, chars: int | None) -> list[dict]:
-    """两个工具共用的一条抓取通道：先纯 HTTP，被 WAF 关在外面的那几个再用浏览器补。"""
+    """两个工具共用的一条抓取通道：先纯 HTTP，被 WAF 关在外面或只拿到空壳的那几个再用浏览器补。"""
     pages = list(await asyncio.gather(*(_http_page(u, cfg, chars) for u in urls)))
-    need = [i for i, p in enumerate(pages) if p.get("blocked_status")]
+    need = [i for i, p in enumerate(pages) if _needs_render(p)]
+    for p in pages:
+        p.pop("html", None)      # 内部判断用的字段，不交给模型
     if not need or not _as_bool(cfg.get("browser_render", True)):
         return pages
     if chars is None:   # 浏览器那条道用同一个字数口径，别渲染出比 HTTP 更长的一页
@@ -318,10 +336,13 @@ async def _fetch_pages(urls: list[str], cfg: dict, chars: int | None) -> list[di
         rendered = await _render_pages([urls[i] for i in retry], cfg, chars)
     except Exception as e:  # noqa: BLE001  兜底自己也塌了就只说原委，别把 HTTP 那条错误盖掉
         for i in retry:
+            if pages[i].get("ok"):   # 空壳页仍算抓到了东西，别为了兜底失败把正文换成错误
+                continue
             pages[i]["error"] = f"{pages[i]['error']}；浏览器兜底也没用（{e}）"
         return pages
     for i, page in zip(retry, rendered):
-        pages[i] = page
+        if page.get("ok") or not pages[i].get("ok"):
+            pages[i] = page   # 浏览器也没进去时保留它自己的错误，不拿空壳冒充成功
     return pages
 
 
