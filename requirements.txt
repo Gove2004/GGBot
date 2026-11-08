@@ -8,3 +8,5 @@ fastapi
 uvicorn
 numpy
 pysilk-mod
+# 可选增强，故意不进清单：web 抓取的浏览器兜底（pip install playwright && python -m playwright install chromium）。
+# 没装时代码里降级成一句安装提示，不影响启动，所以不逼每台机器白背几十 MB
