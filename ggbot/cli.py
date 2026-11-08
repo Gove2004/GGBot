@@ -276,7 +276,7 @@ def cmd_task_list(storage: Storage, sid: str | None, status: str | None,
         return
     now = int(time.time())
     print(f"{'ID':>6} {'会话':<12} {'状态':<9} {'周期':<9} {'已跑':>5} {'到期':<17} "
-          f"{'距今':>8} {'汇报给':<8} 指令")
+          f"{'距今':>8} {'谁排的':<8} 指令")
     print("-" * 130)
     for r in rows:
         gap = int(r["due_ts"]) - now
@@ -287,7 +287,7 @@ def cmd_task_list(storage: Storage, sid: str | None, status: str | None,
         print(f"{r['id']:>6} {session_label(r['session_id']):<12} {r['status']:<9} "
               f"{rule_label(r.get('rule') or ''):<9} {fires:>5} {fmt_due(r['due_ts']):<17} "
               f"{span_text(abs(gap)) + ('后' if gap >= 0 else '前'):>8} "
-              f"{_clip(r.get('notify_name') or '本人', 8):<8} {_clip(r.get('instruction'), 40)}{fails}")
+              f"{_clip(r.get('owner_name') or '—', 8):<8} {_clip(r.get('instruction'), 40)}{fails}")
 
 
 def cmd_task_show(storage: Storage, rid: int) -> None:
@@ -303,7 +303,7 @@ def cmd_task_show(storage: Storage, rid: int) -> None:
           + (f"（已跑 {int(row.get('fired_count') or 0)} 场，"
              + (f"计划 {times} 场）" if times > 0 else "不限场次）") if row.get("rule") else ""))
     print(f"  指令    {row['instruction']}")
-    print(f"  谁排的  {row.get('owner_name') or '—'} → 汇报给 {row.get('notify_name') or '本人'}")
+    print(f"  谁排的  {row.get('owner_name') or '—'}")
     print(f"  创建    {row.get('created_at') or '—'}   落定 {row.get('fired_at') or '—'}"
           f"   最后一场 {row.get('last_fired_at') or '—'}")
     if int(row.get("fail_count") or 0):

@@ -73,13 +73,12 @@ def fmt_user_messages(msgs: list[dict]) -> str:
 
 
 def fmt_task(task: dict) -> str:
-    """任务到点的本轮输入：编号、触发时刻、通知对象与当初写下的指令。
+    """任务到点的本轮输入：编号、触发时刻与当初写下的指令。
 
     触发时刻直接给出来，模型存带日期的键（kv_set）时不必再为「今天几号」多跑一次 time。
+    没有「通知对象」这一栏：到点就是在这个会话里说话，要点名谁写在指令里。
     """
-    who = sender_label({"sender": task.get("notify"), "sender_name": task.get("notify_name")})
     return (f"任务 #{task.get('id')} · {datetime.now():%Y-%m-%d %H:%M}\n"
-            f"通知对象: {who or '本人'}\n"
             f"指令: {task.get('instruction') or ''}")
 
 

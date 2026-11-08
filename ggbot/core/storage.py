@@ -86,8 +86,6 @@ CREATE TABLE IF NOT EXISTS tasks(
     session_id TEXT NOT NULL,
     owner TEXT,
     owner_name TEXT,
-    notify TEXT,
-    notify_name TEXT,
     due_ts INTEGER NOT NULL,
     instruction TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
@@ -151,9 +149,8 @@ def _task_filter(session_id: str | None, status: str | None,
     if needle:
         # 关键词是"像什么"，不是"匹配模式"：% _ 得当字面量，否则搜 % 等于全命中
         like = "%" + needle.replace("%", "\\%").replace("_", "\\_") + "%"
-        clauses.append("(instruction LIKE ? ESCAPE '\\' OR COALESCE(notify_name,'') LIKE ? ESCAPE '\\'"
-                       " OR COALESCE(owner_name,'') LIKE ? ESCAPE '\\')")
-        params += [like, like, like]
+        clauses.append("(instruction LIKE ? ESCAPE '\\' OR COALESCE(owner_name,'') LIKE ? ESCAPE '\\')")
+        params += [like, like]
     return (" WHERE " + " AND ".join(clauses) if clauses else ""), tuple(params)
 
 
@@ -683,17 +680,17 @@ class Storage:
     # ---------- 定时任务 ----------
 
     def add_task(self, session_id: str, owner: str | None, owner_name: str | None,
-                 notify: str | None, notify_name: str | None, due_ts: int, instruction: str,
-                 rule: str = "", times: int = 1) -> int:
+                 due_ts: int, instruction: str, rule: str = "", times: int = 1) -> int:
         """落一条待触发的任务；due_ts 是下一次到期的 unix 秒（跨时区/重启都比较得动）。
 
         instruction 是到点交给模型执行的指令，不是到点原样发出去的台词。
+        汇报给谁不是一列：到点那一轮就在排下它的那个会话里说话，要点名谁写进 instruction。
         """
         with self._lock, self._conn() as c:
             cur = c.execute(
-                "INSERT INTO tasks(session_id, owner, owner_name, notify, notify_name, "
-                "due_ts, instruction, status, created_at, rule, times) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (session_id, owner, owner_name, notify, notify_name,
+                "INSERT INTO tasks(session_id, owner, owner_name, due_ts, instruction, "
+                "status, created_at, rule, times) VALUES(?,?,?,?,?,?,?,?,?)",
+                (session_id, owner, owner_name,
                  int(due_ts), instruction, "pending", _now(), rule or "", max(0, int(times))),
             )
             return int(cur.lastrowid)

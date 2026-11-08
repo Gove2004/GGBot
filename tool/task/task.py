@@ -24,7 +24,7 @@ from datetime import datetime, timedelta
 
 from ..base import Tool
 from ggbot.util.logging_setup import clip
-from ggbot.util.session import oid8, session_label
+from ggbot.util.session import session_label
 from ._rule import (REPEAT_HELP, WHEN_HELP, advance, fmt_due, parse_rule, parse_when,
                     rule_label, rule_seconds, span_text)
 
@@ -76,12 +76,6 @@ class Tasks:
     def config(self) -> dict:
         return self.rt.load_config(DATA_KEY, DEFAULT_CONFIG)
 
-    @staticmethod
-    def _who_label(row: dict) -> str:
-        name = (row.get("notify_name") or "").strip()
-        oid = oid8(row.get("notify") or "")
-        return f"{name}/{oid}" if name and oid else (name or oid or "unknown")
-
     # ---------- 增删查（工具侧） ----------
 
     async def add(self, args: dict, ctx: dict) -> dict:
@@ -129,14 +123,6 @@ class Tasks:
 
         actor = ctx.get("actor") or {}
         owner = str(actor.get("openid") or "")
-        name = str(args.get("who") or "").strip().lstrip("@")
-        notify, notify_name = owner, (actor.get("name") or "")
-        if name:
-            oid = await asyncio.to_thread(self.rt.storage.find_sender_openid, name, sid)
-            if not oid:
-                return {"ok": False, "error": f"这个会话里找不到「{name}」；"
-                                              "汇报给本人不用填 who"}
-            notify, notify_name = oid, name
 
         pending = await asyncio.to_thread(self.rt.storage.count_tasks, sid)
         max_pending = max(1, int(cfg.get("max_pending", 20) or 20))
@@ -145,14 +131,13 @@ class Tasks:
 
         rid = await asyncio.to_thread(
             self.rt.storage.add_task, sid, owner, actor.get("name") or "",
-            notify, notify_name, ts, instruction, rule, times,
+            ts, instruction, rule, times,
         )
         out = {
             "ok": True,
             "id": rid,
             "due": fmt_due(ts),
             "in": span_text(ts - now) + "后",
-            "who": notify_name or "本人",
             "instruction": instruction,
             "repeat": rule_label(rule),
             "times": times,
@@ -183,7 +168,7 @@ class Tasks:
                 "due": fmt_due(r["due_ts"]),
                 "when": f"{span_text(abs(gap))}{'后' if gap >= 0 else '前'}",
                 "instruction": r["instruction"],
-                "who": r["notify_name"] or "本人",
+                "by": r["owner_name"] or "",
                 "status": r["status"],
                 "repeat": rule_label(r.get("rule") or ""),
                 "runs": f"{fired}/{times}" if r.get("rule") and times > 0 else (str(fired) if r.get("rule") else ""),
@@ -219,8 +204,8 @@ class Tasks:
             target = hits[0]
         actor = ctx.get("actor") or {}
         oid = str(actor.get("openid") or "")
-        if oid not in (target["owner"], target["notify"]) and int(actor.get("level") or 0) < 5:
-            return {"ok": False, "error": "只能取消自己设的、或汇报给自己的那条"}
+        if oid != target["owner"] and int(actor.get("level") or 0) < 5:
+            return {"ok": False, "error": "只能取消自己设的那条"}
         await asyncio.to_thread(self.rt.storage.finish_task, target["id"], "cancelled", _now_text())
         out = {"ok": True, "cancelled": target["id"], "due": fmt_due(target["due_ts"]),
                "instruction": target["instruction"], "note": "已取消，到点不会再跑"}
@@ -283,8 +268,7 @@ class Tasks:
                             fmt_due(nxt), said, extra=extra)
             else:
                 tail = "，已排满" if done_times else ""
-                logger.info("任务到期跑完 #%d（汇报给 %s，%s%s）", row["id"], self._who_label(row),
-                            said, tail, extra=extra)
+                logger.info("任务到期跑完 #%d（%s%s）", row["id"], said, tail, extra=extra)
         return ran
 
     async def _fail(self, row: dict, reason: str, extra: dict) -> None:
@@ -377,7 +361,7 @@ class TaskAdd(_TaskTool):
         f"要周期就填 repeat：{REPEAT_HELP}；repeat 填了才用 times 限制排几场（0=一直排到被取消）。"
         "instruction 写成到点该做的事：查什么、跟什么比、什么情况下要汇报"
         "（「查 xxx 的今日价格，跟 kv 里昨天那条比，涨了就报，没变就不说」）。"
-        "默认汇报给说话的人本人；对方明确让你汇报给别人才填 who（只认这个会话里出现过的昵称）。"
+        "到点就在你排它的这个会话里说话，要单独知会谁就把名字写进 instruction。"
         "设好后在正文里回一句约好的时间（周期就说清多久一次），别设完不作声"
     )
     parameters = {
@@ -387,7 +371,6 @@ class TaskAdd(_TaskTool):
             "instruction": {"type": "string", "description": "到点要去做的事，说清查什么、跟什么比、什么时候汇报"},
             "repeat": {"type": "string", "description": "可选：daily / weekdays / weekly / monthly / every:30m，不填就是一次性"},
             "times": {"type": "integer", "description": "可选（只有填了 repeat 才生效）：排几场，0 或不填=一直排到被取消"},
-            "who": {"type": "string", "description": "可选：汇报给别人的昵称，默认汇报给本人"},
         },
         "required": ["when", "instruction"],
     }
@@ -427,7 +410,7 @@ class TaskDel(_TaskTool):
         "取消一条还没结束的定时任务（置为已取消，记录仍保留）。id 填 task_list 里的编号；"
         "指令只对上唯一一条时也可以直接给那句关键词。"
         "取消周期项等于整条停下（后面不再跑，已跑过的场次还在）。"
-        "只能取消自己设的、或汇报给自己的那条；已经跑完的一次性任务取消不了"
+        "只能取消自己设的那条；已经跑完的一次性任务取消不了"
     )
     parameters = {
         "type": "object",

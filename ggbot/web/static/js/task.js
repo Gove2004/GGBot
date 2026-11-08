@@ -67,7 +67,7 @@ function taskMeta(r) {
     bits.push(`<span class="badge on">${esc(r.rule_label)}${times > 0 ? ` ${fired}/${times}` : ` 已跑 ${fired}`}</span>`);
   }
   bits.push(sessChip(r.session_id, "tiny"));
-  bits.push(`<span class="muted">汇报给 ${esc(r.notify_name || r.owner_name || "本人")}</span>`);
+  bits.push(`<span class="muted">谁排的 ${esc(r.owner_name || "—")}</span>`);
   bits.push(`<span class="muted mono">#${esc(r.id)}</span>`);
   if (Number(r.fail_count) > 0) {
     bits.push(`<span class="badge fail">失败 ${esc(r.fail_count)}${r.last_error ? ` · ${esc(r.last_error)}` : ""}</span>`);
@@ -182,7 +182,7 @@ function openTaskEdit(id) {
        ? `这条连着失败 ${Number(it.fail_count) || 0} 次后停下了（${esc(it.last_error || "原因见日志")}），保存后会当成重新排上，失败计数清零。`
        : it.rule
          ? `这是「${esc(it.rule_label)}」的任务，改的是下一场的时间；后面每一场都跟着这个钟点走。`
-         : "一次性任务，改完就到这个点跑。"} 改不了通知对象和会话——要换就取消再重排。</p>`,
+         : "一次性任务，改完就到这个点跑。"} 改不了会话——要换就取消再重排。</p>`,
     `<button class="btn ghost" data-action="modal-close">取消</button>
      <button class="btn primary" data-action="task-save" data-id="${esc(id)}">保存</button>`
   );
