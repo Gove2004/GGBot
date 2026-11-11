@@ -29,20 +29,18 @@
   background: linear-gradient(90deg, transparent, rgba(var(--live-ch), .6), transparent);
   opacity: .75;
 }
-/* 品牌标：一颗会呼吸的「在线」灯，和侧栏、hero 用的是同一个形状 */
+/* 品牌标就是项目图标本身（抠过底，不留色块），外面套一圈会呼吸的「在线」灯，和 .state-dot 同一套动画 */
 .brand-mark {
   position: relative;
   width: 48px; height: 48px; border-radius: 15px;
   display: grid; place-items: center;
-  font: 800 var(--fs-7)/1 var(--mono); color: var(--live-ink); letter-spacing: -.5px;
-  background: linear-gradient(150deg, var(--live), var(--live-deep));
-  box-shadow: 0 10px 28px rgba(var(--live-ch), .3), inset 0 1px 0 var(--edge-top-on-live);
 }
+.brand-mark img { width: 100%; height: 100%; object-fit: contain; }
 .brand-mark::after {
   content: ""; position: absolute; inset: -5px; border-radius: 19px;
   border: 1px solid rgba(var(--live-ch), .3); animation: breathe 3.4s ease-in-out infinite;
 }
-.brand-mark.small { width: 35px; height: 35px; border-radius: 11px; font-size: var(--fs-6); }
+.brand-mark.small { width: 35px; height: 35px; border-radius: 11px; }
 .brand-mark.small::after { inset: -4px; border-radius: 14px; }
 .login-card h1 { margin: var(--s-5) 0 var(--s-1); font-size: var(--fs-8); letter-spacing: .2px; }
 .login-sub { margin: 0 0 var(--s-6); color: var(--muted); font-size: var(--fs-3); }

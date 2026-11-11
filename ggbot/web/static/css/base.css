@@ -29,7 +29,7 @@
   --teal: rgb(var(--teal-ch));
   --lime: rgb(var(--lime-ch));
   --pink: rgb(var(--pink-ch));
-  --live-deep: #17b98a;       /* 主色实底的渐变收尾（主按钮、勾选块、品牌标） */
+  --live-deep: #17b98a;       /* 主色实底的渐变收尾（主按钮、勾选块） */
   --live-ink: #04231b;        /* 主色实底上的文字 */
 
   /* 表面色：从页面底到浮层，一层比一层亮；嵌进卡片的暗格单独一档 */
